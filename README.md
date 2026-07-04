@@ -196,6 +196,10 @@ Auth: `x-api-key` header on all `/v1/*` routes.
 - Further out: **Kafka** for ingestion buffering, **Cassandra/ScyllaDB** only
   if the message store outgrows partitioned Postgres.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Status
 
 All items from the original architecture plan are built and verified. The
