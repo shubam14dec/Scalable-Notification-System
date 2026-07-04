@@ -58,7 +58,7 @@ export const env = {
   broadcastBatchSize: int('BROADCAST_BATCH_SIZE', 100),
   fanoutHighWatermark: int('FANOUT_HIGH_WATERMARK', 50_000),
 
-  // Tenant overflow (Razorpay QoS): bursts between 1x and HARD_LIMIT_MULTIPLIER x
+  // Tenant overflow (burst QoS): bursts between 1x and HARD_LIMIT_MULTIPLIER x
   // the tenant's rate limit are accepted but diverted to the overflow queue
   // and trickled back in; beyond the hard cap the API returns 429.
   hardLimitMultiplier: int('HARD_LIMIT_MULTIPLIER', 5),

@@ -15,7 +15,7 @@ export function rateLimitWindowKey(tenantId: string, atMs = Date.now()): string 
 }
 
 /**
- * Two-tier per-tenant limiting (Razorpay QoS):
+ * Two-tier per-tenant limiting (burst QoS):
  *
  *   count <= limit           -> normal path
  *   limit < count <= 5xlimit -> ACCEPTED, but diverted to the overflow queue

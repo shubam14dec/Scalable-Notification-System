@@ -1,9 +1,8 @@
 # Notification System
 
 A horizontally scalable, multi-channel notification system built from scratch.
-Design informed by [Novu](https://github.com/novuhq/novu)'s queue pipeline and
-[Razorpay's notification service](https://engineering.razorpay.com/how-razorpays-notification-service-handles-increasing-load-f787623a490f)
-scaling lessons.
+Design informed by the architecture of production notification systems
+operating at very large scale.
 
 **Channels:** email, SMS, push, in-app (live WebSocket push + durable inbox) —
 extensible via one provider interface.
@@ -44,7 +43,7 @@ POST /v1/events/trigger  ──202──▶ caller gets transactionId immediatel
 | Principle | Where |
 |---|---|
 | Accept fast, process async (202 + transactionId) | `src/api/routes/trigger.ts` |
-| Priority isolation — P0/P1/P2 as **separate queues** per channel (Razorpay) | `src/shared/queues.ts` |
+| Priority isolation — P0/P1/P2 as **separate queues** per channel | `src/shared/queues.ts` |
 | Bulkheads — per-channel queues + worker pools; per-tier concurrency | `src/workers/index.ts` |
 | Per-tenant rate limiting (Redis, works across API replicas) | `src/api/rate-limit.ts` |
 | Idempotency — transactionId dedupe (Redis + DB unique), idempotent fan-out, jobId-deduped enqueues, status guard on delivery | trigger route, `fanout.processor.ts`, schema |
@@ -52,9 +51,9 @@ POST /v1/events/trigger  ──202──▶ caller gets transactionId immediatel
 | Dead-letter queue + paced replay | `src/workers/dlq.ts`, `scripts/replay-dlq.ts` |
 | Circuit breaker per provider + failover chain | `src/resilience/circuit-breaker.ts`, `src/providers/registry.ts` |
 | Outbound pacing per channel (queue-global limiter) | `src/workers/index.ts` |
-| Async batched audit writes (Razorpay's DB-IOPS lesson) | `src/core/execution-log.ts`, `src/workers/log-writer.ts` |
+| Async batched audit writes (protects hot-path DB IOPS) | `src/core/execution-log.ts`, `src/workers/log-writer.ts` |
 | Digest steps — N events in a window merge into ONE message | `fanout.processor.ts`, `delivery.processor.ts` (`renderDigest`) |
-| Tenant overflow queue (Razorpay QoS) — bursts above the soft limit are diverted and trickled back, not dropped or 429'd | `src/api/rate-limit.ts`, `src/workers/processors/overflow.processor.ts` |
+| Tenant overflow queue (burst QoS) — bursts above the soft limit are diverted and trickled back, not dropped or 429'd | `src/api/rate-limit.ts`, `src/workers/processors/overflow.processor.ts` |
 | ClickHouse analytics store — execution logs dual-written in batches, TTL'd at 90 days | `src/analytics/clickhouse.ts`, `GET /ops/logs/stats` |
 | Webhook signature verification (HMAC-SHA256 + timestamp anti-replay) | `src/api/webhook-signature.ts` |
 | Bounce suppression — bounced/complained addresses are never sent to again | `status.processor.ts`, `fanout.processor.ts`, `/v1/suppressions` |

@@ -82,7 +82,7 @@ export function registerTriggerRoutes(app: FastifyInstance) {
 
       // Over the soft limit? The burst is accepted but isolated: it goes to
       // the overflow queue and trickles back in as the tenant's budget frees
-      // up, so it can't delay other tenants (Razorpay's pattern).
+      // up, so it can't delay other tenants.
       const diverted = req.overflowDiverted === true;
       triggersTotal.inc({ result: diverted ? 'overflow' : 'direct' });
       await withSpan(

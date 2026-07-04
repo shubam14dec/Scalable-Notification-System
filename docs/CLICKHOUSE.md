@@ -18,9 +18,9 @@ notifications/day that's easily 20–50M log rows/day, ~1B/month. These rows are
   touches millions of rows but only 2–3 columns
 
 This is exactly the workload row-store OLTP databases (Postgres, MongoDB) are worst
-at, and exactly what a **columnar OLAP** store is built for. It's why Novu moved its
-trace logs to ClickHouse and why Razorpay pushed notification events through Kinesis
-into a data lake instead of their MySQL.
+at, and exactly what a **columnar OLAP** store is built for. It's why large
+notification platforms move their trace logs to columnar stores or stream them
+into data lakes instead of writing them to their OLTP databases.
 
 ## 2. Why Postgres eventually breaks on this workload
 
@@ -30,7 +30,7 @@ into a data lake instead of their MySQL.
 | Storage | Row storage + indexes ≈ 200–500 bytes/row → hundreds of GB fast; ClickHouse compresses the same data 10–30× |
 | VACUUM / bloat | Even append-only tables need vacuum for transaction-id wraparound; giant tables make it painful |
 | Analytics queries | `GROUP BY provider, day` over 30 days = scanning hundreds of GB of rows to read 3 columns |
-| The real killer | Log I/O competes with the **hot path** (messages/events tables) for the same disk IOPS and buffer cache — the Razorpay bottleneck in a different costume |
+| The real killer | Log I/O competes with the **hot path** (messages/events tables) for the same disk IOPS and buffer cache — the classic notification-platform bottleneck in a different costume |
 
 Batched inserts (which we already do) delay this wall; they don't remove it.
 
@@ -97,8 +97,8 @@ Design choices:
    Redis-buffer flow; the writer flushes 500–5000 rows per insert to ClickHouse
    over HTTP instead of (or alongside) Postgres. One code change behind a flag.
 2. **`async_insert=1`.** ClickHouse buffers small inserts server-side and flushes
-   them itself (`wait_for_async_insert=0` for fire-and-forget). Novu uses this
-   for traces. Lets many writers insert without coordinating batches.
+   them itself (`wait_for_async_insert=0` for fire-and-forget). Lets many
+   writers insert without coordinating batches.
 3. **Kafka → ClickHouse (at very high scale).** Workers produce log events to a
    Kafka topic; ClickHouse consumes via a Kafka engine table + materialized view.
    Gives you replay, backpressure isolation, and multiple consumers (data lake,

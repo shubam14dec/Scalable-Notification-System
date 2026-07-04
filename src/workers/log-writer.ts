@@ -8,7 +8,7 @@ import { chEnabled, chInsertLogs } from '../analytics/clickhouse';
 /**
  * Drains the Redis execution-log buffer into Postgres in batches. One
  * multi-row insert per interval instead of one write per pipeline step —
- * this is the async-write pattern that saved Razorpay's database.
+ * audit volume never competes with the hot path for database IOPS.
  */
 export function startLogWriter(): () => Promise<void> {
   let draining = false;

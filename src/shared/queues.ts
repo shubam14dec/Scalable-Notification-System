@@ -5,7 +5,7 @@ export const CHANNELS = ['email', 'sms', 'push', 'inapp'] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 /**
- * Priority tiers (Razorpay's P0/P1/P2 pattern), implemented as physically
+ * Priority tiers (P0/P1/P2), implemented as physically
  * separate queues per channel so bulk traffic can never starve transactional
  * traffic — each tier has its own dedicated worker pool.
  *
@@ -24,7 +24,7 @@ export const QUEUE = {
   /** Provider delivery-status callbacks (delivered/bounced/...). */
   STATUS: 'status-events',
   /**
-   * Tenant burst isolation (Razorpay pattern): triggers above a tenant's
+   * Tenant burst isolation: triggers above a tenant's
    * rate limit land here and are trickled back into `trigger` as budget
    * frees up, so one tenant's burst can't clog the main pipeline.
    */

@@ -1,6 +1,6 @@
 # Scalable Notification System — High-Level Architecture Plan
 
-Reference systems: **Novu** (open-source notification infrastructure) and **Razorpay's notification service** (engineering blog on handling increasing load).
+Design informed by the architecture of production notification systems operating at very large scale.
 
 ---
 
@@ -19,9 +19,9 @@ Reference systems: **Novu** (open-source notification infrastructure) and **Razo
 
 1. **Accept fast, process async** — the API only validates, persists, enqueues, and returns `202 Accepted` with a `transactionId`. All real work happens in workers.
 2. **Bulkhead pattern** — separate queue + worker pool per channel. A Twilio outage must not delay emails.
-3. **Priority segregation (Razorpay P0/P1/P2)** — separate physical queues per priority, not just priority flags. Bulk campaigns can never starve OTPs.
+3. **Priority segregation (P0/P1/P2)** — separate physical queues per priority, not just priority flags. Bulk campaigns can never starve OTPs.
 4. **Backpressure & rate limiting** — per-tenant and per-provider rate limits; violators are diverted to an overflow queue instead of clogging the main path.
-5. **Async writes for hot paths (Razorpay learning)** — execution logs/status updates go through a stream (Kafka/Kinesis/BullMQ) and are batch-written to the DB. DB IOPS was Razorpay's #1 bottleneck.
+5. **Async writes for hot paths** — execution logs/status updates go through a stream (Kafka/Kinesis/BullMQ) and are batch-written to the DB. DB IOPS is the classic first bottleneck at scale.
 6. **Idempotency everywhere** — `transactionId` + step-level idempotency keys; retries never double-send.
 7. **Retries with exponential backoff + jitter → DLQ** — bounded attempts, then dead-letter queue with alerting and a replay scheduler.
 8. **Circuit breakers on providers** — trip on error-rate/latency, fail over to secondary provider (e.g., SendGrid → SES).
@@ -71,16 +71,16 @@ Reference systems: **Novu** (open-source notification infrastructure) and **Razo
 | Queue | Purpose | Why it exists |
 |---|---|---|
 | `trigger` | Raw incoming events from the API | Decouples ingestion from processing; absorbs spikes |
-| `fan-out` (subscriber-process) | Expands 1 event → N subscriber jobs | Novu pattern; fan-out is CPU-heavy and must not block ingestion |
-| `email.p0/p1/p2`, `sms.p0/p1/p2`, `push.p0/p1/p2`, `inapp`, `webhook` | Per-channel, per-priority delivery queues | Bulkhead + priority isolation (Razorpay's three-tier P0/P1/P2) |
+| `fan-out` (subscriber-process) | Expands 1 event → N subscriber jobs | Fan-out is CPU-heavy and must not block ingestion |
+| `email.p0/p1/p2`, `sms.p0/p1/p2`, `push.p0/p1/p2`, `inapp`, `webhook` | Per-channel, per-priority delivery queues | Bulkhead + priority isolation (three-tier P0/P1/P2) |
 | `delayed/digest` (scheduler-backed) | Delay steps, digest/batching windows | Time-based release, dedupe of noisy events into one digest |
-| `rate-limited` | Overflow for tenants/events exceeding limits | Isolates misbehaving tenants (Razorpay's rate-limit queue) |
+| `rate-limited` | Overflow for tenants/events exceeding limits | Isolates misbehaving tenants |
 | `status-events` | Provider webhooks (delivered/bounced/failed/opened) | Async status ingestion; feeds retries and analytics |
-| `execution-log` stream | All step logs / message state changes | Async batch DB writes — protects DB IOPS (Razorpay's Kinesis move) |
-| `ws` | In-app real-time delivery to WebSocket gateway | Novu pattern; decouples socket fan-out |
+| `execution-log` stream | All step logs / message state changes | Async batch DB writes — protects DB IOPS |
+| `ws` | In-app real-time delivery to WebSocket gateway | Decouples socket fan-out |
 | `*.dlq` (one per queue) | Exhausted-retry jobs | Alerting, inspection, controlled replay |
 
-**Priority handling:** three physical queues per channel. Workers drain P0 first with dedicated capacity; P2 gets leftover/burst capacity. Razorpay's QoS twist: if a tenant's webhook endpoint responds slowly (> threshold), temporarily demote that tenant's priority so they can't degrade everyone else.
+**Priority handling:** three physical queues per channel. Workers drain P0 first with dedicated capacity; P2 gets leftover/burst capacity. A QoS twist: if a tenant's webhook endpoint responds slowly (> threshold), temporarily demote that tenant's priority so they can't degrade everyone else.
 
 ## 5. Component Responsibilities
 
@@ -103,13 +103,13 @@ Reference systems: **Novu** (open-source notification infrastructure) and **Razo
 
 ## 7. Technology Choices
 
-**Phase 1 (pragmatic, Novu's own stack):**
+**Phase 1 (pragmatic):**
 - **Node.js/NestJS** services, **Redis + BullMQ** for all queues (priorities, delays, retries, rate limiting built in)
-- **MongoDB** (Novu's choice) or **PostgreSQL** for state; **Redis** for cache/idempotency keys
+- **MongoDB** or **PostgreSQL** for state; **Redis** for cache/idempotency keys
 - Docker + Kubernetes, KEDA autoscaling on queue depth
 
 **Scale-up path (when Redis queue throughput or durability becomes the limit):**
-- **Kafka** (or SQS like Razorpay) for `trigger` ingestion and `execution-log` stream — partitioned by tenant for ordering + hot-tenant isolation
+- **Kafka** (or SQS) for `trigger` ingestion and `execution-log` stream — partitioned by tenant for ordering + hot-tenant isolation
 - Keep BullMQ for delay/digest scheduling where it shines
 - Read replicas + partitioning (by tenant/time) for the DB; archive old messages to a data lake
 
@@ -122,7 +122,7 @@ Reference systems: **Novu** (open-source notification infrastructure) and **Razo
 | Provider down | Circuit breaker → failover provider → else retry with backoff → DLQ |
 | Provider rate limit (429) | Token-bucket limiter per provider; delayed requeue, no retry burn |
 | Tenant flooding | Per-tenant quota → divert to `rate-limited` queue → trickle re-inject |
-| Slow tenant webhook | QoS demotion (Razorpay): lower that tenant's priority temporarily |
+| Slow tenant webhook | QoS demotion: lower that tenant's priority temporarily |
 | DB under pressure | Execution logs via stream + batch writer; throttle writers, never workers |
 | Worker crash mid-job | Queue visibility timeout / job lock expiry → job re-delivered (idempotent) |
 | Duplicate trigger | `transactionId` idempotency check at API + step-level dedupe keys |
@@ -132,7 +132,7 @@ Reference systems: **Novu** (open-source notification infrastructure) and **Razo
 - **Metrics:** queue depth & age per queue (the #1 scaling signal), jobs/sec, provider latency & error rate, delivery success rate per channel/provider/tenant, DLQ size.
 - **Tracing:** propagate `transactionId` through every queue hop (OpenTelemetry) — one trace from trigger to delivered.
 - **Alerts:** queue age > SLO, DLQ growth, provider circuit open, tenant rate-limit diversions.
-- **Execution log UI** (like Novu's activity feed): per-notification timeline for debugging "why didn't user X get the email?"
+- **Execution log UI** (activity feed): per-notification timeline for debugging "why didn't user X get the email?"
 
 ## 10. Phased Roadmap
 
@@ -142,7 +142,7 @@ API trigger endpoint → `trigger` queue → single worker → email + SMS via o
 **Phase 2 — Multi-channel + orchestration**
 Workflow engine (multi-step), fan-out queue, subscriber registry + preferences, push (FCM/APNs), in-app + WebSocket gateway, templates with variables, delay + digest steps.
 
-**Phase 3 — Scale & isolation (the Razorpay lessons)**
+**Phase 3 — Scale & isolation**
 Per-channel per-priority queues (P0/P1/P2), per-tenant rate limiting + `rate-limited` overflow queue, provider failover + circuit breakers, async execution-log stream with batch DB writes, KEDA autoscaling on queue depth.
 
 **Phase 4 — Hardening & platform**

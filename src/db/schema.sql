@@ -103,7 +103,7 @@ create table if not exists suppressions (
 );
 
 -- Append-only audit trail. Written in batches by the log-writer worker,
--- never synchronously from the send path (Razorpay's DB-IOPS lesson).
+-- never synchronously from the send path (protects hot-path database IOPS).
 create table if not exists execution_logs (
   id             bigserial primary key,
   tenant_id      uuid,

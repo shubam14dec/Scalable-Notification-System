@@ -76,7 +76,7 @@ Key decisions and why:
 ## 3. Stage 3 — Active-active (only if the business demands < 1 min RTO)
 
 Both regions serve traffic simultaneously. The clean model for a notification
-system is **tenant pinning** (Razorpay-style cell architecture), NOT
+system is **tenant pinning** (cell architecture), NOT
 write-anywhere:
 
 - Each tenant is **homed** to one region (`tenants.home_region`); the global
