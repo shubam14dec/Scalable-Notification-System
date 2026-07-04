@@ -1,0 +1,27 @@
+{{- if .Values.keda.enabled }}
+# KEDA ScaledObject: scale the worker fleet on BullMQ queue depth.
+# BullMQ keeps waiting jobs in the Redis list `bull:<queue>:wait`; when any
+# watched list exceeds `listLength` per replica, KEDA adds workers, down to
+# minReplicas when everything is drained. This is the "autoscale on queue
+# lag, not CPU" principle as actual infrastructure.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "ns.name" . }}-worker
+  labels: {{- include "ns.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "ns.name" . }}-worker
+  minReplicaCount: {{ .Values.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  triggers:
+{{- range .Values.keda.queues }}
+    - type: redis
+      metadata:
+        address: {{ $.Values.keda.redisAddress }}
+        listName: "bull:{{ . }}:wait"
+        listLength: {{ $.Values.keda.listLength | quote }}
+{{- end }}
+{{- end }}

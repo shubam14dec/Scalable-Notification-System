@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ns.name" . }}-worker
+  labels: {{- include "ns.labels" . | nindent 4 }}
+spec:
+  # No `replicas`: KEDA owns the count (see keda.yaml). Set one manually
+  # only when keda.enabled=false.
+  {{- if not .Values.keda.enabled }}
+  replicas: 2
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ns.name" . }}
+      role: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ns.name" . }}
+        role: worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: {{ .Values.worker.metricsPort | quote }}
+    spec:
+      # Give in-flight jobs time to finish on scale-down (graceful shutdown
+      # closes BullMQ workers before exiting).
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["npx", "tsx", "src/workers/index.ts"]
+          ports:
+            - containerPort: {{ .Values.worker.metricsPort }}
+          {{- include "ns.envFrom" . | nindent 10 }}
+          readinessProbe:
+            httpGet: { path: /health, port: {{ .Values.worker.metricsPort }} }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}

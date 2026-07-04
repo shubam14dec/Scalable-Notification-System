@@ -1,0 +1,79 @@
+image:
+  repository: your-registry/notification-system
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# Non-secret configuration -> ConfigMap. Point these at your managed
+# Postgres/Redis/ClickHouse (or in-cluster services).
+env:
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  SMTP_HOST: smtp-relay
+  SMTP_PORT: "587"
+  CLICKHOUSE_ENABLED: "true"
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_DB: notifications
+  DELIVERY_CONCURRENCY_P0: "30"
+  DELIVERY_CONCURRENCY_P1: "15"
+  DELIVERY_CONCURRENCY_P2: "5"
+  EMAIL_SENDS_PER_SEC: "50"
+  SMS_SENDS_PER_SEC: "20"
+  PUSH_SENDS_PER_SEC: "100"
+  INAPP_SENDS_PER_SEC: "1000"
+
+# Secret configuration -> Secret (use --set-file / external-secrets in real life).
+secrets:
+  DATABASE_URL: postgres://postgres:postgres@postgres:5432/notifications
+  WEBHOOK_SIGNING_SECRET: change-me
+  CLICKHOUSE_USER: default
+  CLICKHOUSE_PASSWORD: change-me
+
+api:
+  replicas: 2
+  port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+ws:
+  replicas: 2
+  port: 3001
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+worker:
+  # Baseline replicas; KEDA scales between minReplicas and maxReplicas.
+  metricsPort: 3002
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "2", memory: 1Gi }
+
+# KEDA (https://keda.sh) must be installed in the cluster.
+keda:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 20
+  pollingInterval: 5      # seconds between queue-depth checks
+  cooldownPeriod: 120     # seconds before scaling back down
+  # Scale out when any watched BullMQ waiting list exceeds this many jobs
+  # per replica. BullMQ stores waiting jobs in the Redis list bull:<q>:wait.
+  listLength: 100
+  redisAddress: redis:6379
+  queues:
+    - trigger
+    - fanout
+    - overflow
+    - status-events
+    - deliver.email.p0
+    - deliver.email.p1
+    - deliver.email.p2
+    - deliver.sms.p0
+    - deliver.sms.p1
+    - deliver.sms.p2
+    - deliver.push.p0
+    - deliver.push.p1
+    - deliver.push.p2
+    - deliver.inapp.p0
+    - deliver.inapp.p1
+    - deliver.inapp.p2

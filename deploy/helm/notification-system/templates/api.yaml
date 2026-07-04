@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ns.name" . }}-api
+  labels: {{- include "ns.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ns.name" . }}
+      role: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ns.name" . }}
+        role: api
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["npx", "tsx", "src/api/server.ts"]
+          ports:
+            - containerPort: {{ .Values.api.port }}
+          {{- include "ns.envFrom" . | nindent 10 }}
+          readinessProbe:
+            httpGet: { path: /health, port: {{ .Values.api.port }} }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: {{ .Values.api.port }} }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ns.name" . }}-api
+  labels: {{- include "ns.labels" . | nindent 4 }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: {{ .Values.api.port | quote }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "ns.name" . }}
+    role: api
+  ports:
+    - port: 80
+      targetPort: {{ .Values.api.port }}
