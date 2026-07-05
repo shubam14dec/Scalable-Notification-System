@@ -11,6 +11,7 @@ import AnalyticsPage from './pages/Analytics';
 import SubscribersPage from './pages/Subscribers';
 import IntegrationsPage from './pages/Integrations';
 import ApiKeysPage from './pages/ApiKeys';
+import InboxPreviewPage from './pages/InboxPreview';
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   return session.authed ? children : <Navigate to="/login" replace />;
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="/subscribers" element={<SubscribersPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/keys" element={<ApiKeysPage />} />
+          <Route path="/inbox-preview" element={<InboxPreviewPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

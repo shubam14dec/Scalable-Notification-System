@@ -1,0 +1,20 @@
+{
+  "name": "@notify/react",
+  "version": "0.1.0",
+  "description": "Embeddable notification inbox for the notify platform",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.1",
+    "typescript": "^5.7.2"
+  }
+}

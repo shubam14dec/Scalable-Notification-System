@@ -5,6 +5,7 @@ import { logger } from '../shared/logger';
 import { createRedis, redis } from '../shared/redis';
 import { pool } from '../db/pool';
 import { getTenantByApiKey, unreadCount, type Tenant } from '../db/repositories';
+import { verifySubscriberToken } from '../auth/subscriber-token';
 import { inAppPubSubChannel } from '../providers/inapp';
 
 /**
@@ -90,22 +91,39 @@ function main() {
     void (async () => {
       const ws = socket as AuthedSocket;
       const url = new URL(req.url ?? '/', 'ws://localhost');
-      const apiKey = url.searchParams.get('apiKey');
-      const subscriberId = url.searchParams.get('subscriberId');
 
-      // Production note: replace the raw api key with a short-lived signed
-      // token minted by your backend — api keys should not reach browsers.
-      if (!apiKey || !subscriberId) {
-        ws.close(4400, 'apiKey and subscriberId query params required');
-        return;
-      }
-      const tenant = await tenantFor(apiKey);
-      if (!tenant) {
-        ws.close(4401, 'invalid api key');
-        return;
+      // Preferred: short-lived subscriber token (browser-safe, minted by
+      // the customer's backend). Fallback: apiKey + subscriberId, for
+      // server-side/dev connections only — never ship an api key to a browser.
+      let tenantId: string;
+      let subscriberId: string;
+
+      const token = url.searchParams.get('token');
+      if (token) {
+        const payload = verifySubscriberToken(token);
+        if (!payload) {
+          ws.close(4401, 'invalid or expired subscriber token');
+          return;
+        }
+        tenantId = payload.tenantId;
+        subscriberId = payload.subscriberId;
+      } else {
+        const apiKey = url.searchParams.get('apiKey');
+        const sub = url.searchParams.get('subscriberId');
+        if (!apiKey || !sub) {
+          ws.close(4400, 'token, or apiKey and subscriberId query params required');
+          return;
+        }
+        const tenant = await tenantFor(apiKey);
+        if (!tenant) {
+          ws.close(4401, 'invalid api key');
+          return;
+        }
+        tenantId = tenant.id;
+        subscriberId = sub;
       }
 
-      await attach(ws, inAppPubSubChannel(tenant.id, subscriberId));
+      await attach(ws, inAppPubSubChannel(tenantId, subscriberId));
 
       ws.isAlive = true;
       ws.on('pong', () => {
@@ -114,7 +132,7 @@ function main() {
       ws.on('close', () => void detach(ws));
       ws.on('error', (err) => logger.warn({ err }, 'socket error'));
 
-      const unread = await unreadCount(tenant.id, subscriberId);
+      const unread = await unreadCount(tenantId, subscriberId);
       ws.send(JSON.stringify({ type: 'connected', subscriberId, unreadCount: unread }));
     })().catch((err) => {
       logger.error({ err }, 'connection setup failed');

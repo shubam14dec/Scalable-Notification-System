@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   BarChart3,
+  Bell,
   Blocks,
   KeyRound,
   LayoutGrid,
@@ -22,6 +23,7 @@ const NAV = [
   { to: '/subscribers', label: 'Subscribers', icon: Users },
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/integrations', label: 'Integrations', icon: Blocks },
+  { to: '/inbox-preview', label: 'Inbox preview', icon: Bell },
   { to: '/keys', label: 'API keys', icon: KeyRound },
 ];
 
