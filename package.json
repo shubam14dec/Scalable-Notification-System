@@ -27,6 +27,7 @@
     "bullmq": "^5.34.0",
     "dotenv": "^16.4.5",
     "fastify": "^5.2.0",
+    "firebase-admin": "^14.1.0",
     "ioredis": "5.10.1",
     "nodemailer": "^6.9.16",
     "pg": "^8.13.1",

@@ -137,6 +137,24 @@ create index if not exists messages_inbox_idx
   on messages (tenant_id, subscriber_id, created_at desc)
   where channel = 'inapp';
 
+-- Bring-your-own provider credentials, per environment. Credentials are
+-- AES-256-GCM sealed (see src/auth/secret-box.ts) and never leave the API.
+create table if not exists integrations (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants(id),
+  channel        text not null,
+  provider       text not null,   -- smtp | sendgrid | resend | twilio | fcm | ...
+  credentials    text not null,   -- sealed
+  is_primary     boolean not null default false,
+  fallback_order int not null default 0,
+  active         boolean not null default true,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+create index if not exists integrations_tenant_channel_idx
+  on integrations (tenant_id, channel) where active;
+
 -- Addresses that hard-bounced or complained: never send to them again
 -- until explicitly removed. Populated automatically by the status worker.
 create table if not exists suppressions (

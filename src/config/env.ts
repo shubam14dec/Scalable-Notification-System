@@ -69,6 +69,11 @@ export const env = {
   // verification (dev only — always set this in production).
   webhookSigningSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
 
+  // Master key for encrypting provider credentials at rest (AES-256-GCM).
+  // Always override in production; source from KMS/secret manager.
+  credentialsEncryptionKey:
+    process.env.CREDENTIALS_ENCRYPTION_KEY ?? 'dev-credentials-key-change-me',
+
   // Dashboard/user auth (JWT). Always override the secret in production.
   jwtSecret: process.env.JWT_SECRET ?? 'dev-jwt-secret-change-me',
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL ?? '15m',
