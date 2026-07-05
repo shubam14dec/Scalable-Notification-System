@@ -47,7 +47,7 @@ export interface EventRow {
   workflow_key: string;
   priority: Priority;
   payload: Record<string, unknown>;
-  recipients: RecipientInput[];
+  recipients: TriggerRecipient[];
   is_broadcast: boolean;
   status: string;
 }
@@ -58,6 +58,9 @@ export interface RecipientInput {
   phone?: string;
   pushToken?: string;
 }
+
+/** Triggers accept direct recipients and/or topic references. */
+export type TriggerRecipient = RecipientInput | { topic: string };
 
 export interface MessageRow {
   id: string;
@@ -160,7 +163,7 @@ export async function insertEvent(e: {
   workflowKey: string;
   priority: Priority;
   payload: Record<string, unknown>;
-  recipients: RecipientInput[];
+  recipients: TriggerRecipient[];
   isBroadcast?: boolean;
 }): Promise<EventRow | null> {
   const { rows } = await pool.query(

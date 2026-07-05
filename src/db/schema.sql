@@ -137,6 +137,25 @@ create index if not exists messages_inbox_idx
   on messages (tenant_id, subscriber_id, created_at desc)
   where channel = 'inapp';
 
+-- Topics: named subscriber segments ("beta-users", "org:acme"). Triggers can
+-- target a topic instead of enumerating recipients; fan-out pages the
+-- membership with the same backpressure machinery broadcast uses.
+create table if not exists topics (
+  id         uuid primary key default gen_random_uuid(),
+  tenant_id  uuid not null references tenants(id),
+  key        text not null,
+  name       text not null,
+  created_at timestamptz not null default now(),
+  unique (tenant_id, key)
+);
+
+create table if not exists topic_subscribers (
+  topic_id      uuid not null references topics(id) on delete cascade,
+  subscriber_id uuid not null references subscribers(id),
+  created_at    timestamptz not null default now(),
+  primary key (topic_id, subscriber_id)
+);
+
 -- Bring-your-own provider credentials, per environment. Credentials are
 -- AES-256-GCM sealed (see src/auth/secret-box.ts) and never leave the API.
 create table if not exists integrations (

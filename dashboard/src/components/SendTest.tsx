@@ -16,9 +16,12 @@ interface TriggerResult {
  */
 export function SendTestModal({
   workflowKey,
+  topic,
   onClose,
 }: {
   workflowKey: string;
+  /** When set, the trigger targets this topic instead of a single subscriber. */
+  topic?: string;
   onClose: () => void;
 }) {
   const [payloadError, setPayloadError] = useState('');
@@ -31,7 +34,7 @@ export function SendTestModal({
   });
 
   return (
-    <Modal open onClose={onClose} title={`Send test — ${workflowKey}`}>
+    <Modal open onClose={onClose} title={`Send ${topic ? `to topic "${topic}"` : 'test'} — ${workflowKey}`}>
       {result ? (
         <div className="space-y-3">
           <p className="text-t2">
@@ -66,38 +69,53 @@ export function SendTestModal({
               }
             }
             setPayloadError('');
-            const to: Record<string, string> = {
-              subscriberId: String(form.get('subscriberId') || 'test-user'),
-            };
-            const email = String(form.get('email') ?? '').trim();
-            const phone = String(form.get('phone') ?? '').trim();
-            if (email) to.email = email;
-            if (phone) to.phone = phone;
+            let to: Array<Record<string, string>>;
+            if (topic) {
+              to = [{ topic }];
+            } else {
+              const recipient: Record<string, string> = {
+                subscriberId: String(form.get('subscriberId') || 'test-user'),
+              };
+              const email = String(form.get('email') ?? '').trim();
+              const phone = String(form.get('phone') ?? '').trim();
+              if (email) recipient.email = email;
+              if (phone) recipient.phone = phone;
+              to = [recipient];
+            }
             const transactionId = String(form.get('transactionId') ?? '').trim();
             send.mutate({
               workflowKey,
-              to: [to],
+              to,
               payload,
               ...(transactionId ? { transactionId } : {}),
             });
           }}
         >
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Subscriber ID">
-              <Input name="subscriberId" defaultValue="test-user" className="font-mono" />
-            </Field>
-            <Field label="Email">
-              <Input name="email" type="email" defaultValue="test@example.com" />
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Phone (optional)">
-              <Input name="phone" placeholder="+15550001111" />
-            </Field>
-            <Field label="Transaction ID (optional)" hint="Reuse one to test idempotency">
-              <Input name="transactionId" className="font-mono" placeholder="auto-generated" />
-            </Field>
-          </div>
+          {!topic && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Subscriber ID">
+                  <Input name="subscriberId" defaultValue="test-user" className="font-mono" />
+                </Field>
+                <Field label="Email">
+                  <Input name="email" type="email" defaultValue="test@example.com" />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Phone (optional)">
+                  <Input name="phone" placeholder="+15550001111" />
+                </Field>
+                <Field label="Transaction ID (optional)" hint="Reuse one to test idempotency">
+                  <Input name="transactionId" className="font-mono" placeholder="auto-generated" />
+                </Field>
+              </div>
+            </>
+          )}
+          {topic && (
+            <p className="text-[12px] text-t2">
+              This sends the workflow to <Mono>every member</Mono> of the topic.
+            </p>
+          )}
           <Field label="Payload (JSON)" hint="Variables available to your {{templates}}">
             <textarea
               name="payload"

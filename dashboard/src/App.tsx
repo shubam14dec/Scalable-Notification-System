@@ -9,6 +9,7 @@ import WorkflowEditorPage from './pages/WorkflowEditor';
 import MessageDetailPage from './pages/MessageDetail';
 import AnalyticsPage from './pages/Analytics';
 import SubscribersPage from './pages/Subscribers';
+import TopicsPage, { TopicDetailPage } from './pages/Topics';
 import IntegrationsPage from './pages/Integrations';
 import ApiKeysPage from './pages/ApiKeys';
 import InboxPreviewPage from './pages/InboxPreview';
@@ -38,6 +39,8 @@ export default function App() {
           <Route path="/workflows/:key" element={<WorkflowEditorPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/subscribers" element={<SubscribersPage />} />
+          <Route path="/topics" element={<TopicsPage />} />
+          <Route path="/topics/:key" element={<TopicDetailPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/keys" element={<ApiKeysPage />} />
           <Route path="/inbox-preview" element={<InboxPreviewPage />} />

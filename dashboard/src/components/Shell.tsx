@@ -11,6 +11,7 @@ import {
   LogOut,
   Moon,
   Sun,
+  Tag,
   Users,
   Workflow,
 } from 'lucide-react';
@@ -21,6 +22,7 @@ const NAV = [
   { to: '/activity', label: 'Activity', icon: Activity },
   { to: '/workflows', label: 'Workflows', icon: Workflow },
   { to: '/subscribers', label: 'Subscribers', icon: Users },
+  { to: '/topics', label: 'Topics', icon: Tag },
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/integrations', label: 'Integrations', icon: Blocks },
   { to: '/inbox-preview', label: 'Inbox preview', icon: Bell },

@@ -19,8 +19,11 @@ export interface Recipient {
 
 export type Priority = 'p0' | 'p1' | 'p2';
 
+/** Direct recipient, or a topic reference ({ topic: "beta-users" }). */
+export type TriggerRecipient = Recipient | { topic: string };
+
 export interface TriggerOptions {
-  to: Recipient[];
+  to: TriggerRecipient[];
   payload?: Record<string, unknown>;
   priority?: Priority;
   /** Provide your own id to make the trigger idempotent across retries. */
@@ -103,6 +106,26 @@ export class NotifyClient {
   readonly subscribers = {
     upsert: (subscriber: Recipient) =>
       this.request<{ id: string; subscriberId: string }>('PUT', '/v1/subscribers', subscriber),
+  };
+
+  readonly topics = {
+    upsert: (key: string, name: string) =>
+      this.request<{ id: string; key: string }>('PUT', '/v1/topics', { key, name }),
+    list: () => this.request<{ topics: unknown[] }>('GET', '/v1/topics'),
+    addSubscribers: (key: string, subscriberIds: string[]) =>
+      this.request<{ added: number }>(
+        'POST',
+        `/v1/topics/${encodeURIComponent(key)}/subscribers`,
+        { subscriberIds },
+      ),
+    removeSubscribers: (key: string, subscriberIds: string[]) =>
+      this.request<{ removed: number }>(
+        'DELETE',
+        `/v1/topics/${encodeURIComponent(key)}/subscribers`,
+        { subscriberIds },
+      ),
+    delete: (key: string) =>
+      this.request<{ deleted: boolean }>('DELETE', `/v1/topics/${encodeURIComponent(key)}`),
   };
 
   readonly events = {

@@ -17,6 +17,7 @@ import { registerBroadcastRoutes } from './routes/broadcast';
 import { registerAuthRoutes } from './routes/auth';
 import { registerAccountRoutes } from './routes/account';
 import { registerIntegrationRoutes } from './routes/integrations';
+import { registerTopicRoutes } from './routes/topics';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -45,6 +46,7 @@ async function main() {
   registerAuthRoutes(app);
   registerAccountRoutes(app);
   registerIntegrationRoutes(app);
+  registerTopicRoutes(app);
   registerTriggerRoutes(app);
   registerAdminRoutes(app);
   registerEventRoutes(app);

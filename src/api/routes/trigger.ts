@@ -6,6 +6,7 @@ import { tenantRateLimit } from '../rate-limit';
 import { redis } from '../../shared/redis';
 import { getQueue, QUEUE, PRIORITIES } from '../../shared/queues';
 import { getWorkflow, insertEvent, getEventByTransaction } from '../../db/repositories';
+import { getTopicByKey } from '../../db/topics.repo';
 import { logExec } from '../../core/execution-log';
 import { triggersTotal } from '../../shared/metrics';
 import { traceCarrier, withSpan } from '../../shared/tracing';
@@ -17,9 +18,11 @@ const RecipientSchema = z.object({
   pushToken: z.string().max(4096).optional(),
 });
 
+const TopicRecipientSchema = z.object({ topic: z.string().min(1).max(255) });
+
 const TriggerSchema = z.object({
   workflowKey: z.string().min(1).max(255),
-  to: z.array(RecipientSchema).min(1).max(1000),
+  to: z.array(z.union([RecipientSchema, TopicRecipientSchema])).min(1).max(1000),
   payload: z.record(z.unknown()).default({}),
   priority: z.enum(PRIORITIES).default('p1'),
   transactionId: z.string().min(1).max(255).optional(),
@@ -46,6 +49,17 @@ export function registerTriggerRoutes(app: FastifyInstance) {
       const workflow = await getWorkflow(tenant.id, body.workflowKey);
       if (!workflow) {
         return reply.code(404).send({ error: `unknown workflow "${body.workflowKey}"` });
+      }
+
+      // Validate topic references up front — a typo'd topic should 404 the
+      // request, not silently deliver to nobody.
+      const topicKeys = [
+        ...new Set(body.to.filter((r): r is { topic: string } => 'topic' in r).map((r) => r.topic)),
+      ];
+      for (const key of topicKeys) {
+        if (!(await getTopicByKey(tenant.id, key))) {
+          return reply.code(404).send({ error: `unknown topic "${key}"` });
+        }
       }
 
       const transactionId = body.transactionId ?? randomUUID();
