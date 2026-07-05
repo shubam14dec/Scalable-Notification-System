@@ -10,6 +10,7 @@ import MessageDetailPage from './pages/MessageDetail';
 import AnalyticsPage from './pages/Analytics';
 import SubscribersPage from './pages/Subscribers';
 import TopicsPage, { TopicDetailPage } from './pages/Topics';
+import TemplatesPage, { TemplateEditorPage } from './pages/Templates';
 import IntegrationsPage from './pages/Integrations';
 import ApiKeysPage from './pages/ApiKeys';
 import InboxPreviewPage from './pages/InboxPreview';
@@ -41,6 +42,9 @@ export default function App() {
           <Route path="/subscribers" element={<SubscribersPage />} />
           <Route path="/topics" element={<TopicsPage />} />
           <Route path="/topics/:key" element={<TopicDetailPage />} />
+          <Route path="/templates" element={<TemplatesPage />} />
+          <Route path="/templates/new" element={<TemplateEditorPage />} />
+          <Route path="/templates/:key" element={<TemplateEditorPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/keys" element={<ApiKeysPage />} />
           <Route path="/inbox-preview" element={<InboxPreviewPage />} />

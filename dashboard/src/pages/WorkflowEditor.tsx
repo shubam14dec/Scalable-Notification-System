@@ -16,6 +16,7 @@ interface Step {
   channel: string;
   subject?: string;
   body: string;
+  templateKey?: string;
   delaySeconds?: number;
   digest?: { windowSeconds: number; itemTemplate?: string };
   conditions?: Condition[];
@@ -32,6 +33,7 @@ function StepCard({
   step,
   index,
   count,
+  templates,
   onChange,
   onRemove,
   onMove,
@@ -39,6 +41,7 @@ function StepCard({
   step: Step;
   index: number;
   count: number;
+  templates: string[];
   onChange: (next: Step) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
@@ -80,8 +83,40 @@ function StepCard({
       </div>
 
       <div className="space-y-3">
+        {step.channel === 'email' && templates.length > 0 && (
+          <Field label="Content source">
+            <select
+              aria-label="Template"
+              className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1"
+              value={step.templateKey ?? ''}
+              onChange={(e) =>
+                onChange({
+                  ...step,
+                  templateKey: e.target.value || undefined,
+                  digest: e.target.value ? undefined : step.digest,
+                })
+              }
+            >
+              <option value="" className="bg-surface">
+                inline text (below)
+              </option>
+              {templates.map((t) => (
+                <option key={t} value={t} className="bg-surface">
+                  template: {t}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         {step.channel !== 'sms' && (
-          <Field label="Subject" hint="Supports {{variables}} from the trigger payload">
+          <Field
+            label="Subject"
+            hint={
+              step.templateKey
+                ? "Optional — overrides the template's subject"
+                : 'Supports {{variables}} from the trigger payload'
+            }
+          >
             <Input
               value={step.subject ?? ''}
               onChange={(e) => onChange({ ...step, subject: e.target.value })}
@@ -89,15 +124,17 @@ function StepCard({
             />
           </Field>
         )}
-        <Field label="Body">
-          <textarea
-            rows={3}
-            className="w-full rounded-md border border-bd bg-transparent p-2.5 text-[13px] text-t1 placeholder:text-t3 hover:border-bd-strong"
-            value={step.body}
-            onChange={(e) => onChange({ ...step, body: e.target.value })}
-            placeholder="Hi {{name}}, thanks for joining."
-          />
-        </Field>
+        {!step.templateKey && (
+          <Field label="Body">
+            <textarea
+              rows={3}
+              className="w-full rounded-md border border-bd bg-transparent p-2.5 text-[13px] text-t1 placeholder:text-t3 hover:border-bd-strong"
+              value={step.body}
+              onChange={(e) => onChange({ ...step, body: e.target.value })}
+              placeholder="Hi {{name}}, thanks for joining."
+            />
+          </Field>
+        )}
         {step.digest && !step.body.includes('digest_items') && (
           <p className="text-[12px]" style={{ color: 'var(--warn)' }}>
             Digest is on, but the body never uses {'{{digest_items}}'} or {'{{digest_count}}'} —
@@ -297,6 +334,12 @@ export default function WorkflowEditorPage() {
     enabled: !isNew,
   });
 
+  const { data: templatesData } = useQuery({
+    queryKey: ['templates'],
+    queryFn: () => api<{ templates: Array<{ key: string }> }>('/v1/templates'),
+  });
+  const templateKeys = templatesData?.templates.map((t) => t.key) ?? [];
+
   useEffect(() => {
     if (data) {
       setKey(data.workflow.key);
@@ -313,6 +356,7 @@ export default function WorkflowEditorPage() {
         body: s.body,
         delaySeconds: s.delaySeconds || undefined,
         digest: s.digest?.windowSeconds ? s.digest : undefined,
+        templateKey: s.channel === 'email' ? s.templateKey : undefined,
         conditions:
           s.conditions && s.conditions.filter((c) => c.field.trim()).length > 0
             ? s.conditions
@@ -351,7 +395,13 @@ export default function WorkflowEditorPage() {
             <Button onClick={() => navigate('/workflows')}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={!key || !name || steps.length === 0 || steps.some((s) => !s.body) || save.isPending}
+              disabled={
+                !key ||
+                !name ||
+                steps.length === 0 ||
+                steps.some((s) => !s.body && !s.templateKey) ||
+                save.isPending
+              }
               onClick={() => save.mutate()}
             >
               {save.isPending ? 'Saving…' : 'Save workflow'}
@@ -382,6 +432,7 @@ export default function WorkflowEditorPage() {
             step={step}
             index={i}
             count={steps.length}
+            templates={templateKeys}
             onChange={(next) => setSteps(steps.map((s, j) => (j === i ? next : s)))}
             onRemove={() => setSteps(steps.filter((_, j) => j !== i))}
             onMove={(dir) => {

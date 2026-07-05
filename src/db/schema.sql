@@ -138,6 +138,31 @@ create index if not exists messages_inbox_idx
   on messages (tenant_id, subscriber_id, created_at desc)
   where channel = 'inapp';
 
+-- Email templates: MJML + Handlebars, VERSIONED. Every save snapshots a new
+-- version; messages pin the version they were fanned out with, so an edit
+-- never changes an email that's already in flight.
+create table if not exists templates (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants(id),
+  key             text not null,
+  name            text not null,
+  subject         text not null,
+  mjml            text not null,
+  current_version int  not null default 1,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  unique (tenant_id, key)
+);
+
+create table if not exists template_versions (
+  template_id uuid not null references templates(id) on delete cascade,
+  version     int  not null,
+  subject     text not null,
+  mjml        text not null,
+  created_at  timestamptz not null default now(),
+  primary key (template_id, version)
+);
+
 -- Topics: named subscriber segments ("beta-users", "org:acme"). Triggers can
 -- target a topic instead of enumerating recipients; fan-out pages the
 -- membership with the same backpressure machinery broadcast uses.

@@ -12,15 +12,30 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
-/** Plain-text body wrapped as minimal HTML, with the open-tracking pixel. */
+/**
+ * HTML body for an email: pre-rendered template HTML when present,
+ * otherwise the plain-text body wrapped minimally — with the open-tracking
+ * pixel injected either way.
+ */
 export function toHtmlBody(message: RenderedMessage): string | undefined {
+  const pixel = message.pixelUrl
+    ? `<img src="${message.pixelUrl}" width="1" height="1" alt="" style="display:block"/>`
+    : '';
+
+  if (message.htmlBody) {
+    if (!pixel) return message.htmlBody;
+    return /<\/body>/i.test(message.htmlBody)
+      ? message.htmlBody.replace(/<\/body>/i, `${pixel}</body>`)
+      : message.htmlBody + pixel;
+  }
+
   if (!message.pixelUrl) return undefined;
   return (
     `<!doctype html><html><body>` +
     `<div style="white-space:pre-wrap;font-family:system-ui,sans-serif;font-size:14px;line-height:1.5">` +
     escapeHtml(message.body) +
     `</div>` +
-    `<img src="${message.pixelUrl}" width="1" height="1" alt="" style="display:block"/>` +
+    pixel +
     `</body></html>`
   );
 }

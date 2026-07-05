@@ -18,6 +18,8 @@ import {
 } from '../../db/repositories';
 import { render } from '../../core/render';
 import { evaluateConditions } from '../../core/conditions';
+import { renderSubject } from '../../core/email-template';
+import { getTemplate, type TemplateRow } from '../../db/templates.repo';
 import { logExec } from '../../core/execution-log';
 import { traceCarrier, withSpan, type TraceCarrier } from '../../shared/tracing';
 
@@ -103,6 +105,15 @@ async function fanOutBatch(
   }
   const suppressed = await suppressedSet(event.tenant_id, pairs);
 
+  // Resolve referenced templates once per batch; the current version is
+  // pinned into each message so later edits can't change in-flight sends.
+  const templates = new Map<string, TemplateRow | null>();
+  for (const step of workflow.steps) {
+    if (step.templateKey && !templates.has(step.templateKey)) {
+      templates.set(step.templateKey, await getTemplate(event.tenant_id, step.templateKey));
+    }
+  }
+
   const planned: PlannedMessage[] = [];
 
   for (const sub of subscribers) {
@@ -186,6 +197,34 @@ async function fanOutBatch(
 
       if (step.digest) {
         await handleDigestStep(event, sub, step, stepIndex, to, vars);
+        continue;
+      }
+
+      // Template-based email step: pin key+version+vars; HTML renders at
+      // delivery (keeps message rows small — MJML output is big).
+      if (step.templateKey && step.channel === 'email') {
+        const template = templates.get(step.templateKey);
+        if (!template) {
+          planned.push({
+            ...base,
+            subscriberExternalId: sub.external_id,
+            status: 'skipped',
+            error: `unknown template "${step.templateKey}"`,
+          });
+          continue;
+        }
+        planned.push({
+          ...base,
+          subscriberExternalId: sub.external_id,
+          content: {
+            subject: renderSubject(step.subject || template.subject, vars),
+            body: '',
+            to,
+            skipIfStep: step.skipIfStep,
+            template: { key: template.key, version: template.current_version, vars },
+          },
+          delayMs: step.delaySeconds ? step.delaySeconds * 1000 : undefined,
+        });
         continue;
       }
 

@@ -5,6 +5,8 @@ import { sendWithFailover } from '../../providers/registry';
 import { PermanentError } from '../../shared/errors';
 import { redis } from '../../shared/redis';
 import { render } from '../../core/render';
+import { renderMjmlTemplate } from '../../core/email-template';
+import { getTemplateVersion } from '../../db/templates.repo';
 import { logExec } from '../../core/execution-log';
 import { deliveriesTotal, deliverySeconds } from '../../shared/metrics';
 import { withSpan, type TraceCarrier } from '../../shared/tracing';
@@ -130,6 +132,23 @@ async function deliver(
 
   let subject = message.content.subject;
   let body = message.content.body;
+  let htmlBody: string | undefined;
+
+  // Template-based email: render the pinned MJML version now.
+  if (message.content.template) {
+    const tpl = message.content.template;
+    const source = await getTemplateVersion(message.tenant_id, tpl.key, tpl.version);
+    if (!source) {
+      await updateMessage(message.id, {
+        status: 'failed',
+        error: `template ${tpl.key} v${tpl.version} no longer exists`,
+      });
+      throw new UnrecoverableError(`template ${tpl.key} v${tpl.version} missing`);
+    }
+    const rendered = await renderMjmlTemplate(source.mjml, tpl.vars);
+    htmlBody = rendered.html;
+    body = rendered.text;
+  }
 
   if (message.content.digest && job.data.digestKey) {
     const rendered = await renderDigest(message, job.data.digestKey);
@@ -151,6 +170,7 @@ async function deliver(
       to: message.content.to,
       subject,
       body,
+      htmlBody,
       // Email opens are tracked via a 1px pixel keyed by message id.
       pixelUrl:
         message.channel === 'email' ? `${env.publicUrl}/o/${message.id}.gif` : undefined,

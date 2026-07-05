@@ -40,7 +40,9 @@ export interface TriggerResult {
 export interface WorkflowStep {
   channel: 'email' | 'sms' | 'push' | 'inapp';
   subject?: string;
-  body: string;
+  body?: string;
+  /** Email steps: render this MJML template instead of an inline body. */
+  templateKey?: string;
   delaySeconds?: number;
   digest?: { windowSeconds: number; itemTemplate?: string };
   /** All must pass; evaluated over payload + subscriber at fan-out. */
@@ -114,6 +116,16 @@ export class NotifyClient {
   readonly subscribers = {
     upsert: (subscriber: Recipient) =>
       this.request<{ id: string; subscriberId: string }>('PUT', '/v1/subscribers', subscriber),
+  };
+
+  readonly templates = {
+    upsert: (template: { key: string; name: string; subject: string; mjml: string }) =>
+      this.request<{ key: string; version: number }>('PUT', '/v1/templates', template),
+    list: () => this.request<{ templates: unknown[] }>('GET', '/v1/templates'),
+    get: (key: string) =>
+      this.request<{ template: unknown }>('GET', `/v1/templates/${encodeURIComponent(key)}`),
+    delete: (key: string) =>
+      this.request<{ deleted: boolean }>('DELETE', `/v1/templates/${encodeURIComponent(key)}`),
   };
 
   readonly topics = {

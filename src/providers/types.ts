@@ -6,6 +6,8 @@ export interface RenderedMessage {
   to: { email?: string; phone?: string; pushToken?: string; inAppSubscriberId?: string };
   subject?: string;
   body: string;
+  /** Pre-rendered HTML (template emails). body is the plain-text fallback. */
+  htmlBody?: string;
   /** When set (email channel), providers embed this 1px open-tracking image. */
   pixelUrl?: string;
 }

@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticate } from '../auth';
 import { CHANNELS } from '../../shared/queues';
-import { upsertSubscriber, upsertWorkflow } from '../../db/repositories';
+import { upsertSubscriber, upsertWorkflow, type WorkflowStep } from '../../db/repositories';
+import { getTemplate } from '../../db/templates.repo';
 
 const SubscriberSchema = z.object({
   subscriberId: z.string().min(1).max(255),
@@ -19,7 +20,8 @@ const WorkflowSchema = z.object({
       z.object({
         channel: z.enum(CHANNELS),
         subject: z.string().max(998).optional(),
-        body: z.string().min(1).max(100_000),
+        body: z.string().max(100_000).optional(),
+        templateKey: z.string().max(255).optional(),
         delaySeconds: z.number().int().min(0).max(30 * 24 * 3600).optional(),
         digest: z
           .object({
@@ -46,6 +48,17 @@ const WorkflowSchema = z.object({
               .max(6),
           })
           .optional(),
+      })
+      .superRefine((step, ctx) => {
+        if (!step.templateKey && (!step.body || step.body.trim() === '')) {
+          ctx.addIssue({ code: 'custom', message: 'body is required unless templateKey is set' });
+        }
+        if (step.templateKey && step.channel !== 'email') {
+          ctx.addIssue({ code: 'custom', message: 'templateKey is only supported on email steps' });
+        }
+        if (step.templateKey && step.digest) {
+          ctx.addIssue({ code: 'custom', message: 'digest and templateKey cannot be combined' });
+        }
       }),
     )
     .min(1)
@@ -67,12 +80,17 @@ export function registerAdminRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
     }
-    const wf = await upsertWorkflow(
-      req.tenant.id,
-      parsed.data.key,
-      parsed.data.name,
-      parsed.data.steps,
-    );
+    // Referenced templates must exist — fail at authoring, not at send time.
+    for (const step of parsed.data.steps) {
+      if (step.templateKey && !(await getTemplate(req.tenant.id, step.templateKey))) {
+        return reply.code(400).send({ error: `unknown template "${step.templateKey}"` });
+      }
+    }
+    const steps: WorkflowStep[] = parsed.data.steps.map((s) => ({
+      ...s,
+      body: s.body ?? '',
+    })) as WorkflowStep[];
+    const wf = await upsertWorkflow(req.tenant.id, parsed.data.key, parsed.data.name, steps);
     return reply.code(200).send({ id: wf.id, key: wf.key });
   });
 }

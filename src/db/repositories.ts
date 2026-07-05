@@ -32,6 +32,11 @@ export interface WorkflowStep {
    * {{digest_count}} and {{digest_items}} (items rendered via itemTemplate).
    */
   digest?: { windowSeconds: number; itemTemplate?: string };
+  /**
+   * Email steps only: render this MJML template (by key) instead of the
+   * inline body. The template's current version is pinned at fan-out.
+   */
+  templateKey?: string;
   /** All must pass (evaluated at fan-out over payload + subscriber). */
   conditions?: StepCondition[];
   /**
@@ -94,6 +99,8 @@ export interface MessageRow {
       vars: Record<string, unknown>;
     };
     skipIfStep?: { stepIndex: number; statusIn: string[] };
+    /** Template-based email: rendered at delivery with the pinned version. */
+    template?: { key: string; version: number; vars: Record<string, unknown> };
   };
   provider: string | null;
   provider_message_id: string | null;
