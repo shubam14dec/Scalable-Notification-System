@@ -62,6 +62,7 @@ export default function InboxPreviewPage() {
             apiUrl=""
             wsUrl="ws://localhost:3001"
             theme={theme}
+            align="left"
           />
           <span className="text-[12px] text-t3">
             ← your app's bell, live for <Mono>{session.subscriberId}</Mono>. Fire a{' '}

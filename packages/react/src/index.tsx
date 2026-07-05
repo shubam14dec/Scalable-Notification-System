@@ -139,10 +139,16 @@ function timeAgo(iso: string): string {
 export interface NotificationInboxProps extends UseNotificationsOptions {
   theme?: 'dark' | 'light';
   title?: string;
+  /**
+   * Which side the panel opens toward. 'right' (default) aligns the panel's
+   * right edge with the bell — for bells in a top-right corner. Use 'left'
+   * when the bell sits near a left sidebar or inside a clipping container.
+   */
+  align?: 'left' | 'right';
 }
 
 export function NotificationInbox(props: NotificationInboxProps) {
-  const { theme = 'dark', title = 'Notifications' } = props;
+  const { theme = 'dark', title = 'Notifications', align = 'right' } = props;
   const { items, unread, connected, markAllRead } = useNotifications(props);
   const [open, setOpen] = useState(false);
   const c = palettes[theme];
@@ -203,7 +209,7 @@ export function NotificationInbox(props: NotificationInboxProps) {
           aria-label={title}
           style={{
             position: 'absolute',
-            right: 0,
+            ...(align === 'right' ? { right: 0 } : { left: 0 }),
             top: 42,
             width: 340,
             maxHeight: 420,
