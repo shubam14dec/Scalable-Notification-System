@@ -1,8 +1,48 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate } from '../auth';
-import { getEventByTransaction, messagesByTransaction } from '../../db/repositories';
+import {
+  getEventByTransaction,
+  listWorkflows,
+  listSubscribers,
+  messagesByTransaction,
+  recentActivity,
+} from '../../db/repositories';
 
 export function registerEventRoutes(app: FastifyInstance) {
+  /** Latest messages across the environment — the dashboard activity feed. */
+  app.get<{ Querystring: { limit?: string } }>(
+    '/v1/activity',
+    { preHandler: [authenticate] },
+    async (req) => {
+      const limit = Math.min(Number.parseInt(req.query.limit ?? '50', 10) || 50, 200);
+      return { activity: await recentActivity(req.tenant.id, limit) };
+    },
+  );
+
+  app.get('/v1/workflows', { preHandler: [authenticate] }, async (req) => ({
+    workflows: (await listWorkflows(req.tenant.id)).map(
+      (w: { id: string; key: string; name: string; steps: unknown[]; updated_at: string }) => ({
+        id: w.id,
+        key: w.key,
+        name: w.name,
+        stepCount: Array.isArray(w.steps) ? w.steps.length : 0,
+        channels: Array.isArray(w.steps)
+          ? [...new Set((w.steps as Array<{ channel: string }>).map((s) => s.channel))]
+          : [],
+        updatedAt: w.updated_at,
+      }),
+    ),
+  }));
+
+  app.get<{ Querystring: { limit?: string; search?: string } }>(
+    '/v1/subscribers',
+    { preHandler: [authenticate] },
+    async (req) => {
+      const limit = Math.min(Number.parseInt(req.query.limit ?? '100', 10) || 100, 500);
+      return { subscribers: await listSubscribers(req.tenant.id, limit, req.query.search) };
+    },
+  );
+
   /** Delivery status for one trigger: the event plus every per-channel message. */
   app.get<{ Params: { transactionId: string } }>(
     '/v1/events/:transactionId',

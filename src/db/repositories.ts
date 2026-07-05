@@ -518,6 +518,47 @@ export async function markInboxRead(
   return rowCount ?? 0;
 }
 
+// ---------- dashboard reads ----------
+
+export async function recentActivity(tenantId: string, limit = 50) {
+  const { rows } = await pool.query(
+    `select m.id, m.transaction_id, m.channel, m.status, m.priority, m.provider,
+            m.error, m.created_at, m.updated_at,
+            s.external_id as subscriber_id,
+            e.workflow_key
+     from messages m
+     join subscribers s on s.id = m.subscriber_id
+     join events e on e.id = m.event_id
+     where m.tenant_id = $1
+     order by m.created_at desc
+     limit $2`,
+    [tenantId, limit],
+  );
+  return rows;
+}
+
+export async function listWorkflows(tenantId: string) {
+  const { rows } = await pool.query(
+    `select id, key, name, steps, updated_at from workflows
+     where tenant_id = $1 order by updated_at desc`,
+    [tenantId],
+  );
+  return rows;
+}
+
+export async function listSubscribers(tenantId: string, limit = 100, search?: string) {
+  const { rows } = await pool.query(
+    `select external_id, email, phone, push_token is not null as has_push, created_at
+     from subscribers
+     where tenant_id = $1
+       and ($3::text is null or external_id ilike '%' || $3 || '%' or email ilike '%' || $3 || '%')
+     order by created_at desc
+     limit $2`,
+    [tenantId, limit, search ?? null],
+  );
+  return rows;
+}
+
 // ---------- execution logs (batch insert only) ----------
 
 export interface ExecLogEntry {

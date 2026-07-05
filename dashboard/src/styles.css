@@ -1,0 +1,121 @@
+@import '@fontsource/geist-sans/400.css';
+@import '@fontsource/geist-sans/500.css';
+@import '@fontsource/geist-sans/600.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
+@import 'tailwindcss';
+
+/* ------------------------------------------------------------------ */
+/* Tokens — the single source of truth (see .claude/skills/dashboard-design) */
+/* Dark is the default showcase; [data-theme=light] overrides.          */
+/* ------------------------------------------------------------------ */
+:root {
+  --bg: #0a0a0a;
+  --surface: #111111;
+  --elevated: #171717;
+  --bd: #262626;
+  --bd-strong: #3f3f3f;
+  --t1: #ededed;
+  --t2: #a1a1a1;
+  --t3: #6e6e6e;
+  --invert-bg: #ededed;
+  --invert-t: #0a0a0a;
+  --ok: #3dd68c;
+  --warn: #ffb224;
+  --err: #ff6369;
+  --info: #52a9ff;
+  --accent: #8b5cf6;
+  --focus: #52a9ff;
+  --overlay: rgba(0, 0, 0, 0.6);
+}
+
+:root[data-theme='light'] {
+  --bg: #ffffff;
+  --surface: #fafafa;
+  --elevated: #ffffff;
+  --bd: #eaeaea;
+  --bd-strong: #d4d4d4;
+  --t1: #171717;
+  --t2: #666666;
+  --t3: #8f8f8f;
+  --invert-bg: #171717;
+  --invert-t: #ffffff;
+  --ok: #009159;
+  --warn: #ad5700;
+  --err: #dc3d43;
+  --info: #0070f3;
+  --accent: #7c3aed;
+  --focus: #0070f3;
+  --overlay: rgba(0, 0, 0, 0.35);
+}
+
+@theme inline {
+  --color-app: var(--bg);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-bd: var(--bd);
+  --color-bd-strong: var(--bd-strong);
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+  --color-invert: var(--invert-bg);
+  --color-invert-t: var(--invert-t);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-info: var(--info);
+  --color-accent: var(--accent);
+  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'Cascadia Code', monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--t1);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Thin scrollbars that match the chrome */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bd-strong) transparent;
+}
