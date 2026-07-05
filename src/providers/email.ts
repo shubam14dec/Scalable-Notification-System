@@ -5,6 +5,26 @@ import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
 import type { ChannelProvider, RenderedMessage, SendResult } from './types';
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** Plain-text body wrapped as minimal HTML, with the open-tracking pixel. */
+export function toHtmlBody(message: RenderedMessage): string | undefined {
+  if (!message.pixelUrl) return undefined;
+  return (
+    `<!doctype html><html><body>` +
+    `<div style="white-space:pre-wrap;font-family:system-ui,sans-serif;font-size:14px;line-height:1.5">` +
+    escapeHtml(message.body) +
+    `</div>` +
+    `<img src="${message.pixelUrl}" width="1" height="1" alt="" style="display:block"/>` +
+    `</body></html>`
+  );
+}
+
 export interface SmtpConfig {
   host: string;
   port: number;
@@ -54,6 +74,7 @@ export class SmtpEmailProvider implements ChannelProvider {
         to: message.to.email,
         subject: message.subject ?? '(no subject)',
         text: message.body,
+        html: toHtmlBody(message),
       });
       return { providerMessageId: info.messageId ?? randomUUID() };
     } catch (err) {
@@ -93,7 +114,12 @@ export class SendGridEmailProvider implements ChannelProvider {
         personalizations: [{ to: [{ email: message.to.email }] }],
         from: { email: this.config.from },
         subject: message.subject ?? '(no subject)',
-        content: [{ type: 'text/plain', value: message.body }],
+        content: [
+          { type: 'text/plain', value: message.body },
+          ...(toHtmlBody(message)
+            ? [{ type: 'text/html', value: toHtmlBody(message) }]
+            : []),
+        ],
       }),
     });
     if (res.status === 202) {
@@ -135,6 +161,7 @@ export class ResendEmailProvider implements ChannelProvider {
         to: [message.to.email],
         subject: message.subject ?? '(no subject)',
         text: message.body,
+        html: toHtmlBody(message),
       }),
     });
     const body = (await res.json().catch(() => ({}))) as { id?: string; message?: string };

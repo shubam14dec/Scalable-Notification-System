@@ -1,5 +1,6 @@
 import { UnrecoverableError, type Job } from 'bullmq';
-import { getMessage, updateMessage } from '../../db/repositories';
+import { env } from '../../config/env';
+import { getMessage, messageByStep, updateMessage, type MessageRow } from '../../db/repositories';
 import { sendWithFailover } from '../../providers/registry';
 import { PermanentError } from '../../shared/errors';
 import { redis } from '../../shared/redis';
@@ -54,6 +55,21 @@ async function renderDigest(
   };
 }
 
+function siblingMatches(sibling: MessageRow, statusIn: string[]): boolean {
+  for (const wanted of statusIn) {
+    if (wanted === 'opened' && sibling.opened_at) return true;
+    if (wanted === 'read' && sibling.read_at) return true;
+    if (sibling.status === wanted) return true;
+  }
+  return false;
+}
+
+function describeState(sibling: MessageRow, statusIn: string[]): string {
+  if (statusIn.includes('opened') && sibling.opened_at) return 'opened';
+  if (statusIn.includes('read') && sibling.read_at) return 'read';
+  return sibling.status;
+}
+
 /**
  * Stage 3: actually deliver one message through the provider chain.
  *
@@ -91,6 +107,27 @@ async function deliver(
   message: NonNullable<Awaited<ReturnType<typeof getMessage>>>,
   span: import('@opentelemetry/api').Span,
 ): Promise<void> {
+  // Cross-step gate, checked NOW (after this step's delay): e.g. skip the
+  // reminder push when the email from step 0 was already opened.
+  const gate = message.content.skipIfStep;
+  if (gate && !job.data.digestKey) {
+    const sibling = await messageByStep(message.event_id, message.subscriber_id, gate.stepIndex);
+    if (sibling && siblingMatches(sibling, gate.statusIn)) {
+      await updateMessage(message.id, {
+        status: 'skipped',
+        error: `step ${gate.stepIndex} already ${describeState(sibling, gate.statusIn)}`,
+      });
+      logExec({
+        tenantId: message.tenant_id,
+        transactionId: message.transaction_id,
+        messageId: message.id,
+        level: 'info',
+        detail: `skipped by cross-step condition: step ${gate.stepIndex} is ${describeState(sibling, gate.statusIn)}`,
+      });
+      return;
+    }
+  }
+
   let subject = message.content.subject;
   let body = message.content.body;
 
@@ -114,6 +151,9 @@ async function deliver(
       to: message.content.to,
       subject,
       body,
+      // Email opens are tracked via a 1px pixel keyed by message id.
+      pixelUrl:
+        message.channel === 'email' ? `${env.publicUrl}/o/${message.id}.gif` : undefined,
     });
 
     await updateMessage(message.id, {

@@ -44,6 +44,9 @@ export const env = {
 
   wsPort: int('WS_PORT', 3001),
 
+  // Public base URL of the API — used in email open-tracking pixel links.
+  publicUrl: (process.env.PUBLIC_URL ?? 'http://localhost:3000').replace(/\/$/, ''),
+
   triggerConcurrency: int('TRIGGER_CONCURRENCY', 20),
   fanoutConcurrency: int('FANOUT_CONCURRENCY', 20),
   statusConcurrency: int('STATUS_CONCURRENCY', 10),

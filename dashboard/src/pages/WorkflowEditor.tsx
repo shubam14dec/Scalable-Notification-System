@@ -6,13 +6,24 @@ import { api } from '../lib/api';
 import { Button, Card, Field, Input, PageHeader, Skeleton } from '../ui';
 import { SendTestModal } from '../components/SendTest';
 
+interface Condition {
+  field: string;
+  op: string;
+  value?: unknown;
+}
+
 interface Step {
   channel: string;
   subject?: string;
   body: string;
   delaySeconds?: number;
   digest?: { windowSeconds: number; itemTemplate?: string };
+  conditions?: Condition[];
+  skipIfStep?: { stepIndex: number; statusIn: string[] };
 }
+
+const OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'exists', 'not_exists'];
+const GATE_STATES = ['opened', 'read', 'delivered', 'sent'];
 
 const CHANNELS = ['email', 'inapp', 'sms', 'push'];
 const NEW_STEP: Step = { channel: 'email', subject: '', body: '' };
@@ -131,6 +142,138 @@ function StepCard({
             />
           </Field>
         )}
+
+        {/* Conditions: send this step only when all rows pass */}
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-[12px] font-medium text-t2">Send only if (all must pass)</span>
+            <Button
+              variant="ghost"
+              type="button"
+              onClick={() =>
+                onChange({
+                  ...step,
+                  conditions: [...(step.conditions ?? []), { field: '', op: 'eq', value: '' }],
+                })
+              }
+            >
+              <Plus className="h-3.5 w-3.5" /> condition
+            </Button>
+          </div>
+          {(step.conditions ?? []).map((c, ci) => (
+            <div key={ci} className="mb-1.5 flex items-center gap-1.5">
+              <Input
+                className="flex-1 font-mono"
+                placeholder="payload field, e.g. plan"
+                value={c.field}
+                onChange={(e) => {
+                  const next = [...step.conditions!];
+                  next[ci] = { ...c, field: e.target.value };
+                  onChange({ ...step, conditions: next });
+                }}
+              />
+              <select
+                aria-label="Operator"
+                className="h-8 rounded-md border border-bd bg-transparent px-1.5 text-[12px] text-t1"
+                value={c.op}
+                onChange={(e) => {
+                  const next = [...step.conditions!];
+                  next[ci] = { ...c, op: e.target.value };
+                  onChange({ ...step, conditions: next });
+                }}
+              >
+                {OPS.map((op) => (
+                  <option key={op} value={op} className="bg-surface">
+                    {op}
+                  </option>
+                ))}
+              </select>
+              {!['exists', 'not_exists'].includes(c.op) && (
+                <Input
+                  className="flex-1 font-mono"
+                  placeholder="value"
+                  value={String(c.value ?? '')}
+                  onChange={(e) => {
+                    const next = [...step.conditions!];
+                    next[ci] = { ...c, value: e.target.value };
+                    onChange({ ...step, conditions: next });
+                  }}
+                />
+              )}
+              <Button
+                variant="ghost"
+                type="button"
+                aria-label="Remove condition"
+                onClick={() =>
+                  onChange({ ...step, conditions: step.conditions!.filter((_, j) => j !== ci) })
+                }
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        {/* Cross-step gate: only meaningful for steps after the first */}
+        {index > 0 && (
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-[12px] text-t2">
+              <input
+                type="checkbox"
+                checked={Boolean(step.skipIfStep)}
+                onChange={(e) =>
+                  onChange({
+                    ...step,
+                    skipIfStep: e.target.checked
+                      ? { stepIndex: 0, statusIn: ['opened'] }
+                      : undefined,
+                  })
+                }
+              />
+              Skip if step
+            </label>
+            {step.skipIfStep && (
+              <>
+                <select
+                  aria-label="Referenced step"
+                  className="h-7 rounded-md border border-bd bg-transparent px-1.5 text-[12px] text-t1"
+                  value={step.skipIfStep.stepIndex}
+                  onChange={(e) =>
+                    onChange({
+                      ...step,
+                      skipIfStep: { ...step.skipIfStep!, stepIndex: Number(e.target.value) },
+                    })
+                  }
+                >
+                  {Array.from({ length: index }, (_, s) => (
+                    <option key={s} value={s} className="bg-surface">
+                      {s + 1}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[12px] text-t2">is already</span>
+                <select
+                  aria-label="State"
+                  className="h-7 rounded-md border border-bd bg-transparent px-1.5 text-[12px] text-t1"
+                  value={step.skipIfStep.statusIn[0]}
+                  onChange={(e) =>
+                    onChange({
+                      ...step,
+                      skipIfStep: { ...step.skipIfStep!, statusIn: [e.target.value] },
+                    })
+                  }
+                >
+                  {GATE_STATES.map((s) => (
+                    <option key={s} value={s} className="bg-surface">
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[11px] text-t3">(checked after this step's delay)</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </Card>
   );
@@ -164,12 +307,28 @@ export default function WorkflowEditorPage() {
 
   const save = useMutation({
     mutationFn: () => {
-      const cleaned = steps.map((s) => ({
+      const cleaned = steps.map((s, si) => ({
         channel: s.channel,
         subject: s.subject?.trim() || undefined,
         body: s.body,
         delaySeconds: s.delaySeconds || undefined,
         digest: s.digest?.windowSeconds ? s.digest : undefined,
+        conditions:
+          s.conditions && s.conditions.filter((c) => c.field.trim()).length > 0
+            ? s.conditions
+                .filter((c) => c.field.trim())
+                .map((c) => ({
+                  field: c.field.trim(),
+                  op: c.op,
+                  // Numbers compare numerically; everything else stays a string.
+                  value: ['exists', 'not_exists'].includes(c.op)
+                    ? undefined
+                    : /^-?\d+(\.\d+)?$/.test(String(c.value))
+                      ? Number(c.value)
+                      : c.value,
+                }))
+            : undefined,
+        skipIfStep: si > 0 && s.skipIfStep ? s.skipIfStep : undefined,
       }));
       return api('/v1/workflows', { method: 'PUT', body: { key, name, steps: cleaned } });
     },

@@ -17,6 +17,7 @@ import {
   type WorkflowStep,
 } from '../../db/repositories';
 import { render } from '../../core/render';
+import { evaluateConditions } from '../../core/conditions';
 import { logExec } from '../../core/execution-log';
 import { traceCarrier, withSpan, type TraceCarrier } from '../../shared/tracing';
 
@@ -136,6 +137,24 @@ async function fanOutBatch(
         continue;
       }
 
+      // Step conditions: evaluated over payload + subscriber attributes.
+      if (
+        step.conditions &&
+        step.conditions.length > 0 &&
+        !evaluateConditions(step.conditions, {
+          ...event.payload,
+          subscriber: { id: sub.external_id, email: sub.email, phone: sub.phone },
+        })
+      ) {
+        planned.push({
+          ...base,
+          subscriberExternalId: sub.external_id,
+          status: 'skipped',
+          error: 'step conditions not met',
+        });
+        continue;
+      }
+
       const to = addressFor(step, sub);
       if (!to) {
         planned.push({
@@ -177,6 +196,7 @@ async function fanOutBatch(
           subject: step.subject ? render(step.subject, vars) : undefined,
           body: render(step.body, vars),
           to,
+          skipIfStep: step.skipIfStep,
         },
         delayMs: step.delaySeconds ? step.delaySeconds * 1000 : undefined,
       });

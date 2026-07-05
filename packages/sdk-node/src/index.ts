@@ -43,6 +43,14 @@ export interface WorkflowStep {
   body: string;
   delaySeconds?: number;
   digest?: { windowSeconds: number; itemTemplate?: string };
+  /** All must pass; evaluated over payload + subscriber at fan-out. */
+  conditions?: Array<{
+    field: string;
+    op: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'exists' | 'not_exists';
+    value?: unknown;
+  }>;
+  /** Skip at delivery time if an earlier step reached one of these states. */
+  skipIfStep?: { stepIndex: number; statusIn: string[] };
 }
 
 export class NotifyError extends Error {

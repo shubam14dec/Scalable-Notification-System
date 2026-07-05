@@ -27,6 +27,25 @@ const WorkflowSchema = z.object({
             itemTemplate: z.string().max(1000).optional(),
           })
           .optional(),
+        conditions: z
+          .array(
+            z.object({
+              field: z.string().min(1).max(255),
+              op: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'exists', 'not_exists']),
+              value: z.unknown().optional(),
+            }),
+          )
+          .max(20)
+          .optional(),
+        skipIfStep: z
+          .object({
+            stepIndex: z.number().int().min(0).max(19),
+            statusIn: z
+              .array(z.enum(['opened', 'read', 'delivered', 'sent', 'failed', 'skipped']))
+              .min(1)
+              .max(6),
+          })
+          .optional(),
       }),
     )
     .min(1)

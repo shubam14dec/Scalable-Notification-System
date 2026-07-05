@@ -18,6 +18,8 @@ export interface Subscriber {
   preferences: { channels?: Partial<Record<Channel, boolean>> };
 }
 
+import type { StepCondition } from '../core/conditions';
+
 export interface WorkflowStep {
   channel: Channel;
   subject?: string;
@@ -30,6 +32,16 @@ export interface WorkflowStep {
    * {{digest_count}} and {{digest_items}} (items rendered via itemTemplate).
    */
   digest?: { windowSeconds: number; itemTemplate?: string };
+  /** All must pass (evaluated at fan-out over payload + subscriber). */
+  conditions?: StepCondition[];
+  /**
+   * Cross-step gate, checked at DELIVERY time (i.e. after this step's
+   * delay): skip if the referenced earlier step's message reached one of
+   * these states. 'opened' and 'read' match opened_at/read_at timestamps.
+   * The classic flow: email step 0, then push step 1 with delaySeconds
+   * 3600 + skipIfStep { stepIndex: 0, statusIn: ['opened'] }.
+   */
+  skipIfStep?: { stepIndex: number; statusIn: string[] };
 }
 
 export interface Workflow {
@@ -81,11 +93,40 @@ export interface MessageRow {
       itemTemplate?: string;
       vars: Record<string, unknown>;
     };
+    skipIfStep?: { stepIndex: number; statusIn: string[] };
   };
   provider: string | null;
   provider_message_id: string | null;
   status: string;
   attempts: number;
+  opened_at: string | null;
+  read_at: string | null;
+}
+
+/** Sibling message of the same event+subscriber at another step. */
+export async function messageByStep(
+  eventId: string,
+  subscriberId: string,
+  stepIndex: number,
+): Promise<MessageRow | null> {
+  const { rows } = await pool.query(
+    `select * from messages
+     where event_id = $1 and subscriber_id = $2 and step_index = $3
+     limit 1`,
+    [eventId, subscriberId, stepIndex],
+  );
+  return rows[0] ?? null;
+}
+
+/** Open-tracking pixel hit. Returns the message (first open only logs once). */
+export async function markMessageOpened(messageId: string): Promise<MessageRow | null> {
+  const { rows } = await pool.query(
+    `update messages set opened_at = coalesce(opened_at, now()), updated_at = now()
+     where id = $1
+     returning *, (xmax != 0) as _updated`,
+    [messageId],
+  );
+  return rows[0] ?? null;
 }
 
 // ---------- tenants ----------

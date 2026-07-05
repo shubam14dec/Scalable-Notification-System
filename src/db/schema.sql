@@ -132,6 +132,7 @@ create index if not exists messages_provider_msg_idx
 
 -- In-app inbox additions (idempotent for databases created before them).
 alter table messages add column if not exists read_at timestamptz;
+alter table messages add column if not exists opened_at timestamptz;
 alter table events add column if not exists is_broadcast boolean not null default false;
 create index if not exists messages_inbox_idx
   on messages (tenant_id, subscriber_id, created_at desc)

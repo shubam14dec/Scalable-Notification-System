@@ -6,6 +6,8 @@ export interface RenderedMessage {
   to: { email?: string; phone?: string; pushToken?: string; inAppSubscriberId?: string };
   subject?: string;
   body: string;
+  /** When set (email channel), providers embed this 1px open-tracking image. */
+  pixelUrl?: string;
 }
 
 export interface SendResult {
