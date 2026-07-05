@@ -559,6 +559,56 @@ export async function listSubscribers(tenantId: string, limit = 100, search?: st
   return rows;
 }
 
+export async function logsByTransaction(tenantId: string, transactionId: string) {
+  const { rows } = await pool.query(
+    `select level, detail, message_id, created_at from execution_logs
+     where tenant_id = $1 and transaction_id = $2
+     order by created_at, id
+     limit 500`,
+    [tenantId, transactionId],
+  );
+  return rows;
+}
+
+/** Delivery analytics over the last N days, straight from the messages table. */
+export async function analyticsSummary(tenantId: string, days: number) {
+  const params = [tenantId, days];
+  const [byStatus, byChannel, byProvider, byDay] = await Promise.all([
+    pool.query(
+      `select status, count(*)::int as count from messages
+       where tenant_id = $1 and created_at > now() - make_interval(days => $2)
+       group by status order by count desc`,
+      params,
+    ),
+    pool.query(
+      `select channel, status, count(*)::int as count from messages
+       where tenant_id = $1 and created_at > now() - make_interval(days => $2)
+       group by channel, status order by channel`,
+      params,
+    ),
+    pool.query(
+      `select coalesce(provider, '—') as provider, status, count(*)::int as count from messages
+       where tenant_id = $1 and created_at > now() - make_interval(days => $2)
+         and status in ('sent', 'delivered', 'failed', 'bounced')
+       group by provider, status order by provider`,
+      params,
+    ),
+    pool.query(
+      `select date_trunc('day', created_at)::date as day, count(*)::int as count
+       from messages
+       where tenant_id = $1 and created_at > now() - make_interval(days => $2)
+       group by day order by day`,
+      params,
+    ),
+  ]);
+  return {
+    byStatus: byStatus.rows,
+    byChannel: byChannel.rows,
+    byProvider: byProvider.rows,
+    byDay: byDay.rows,
+  };
+}
+
 // ---------- execution logs (batch insert only) ----------
 
 export interface ExecLogEntry {

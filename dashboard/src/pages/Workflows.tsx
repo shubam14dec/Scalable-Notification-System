@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
-import { Card, EmptyState, Mono, PageHeader, Skeleton, td, th } from '../ui';
+import { Button, Card, EmptyState, Mono, PageHeader, Skeleton, td, th } from '../ui';
 import { timeAgo } from './Activity';
 
 interface WorkflowRow {
@@ -17,6 +18,7 @@ const WORKFLOW_SNIPPET = `curl -X PUT https://your-api/v1/workflows \\
   -d '{"key":"welcome","name":"Welcome flow","steps":[{"channel":"email","subject":"Hi {{name}}","body":"Welcome aboard."}]}'`;
 
 export default function WorkflowsPage() {
+  const navigate = useNavigate();
   const { data, isLoading } = useQuery({
     queryKey: ['workflows'],
     queryFn: () => api<{ workflows: WorkflowRow[] }>('/v1/workflows'),
@@ -24,7 +26,14 @@ export default function WorkflowsPage() {
 
   return (
     <>
-      <PageHeader title="Workflows" />
+      <PageHeader
+        title="Workflows"
+        action={
+          <Button variant="primary" onClick={() => navigate('/workflows/new')}>
+            New workflow
+          </Button>
+        }
+      />
       {isLoading ? (
         <Skeleton className="h-40 w-full" />
       ) : data && data.workflows.length > 0 ? (
@@ -41,7 +50,11 @@ export default function WorkflowsPage() {
             </thead>
             <tbody>
               {data.workflows.map((w) => (
-                <tr key={w.id} className="transition-colors hover:bg-elevated">
+                <tr
+                  key={w.id}
+                  className="cursor-pointer transition-colors hover:bg-elevated"
+                  onClick={() => navigate(`/workflows/${w.key}`)}
+                >
                   <td className={td}>
                     <Mono>{w.key}</Mono>
                   </td>

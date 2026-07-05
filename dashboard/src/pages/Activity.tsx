@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Card, EmptyState, Mono, PageHeader, Skeleton, StatusBadge, td, th } from '../ui';
 
@@ -28,6 +29,7 @@ const TRIGGER_SNIPPET = `curl -X POST https://your-api/v1/events/trigger \\
   -d '{"workflowKey":"welcome","to":[{"subscriberId":"u1","email":"u1@example.com"}],"payload":{"name":"Ada"}}'`;
 
 export function ActivityTable({ rows }: { rows: ActivityRow[] }) {
+  const navigate = useNavigate();
   return (
     <Card className="overflow-x-auto">
       <table className="w-full border-collapse">
@@ -44,7 +46,11 @@ export function ActivityTable({ rows }: { rows: ActivityRow[] }) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id} className="transition-colors hover:bg-elevated">
+            <tr
+              key={r.id}
+              className="cursor-pointer transition-colors hover:bg-elevated"
+              onClick={() => navigate(`/activity/${encodeURIComponent(r.transaction_id)}`)}
+            >
               <td className={td}>
                 <StatusBadge status={r.status} />
                 {r.error && (

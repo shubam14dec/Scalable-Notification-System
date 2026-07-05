@@ -3,6 +3,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
+  BarChart3,
   Blocks,
   KeyRound,
   LayoutGrid,
@@ -19,6 +20,7 @@ const NAV = [
   { to: '/activity', label: 'Activity', icon: Activity },
   { to: '/workflows', label: 'Workflows', icon: Workflow },
   { to: '/subscribers', label: 'Subscribers', icon: Users },
+  { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/integrations', label: 'Integrations', icon: Blocks },
   { to: '/keys', label: 'API keys', icon: KeyRound },
 ];
