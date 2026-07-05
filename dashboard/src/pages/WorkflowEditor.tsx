@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { Button, Card, Field, Input, PageHeader, Skeleton } from '../ui';
+import { SendTestModal } from '../components/SendTest';
 
 interface Step {
   channel: string;
@@ -86,6 +87,12 @@ function StepCard({
             placeholder="Hi {{name}}, thanks for joining."
           />
         </Field>
+        {step.digest && !step.body.includes('digest_items') && (
+          <p className="text-[12px]" style={{ color: 'var(--warn)' }}>
+            Digest is on, but the body never uses {'{{digest_items}}'} or {'{{digest_count}}'} —
+            merged events won't be visible in the message.
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Delay (seconds)" hint="0 sends immediately">
             <Input
@@ -139,6 +146,7 @@ export default function WorkflowEditorPage() {
   const [name, setName] = useState('');
   const [steps, setSteps] = useState<Step[]>([{ ...NEW_STEP }]);
   const [error, setError] = useState('');
+  const [testOpen, setTestOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ['workflow', routeKey],
@@ -180,6 +188,7 @@ export default function WorkflowEditorPage() {
         title={isNew ? 'New workflow' : `Edit ${routeKey}`}
         action={
           <div className="flex gap-2">
+            {!isNew && <Button onClick={() => setTestOpen(true)}>Send test</Button>}
             <Button onClick={() => navigate('/workflows')}>Cancel</Button>
             <Button
               variant="primary"
@@ -233,6 +242,7 @@ export default function WorkflowEditorPage() {
       </div>
 
       {error && <p className="mt-3 text-[12px] text-err">{error}</p>}
+      {testOpen && routeKey && <SendTestModal workflowKey={routeKey} onClose={() => setTestOpen(false)} />}
     </>
   );
 }

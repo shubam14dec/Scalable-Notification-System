@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Button, Card, EmptyState, Mono, PageHeader, Skeleton, td, th } from '../ui';
+import { SendTestModal } from '../components/SendTest';
 import { timeAgo } from './Activity';
 
 interface WorkflowRow {
@@ -19,6 +21,7 @@ const WORKFLOW_SNIPPET = `curl -X PUT https://your-api/v1/workflows \\
 
 export default function WorkflowsPage() {
   const navigate = useNavigate();
+  const [testFor, setTestFor] = useState<string | null>(null);
   const { data, isLoading } = useQuery({
     queryKey: ['workflows'],
     queryFn: () => api<{ workflows: WorkflowRow[] }>('/v1/workflows'),
@@ -46,6 +49,7 @@ export default function WorkflowsPage() {
                 <th className={th}>Channels</th>
                 <th className={th}>Steps</th>
                 <th className={`${th} text-right`}>Updated</th>
+                <th className={`${th} text-right`} />
               </tr>
             </thead>
             <tbody>
@@ -77,6 +81,16 @@ export default function WorkflowsPage() {
                   <td className={`${td} text-right`}>
                     <Mono className="text-t3">{timeAgo(w.updatedAt)}</Mono>
                   </td>
+                  <td className={`${td} text-right`}>
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTestFor(w.key);
+                      }}
+                    >
+                      Send test
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -89,6 +103,7 @@ export default function WorkflowsPage() {
           snippet={WORKFLOW_SNIPPET}
         />
       )}
+      {testFor && <SendTestModal workflowKey={testFor} onClose={() => setTestFor(null)} />}
     </>
   );
 }

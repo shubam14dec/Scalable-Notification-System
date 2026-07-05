@@ -14,6 +14,7 @@ import {
   td,
   th,
 } from '../ui';
+// Mono is used by the test modal's provider-id display.
 
 interface Integration {
   id: string;
@@ -67,11 +68,78 @@ const PROVIDER_FIELDS: Record<
   },
 };
 
+function TestIntegrationModal({
+  integration,
+  onClose,
+}: {
+  integration: Integration;
+  onClose: () => void;
+}) {
+  const field =
+    integration.channel === 'email' ? 'email' : integration.channel === 'sms' ? 'phone' : 'pushToken';
+  const test = useMutation({
+    mutationFn: (to: Record<string, string>) =>
+      api<{ ok: boolean; providerMessageId?: string }>(`/v1/integrations/${integration.id}/test`, {
+        method: 'POST',
+        body: { to },
+      }),
+  });
+
+  return (
+    <Modal open onClose={onClose} title={`Test ${integration.provider}`}>
+      {test.isSuccess ? (
+        <div className="space-y-3">
+          <p className="text-t2">Test message accepted by the provider.</p>
+          {test.data.providerMessageId && (
+            <Mono className="text-t3">{test.data.providerMessageId}</Mono>
+          )}
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const value = String(new FormData(e.currentTarget).get('to') ?? '').trim();
+            test.mutate({ [field]: value });
+          }}
+        >
+          <Field
+            label={field === 'email' ? 'Send test to (email)' : field === 'phone' ? 'Send test to (phone)' : 'Device push token'}
+          >
+            <Input
+              name="to"
+              required
+              type={field === 'email' ? 'email' : 'text'}
+              placeholder={field === 'email' ? 'me@example.com' : field === 'phone' ? '+15550001111' : 'device token'}
+              autoFocus
+            />
+          </Field>
+          {test.isError && <p className="text-[12px] text-err">{test.error.message}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" disabled={test.isPending}>
+              {test.isPending ? 'Sending…' : 'Send test'}
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
 export default function IntegrationsPage() {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
   const [provider, setProvider] = useState('smtp');
   const [error, setError] = useState('');
+  const [testing, setTesting] = useState<Integration | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['integrations'],
@@ -139,16 +207,19 @@ export default function IntegrationsPage() {
                     <span className="text-[12px] text-t2">{i.active ? 'active' : 'disabled'}</span>
                   </td>
                   <td className={`${td} text-right`}>
-                    <Button
-                      variant="danger"
-                      onClick={() => {
-                        if (window.confirm(`Remove ${i.provider}? Sends will use the next provider in the chain.`)) {
-                          remove.mutate(i.id);
-                        }
-                      }}
-                    >
-                      Remove
-                    </Button>
+                    <span className="inline-flex gap-2">
+                      <Button onClick={() => setTesting(i)}>Test</Button>
+                      <Button
+                        variant="danger"
+                        onClick={() => {
+                          if (window.confirm(`Remove ${i.provider}? Sends will use the next provider in the chain.`)) {
+                            remove.mutate(i.id);
+                          }
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -161,6 +232,8 @@ export default function IntegrationsPage() {
           body="Connect your own provider accounts (SendGrid, Twilio, FCM…). Until then, sends use the built-in defaults."
         />
       )}
+
+      {testing && <TestIntegrationModal integration={testing} onClose={() => setTesting(null)} />}
 
       <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add integration">
         <form
