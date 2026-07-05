@@ -14,7 +14,7 @@ import {
   backoffWithJitter,
 } from '../shared/queues';
 import { pool } from '../db/pool';
-import { getMessage, updateMessage } from '../db/repositories';
+import { getMessage, settleCompletedEvents, updateMessage } from '../db/repositories';
 import { wireDlq } from './dlq';
 import { startLogWriter } from './log-writer';
 import { processTrigger } from './processors/trigger.processor';
@@ -99,6 +99,14 @@ function main() {
 
   const stopLogWriter = startLogWriter();
 
+  // Settle finished events to 'completed' every 30s (concurrent runs from
+  // multiple worker processes are harmless — same idempotent UPDATE).
+  const settleTimer = setInterval(() => {
+    settleCompletedEvents()
+      .then((n) => n > 0 && logger.info({ settled: n }, 'events settled as completed'))
+      .catch((err) => logger.warn({ err }, 'event settle sweep failed'));
+  }, 30_000);
+
   // Per-process Prometheus endpoint (each worker replica exports its own).
   const metricsServer = createServer((req, res) => {
     if (req.url === '/metrics') {
@@ -139,6 +147,7 @@ function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'workers shutting down (finishing in-flight jobs)');
+    clearInterval(settleTimer);
     metricsServer.close();
     await Promise.all(workers.map((w) => w.close()));
     await stopLogWriter(); // final flush of buffered execution logs

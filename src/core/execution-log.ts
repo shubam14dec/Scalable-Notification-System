@@ -11,7 +11,8 @@ export const EXEC_LOG_BUFFER_KEY = 'exec-log-buffer';
  * and a logging outage can never take down delivery.
  */
 export function logExec(entry: ExecLogEntry): void {
+  // RPUSH + LPOP drain = FIFO, so batches insert in true emit order.
   redis
-    .lpush(EXEC_LOG_BUFFER_KEY, JSON.stringify({ at: new Date().toISOString(), ...entry }))
+    .rpush(EXEC_LOG_BUFFER_KEY, JSON.stringify({ at: new Date().toISOString(), ...entry }))
     .catch((err) => logger.warn({ err }, 'failed to buffer execution log'));
 }

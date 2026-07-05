@@ -626,7 +626,7 @@ export async function insertExecutionLogs(entries: ExecLogEntry[]): Promise<void
   if (entries.length === 0) return;
   const values: unknown[] = [];
   const tuples = entries.map((e, i) => {
-    const base = i * 6;
+    const base = i * 7;
     values.push(
       e.tenantId ?? null,
       e.transactionId ?? null,
@@ -634,12 +634,43 @@ export async function insertExecutionLogs(entries: ExecLogEntry[]): Promise<void
       e.level,
       e.detail,
       e.raw === undefined ? null : JSON.stringify(e.raw),
+      e.at ?? null, // true emit time, not batch-flush time
     );
-    return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
+    return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, coalesce($${base + 7}::timestamptz, now()))`;
   });
   await pool.query(
-    `insert into execution_logs (tenant_id, transaction_id, message_id, level, detail, raw)
+    `insert into execution_logs (tenant_id, transaction_id, message_id, level, detail, raw, created_at)
      values ${tuples.join(', ')}`,
     values,
   );
+}
+
+const TERMINAL_MESSAGE_STATUSES = [
+  'sent',
+  'delivered',
+  'failed',
+  'skipped',
+  'bounced',
+  'complaint',
+  'merged',
+];
+
+/**
+ * Mark events 'completed' once every message reached a terminal state.
+ * Runs on a timer in the worker (and inside `npm run reconcile`) instead of
+ * on the delivery hot path — completion is a bookkeeping fact, not a
+ * delivery step.
+ */
+export async function settleCompletedEvents(): Promise<number> {
+  const { rowCount } = await pool.query(
+    `update events e set status = 'completed'
+     where e.status in ('accepted', 'processing')
+       and exists (select 1 from messages m where m.event_id = e.id)
+       and not exists (
+         select 1 from messages m
+         where m.event_id = e.id and m.status != all($1::text[])
+       )`,
+    [TERMINAL_MESSAGE_STATUSES],
+  );
+  return rowCount ?? 0;
 }

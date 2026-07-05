@@ -31,8 +31,9 @@ export function startLogWriter(): () => Promise<void> {
     try {
       await insertExecutionLogs(entries);
     } catch (err) {
-      // Postgres hiccup: put the batch back so nothing is lost, retry next tick.
-      await redis.rpush(EXEC_LOG_BUFFER_KEY, ...items);
+      // Postgres hiccup: put the batch back AT THE FRONT so nothing is lost
+      // and order is preserved, then retry next tick.
+      await redis.lpush(EXEC_LOG_BUFFER_KEY, ...[...items].reverse());
       throw err;
     }
 

@@ -13,27 +13,17 @@
  *   npm run reconcile -- 60 20          # grace 60s, limit 20
  */
 import { pool } from '../src/db/pool';
+import { settleCompletedEvents } from '../src/db/repositories';
 import { getQueue, QUEUE, closeQueues } from '../src/shared/queues';
 import { redis } from '../src/shared/redis';
 import { logger } from '../src/shared/logger';
-
-const TERMINAL = ['sent', 'delivered', 'failed', 'skipped', 'bounced', 'complaint', 'merged'];
 
 async function main() {
   const graceSeconds = Number.parseInt(process.argv[2] ?? '300', 10);
   const limit = Number.parseInt(process.argv[3] ?? '500', 10);
 
   // Pass 1: settle finished events.
-  const { rowCount: completed } = await pool.query(
-    `update events e set status = 'completed'
-     where e.status in ('accepted', 'processing')
-       and exists (select 1 from messages m where m.event_id = e.id)
-       and not exists (
-         select 1 from messages m
-         where m.event_id = e.id and m.status != all($1::text[])
-       )`,
-    [TERMINAL],
-  );
+  const completed = await settleCompletedEvents();
   logger.info({ completed }, 'events settled as completed');
 
   // Pass 2: replay stuck events (accepted but no delivery ever concluded).
