@@ -87,7 +87,15 @@ export interface MessageRow {
 
 // ---------- tenants ----------
 
+/**
+ * Resolve an API key to its environment. New keys are looked up by SHA-256
+ * hash in api_keys (rotatable, revocable); the legacy plaintext column is a
+ * fallback for pre-accounts installs.
+ */
 export async function getTenantByApiKey(apiKey: string): Promise<Tenant | null> {
+  const { tenantForApiKeyHash } = await import('./accounts.repo');
+  const byHash = await tenantForApiKeyHash(apiKey);
+  if (byHash) return byHash;
   const { rows } = await pool.query('select * from tenants where api_key = $1', [apiKey]);
   return rows[0] ?? null;
 }

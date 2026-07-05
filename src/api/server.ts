@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import fastifyJwt from '@fastify/jwt';
 import { env } from '../config/env';
 import { logger } from '../shared/logger';
 import { initTracing, shutdownTracing } from '../shared/tracing';
@@ -13,6 +14,8 @@ import { registerOpsRoutes } from './routes/ops';
 import { registerInboxRoutes } from './routes/inbox';
 import { registerSuppressionRoutes } from './routes/suppressions';
 import { registerBroadcastRoutes } from './routes/broadcast';
+import { registerAuthRoutes } from './routes/auth';
+import { registerAccountRoutes } from './routes/account';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -36,6 +39,10 @@ async function main() {
     }
   });
 
+  await app.register(fastifyJwt, { secret: env.jwtSecret });
+
+  registerAuthRoutes(app);
+  registerAccountRoutes(app);
   registerTriggerRoutes(app);
   registerAdminRoutes(app);
   registerEventRoutes(app);

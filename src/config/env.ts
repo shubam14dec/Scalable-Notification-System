@@ -69,6 +69,11 @@ export const env = {
   // verification (dev only — always set this in production).
   webhookSigningSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
 
+  // Dashboard/user auth (JWT). Always override the secret in production.
+  jwtSecret: process.env.JWT_SECRET ?? 'dev-jwt-secret-change-me',
+  accessTokenTtl: process.env.ACCESS_TOKEN_TTL ?? '15m',
+  refreshTokenTtl: process.env.REFRESH_TOKEN_TTL ?? '7d',
+
   workerMetricsPort: int('WORKER_METRICS_PORT', 3002),
 
   otel: {

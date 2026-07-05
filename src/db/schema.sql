@@ -1,12 +1,59 @@
 -- System of record. Postgres 13+ (gen_random_uuid is built in).
 
+create extension if not exists pgcrypto; -- digest() for api-key hashing in backfill
+
+-- Accounts layer: users belong to organizations; an organization owns
+-- environments (the `tenants` table — every data row already scopes to it);
+-- each environment has rotating hashed API keys.
+
+create table if not exists organizations (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists users (
+  id            uuid primary key default gen_random_uuid(),
+  email         text not null unique,
+  name          text not null,
+  password_hash text not null,
+  created_at    timestamptz not null default now()
+);
+
+create table if not exists org_members (
+  organization_id uuid not null references organizations(id),
+  user_id         uuid not null references users(id),
+  role            text not null default 'member', -- owner | admin | member
+  created_at      timestamptz not null default now(),
+  primary key (organization_id, user_id)
+);
+
+-- "tenants" = ENVIRONMENTS (an organization's Development / Production).
+-- Legacy column api_key remains for pre-accounts installs; new keys live in
+-- api_keys (hashed, rotatable).
 create table if not exists tenants (
   id                 uuid primary key default gen_random_uuid(),
   name               text not null,
-  api_key            text not null unique,
+  api_key            text unique,
   rate_limit_per_sec int  not null default 50,
   created_at         timestamptz not null default now()
 );
+
+alter table tenants alter column api_key drop not null;
+alter table tenants add column if not exists organization_id uuid references organizations(id);
+
+create table if not exists api_keys (
+  id         uuid primary key default gen_random_uuid(),
+  tenant_id  uuid not null references tenants(id),
+  name       text not null default 'default',
+  key_prefix text not null,          -- first chars, for display only
+  key_hash   text not null unique,   -- sha256 hex; plaintext is never stored
+  created_by uuid references users(id),
+  created_at timestamptz not null default now(),
+  revoked_at timestamptz
+);
+
+create index if not exists api_keys_tenant_idx on api_keys (tenant_id);
 
 create table if not exists subscribers (
   id          uuid primary key default gen_random_uuid(),
@@ -117,3 +164,21 @@ create table if not exists execution_logs (
 
 create index if not exists exec_logs_txn_idx on execution_logs (transaction_id);
 create index if not exists exec_logs_created_idx on execution_logs (created_at);
+
+-- ---- Backfill for installs created before the accounts layer ----
+-- Give orphan environments a default organization, and move their legacy
+-- plaintext api_key into the hashed api_keys table (old keys keep working).
+insert into organizations (name)
+  select 'Default Organization'
+  where exists (select 1 from tenants where organization_id is null)
+    and not exists (select 1 from organizations where name = 'Default Organization');
+
+update tenants
+  set organization_id = (select id from organizations where name = 'Default Organization' limit 1)
+  where organization_id is null;
+
+insert into api_keys (tenant_id, name, key_prefix, key_hash)
+  select t.id, 'legacy', left(t.api_key, 8), encode(digest(t.api_key, 'sha256'), 'hex')
+  from tenants t
+  where t.api_key is not null
+    and not exists (select 1 from api_keys k where k.tenant_id = t.id and k.name = 'legacy');
