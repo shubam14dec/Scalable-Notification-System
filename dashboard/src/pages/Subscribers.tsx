@@ -1,7 +1,19 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Card, EmptyState, Input, Mono, PageHeader, Skeleton, td, th } from '../ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  Input,
+  Modal,
+  Mono,
+  PageHeader,
+  Skeleton,
+  td,
+  th,
+} from '../ui';
 import { timeAgo } from './Activity';
 
 interface SubscriberRow {
@@ -13,7 +25,10 @@ interface SubscriberRow {
 }
 
 export default function SubscribersPage() {
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
+  const [error, setError] = useState('');
   const { data, isLoading } = useQuery({
     queryKey: ['subscribers', search],
     queryFn: () =>
@@ -22,19 +37,80 @@ export default function SubscribersPage() {
       ),
   });
 
+  const upsert = useMutation({
+    mutationFn: (body: Record<string, string>) =>
+      api('/v1/subscribers', { method: 'PUT', body }),
+    onSuccess: () => {
+      setAddOpen(false);
+      setError('');
+      void queryClient.invalidateQueries({ queryKey: ['subscribers'] });
+    },
+    onError: (err) => setError(err.message),
+  });
+
   return (
     <>
       <PageHeader
         title="Subscribers"
         action={
-          <Input
-            placeholder="Search by id or email…"
-            className="w-64"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="Search by id or email…"
+              className="w-64"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <Button variant="primary" onClick={() => setAddOpen(true)}>
+              Add subscriber
+            </Button>
+          </div>
         }
       />
+
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add subscriber">
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const form = new FormData(e.currentTarget);
+            const body: Record<string, string> = {
+              subscriberId: String(form.get('subscriberId')),
+            };
+            for (const field of ['email', 'phone', 'pushToken']) {
+              const value = String(form.get(field) ?? '').trim();
+              if (value) body[field] = value;
+            }
+            upsert.mutate(body);
+          }}
+        >
+          <Field label="Subscriber ID" hint="Your app's user id — used in trigger calls and topics">
+            <Input name="subscriberId" required autoFocus placeholder="user-123" className="font-mono" />
+          </Field>
+          <Field label="Email (optional)">
+            <Input name="email" type="email" placeholder="user@example.com" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Phone (optional)">
+              <Input name="phone" placeholder="+15550001111" />
+            </Field>
+            <Field label="Push token (optional)">
+              <Input name="pushToken" className="font-mono" placeholder="device token" />
+            </Field>
+          </div>
+          <p className="text-[11px] text-t3">
+            Adding an existing ID updates it — blank fields keep their current values.
+          </p>
+          {error && <p className="text-[12px] text-err">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" onClick={() => setAddOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" disabled={upsert.isPending}>
+              {upsert.isPending ? 'Saving…' : 'Save subscriber'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
       {isLoading ? (
         <Skeleton className="h-40 w-full" />
       ) : data && data.subscribers.length > 0 ? (
