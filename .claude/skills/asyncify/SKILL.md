@@ -127,7 +127,15 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 - **Publishing**: account has 2FA-on-publish; `prepublishOnly` rebuilds;
   scoped packages need `publishConfig.access: public` (already set).
 
-## 11. Dashboard design system — "Quiet Infrastructure" (condensed)
+## 11. Email domain knowledge lives in its own skill
+
+Deliverability (SPF/DKIM/DMARC, warming, reputation thresholds),
+compliance (CAN-SPAM/GDPR/CASL, unsubscribe rules), provider error
+classification for new providers, and the known compliance gaps are in
+`.claude/skills/email-delivery/SKILL.md`. Consult it before email
+features, new providers, or template work.
+
+## 12. Dashboard design system — "Quiet Infrastructure" (condensed)
 
 Tokens live in `dashboard/src/styles.css` — the single source of truth; no
 hardcoded hex in components. Geist Sans for UI, **Geist Mono for every
