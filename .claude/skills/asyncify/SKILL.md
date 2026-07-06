@@ -1,12 +1,84 @@
 ---
 name: asyncify-engineering
-description: How Asyncify gets built — the working method, verification discipline, idempotency rules, project gotchas, and dashboard design system distilled from building phases A–G. Read before ANY work in this repo (backend, dashboard, packages, ops).
+description: The main working skill for this repo — operating rules (planning, subagents, verification, elegance, autonomy, self-improvement, task management) plus Asyncify-specific engineering lessons, the gotchas ledger, and the design system. Read before ANY work in this repo.
 ---
 
-# Asyncify Engineering
+# Asyncify Engineering — Main Skill
 
-Distilled from building this system end to end. Every rule below was earned
-by a concrete failure or save in this repo — nothing is generic advice.
+Part I is how to operate, always. Part II is what this codebase has taught
+us — every rule earned by a concrete incident here. Both are binding.
+
+# Part I — Operating Rules
+
+## Plan first
+
+- Any non-trivial task (3+ steps or an architectural decision): write the
+  plan BEFORE code — checkable items in `tasks/todo.md`; check in with the
+  user before implementing when the scope is new or ambiguous.
+- Write detailed specs upfront; ambiguity in = rework out.
+- The moment something goes sideways, STOP and re-plan. Do not keep pushing
+  a broken approach. Plan the verification steps, not just the build.
+
+## Use subagents to protect context
+
+- Offload research, exploration, and parallel analysis to subagents — one
+  track per subagent (the reference-codebase audit here ran as two parallel
+  explorers and returned only conclusions, not file dumps).
+- Hard problems: throw more compute via parallel agents rather than
+  grinding one context window down.
+
+## Verification before "done"
+
+- Never mark a task complete without proving it works: run `npm test`,
+  drive the feature, read the logs/timeline. Ask: *would a staff engineer
+  approve this?*
+- Diff behavior against main when a change is risky.
+- The project-specific verification loop is Part II §1 — it is not optional.
+
+## Demand elegance (balanced)
+
+- For non-trivial changes, pause and ask: is there a more elegant way?
+- If a fix feels hacky: "knowing everything I know now, implement the
+  elegant solution" — replace it before presenting.
+- Skip this for simple, obvious fixes. Do not over-engineer.
+- Challenge your own work before the user has to.
+
+## Autonomous bug fixing
+
+- Given a bug report, failing test, or error log: just fix it. Point at
+  the evidence, find the ROOT cause, resolve it. No hand-holding requests,
+  no temporary patches. (Precedents here: the "processing" status, the
+  timeline ordering, and the revoked-key cache were all fixed at the root —
+  a sweep job, FIFO+real timestamps, hash-keyed cache invalidation — never
+  band-aided.)
+
+## Self-improvement loop
+
+- After ANY correction from the user: record the pattern immediately —
+  project-specific lessons go into Part II of THIS file (that is what the
+  ledger is); cross-project lessons go to auto-memory. Write the rule so
+  the mistake cannot recur.
+- Review this skill at session start; iterate on it until the mistake rate
+  drops. This file replaces `tasks/lessons.md` — one ledger, not two.
+
+## Task management
+
+- Plan → `tasks/todo.md` with checkable items → verify the plan with the
+  user → mark items complete as you go → add a short review section when
+  done.
+- Give a high-level summary of changes at each step; the final message of
+  a turn carries everything the user needs.
+
+## Core principles
+
+- **Simplicity first:** every change as simple as possible — impact the
+  minimum code that fully solves the problem.
+- **No laziness:** root causes only. No TODO-hacks left behind. Senior
+  engineer standards.
+- **Minimal blast radius:** touch only what's necessary; don't create bugs
+  in code you didn't need to open.
+
+# Part II — Earned Project Lessons
 
 ## 1. Nothing is "done" until it has been driven end to end
 
@@ -16,8 +88,7 @@ real notification via API or UI → read the timeline (`/activity/:txn`),
 Mailpit (:8025), or the DB row. Why: typecheck was green when digest emails
 silently rendered the wrong template, when timelines printed out of causal
 order, and when a revoked API key kept working — only *driving* the flow (or
-a test doing so) caught each one. Boris's #1 tip is the same finding: a
-verification feedback loop 2–3×'s output quality.
+a test doing so) caught each one.
 
 Fastest loop: `npm test` (51 tests, ~6s, needs docker pg+redis up) →
 `npx tsc --noEmit` → drive the feature. For sends: Mailpit at :8025 catches
@@ -82,7 +153,8 @@ Each phase (A–G) landed as one verified, pushed commit whose message tells
 the story, plus a memory update. Never stack a second feature on an
 unverified first one, and never leave verified work uncommitted — sessions
 end abruptly (services get killed, laptops close). The commit log doubles as
-the project's changelog.
+the project's changelog. Beware `git add -A` and `git add <dir>` sweeping in
+local-only files — a reference file once reached the public repo that way.
 
 ## 8. User-found friction outranks the roadmap
 
@@ -111,8 +183,9 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 - **PowerShell 5.1** (the shell here): no `&&`; `git commit -m` breaks on
   embedded double quotes (use single-quoted here-strings, `'@` at column 0);
   multi-line pastes execute line-by-line (give users one-liners or .ps1
-  scripts); no inline `try` in expressions; long `Start-Sleep` is blocked —
-  poll in a loop or use Monitor.
+  scripts); no inline `try` in expressions; a thrown cmdlet leaves the
+  result variable holding its PREVIOUS value — reset `$r = $null` in loops;
+  long `Start-Sleep` is blocked — poll in a loop or use Monitor.
 - **ioredis is pinned to exactly 5.10.1** to match bullmq's bundled copy;
   upgrading only one side breaks typechecking.
 - **@types/mjml declares `mjml2html` as async** — always `await` it.
