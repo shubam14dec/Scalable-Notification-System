@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireUser, requireEnvAccess } from '../jwt-auth';
+import { invalidateApiKeyCache } from '../auth';
 import {
   createApiKey,
   getEnvironment,
@@ -65,8 +66,9 @@ export function registerAccountRoutes(app: FastifyInstance) {
       if (!['owner', 'admin'].includes(access.role)) {
         return reply.code(403).send({ error: 'owner or admin role required' });
       }
-      const revoked = await revokeApiKey(req.params.keyId, req.params.envId);
-      return { revoked: revoked > 0 };
+      const revokedHash = await revokeApiKey(req.params.keyId, req.params.envId);
+      if (revokedHash) invalidateApiKeyCache(revokedHash);
+      return { revoked: revokedHash !== null };
     },
   );
 }

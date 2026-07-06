@@ -177,13 +177,15 @@ export async function listApiKeys(tenantId: string): Promise<ApiKeyRow[]> {
   return rows;
 }
 
-export async function revokeApiKey(keyId: string, tenantId: string): Promise<number> {
-  const { rowCount } = await pool.query(
+/** Returns the revoked key's hash (for auth-cache invalidation), or null. */
+export async function revokeApiKey(keyId: string, tenantId: string): Promise<string | null> {
+  const { rows } = await pool.query(
     `update api_keys set revoked_at = now()
-     where id = $1 and tenant_id = $2 and revoked_at is null`,
+     where id = $1 and tenant_id = $2 and revoked_at is null
+     returning key_hash`,
     [keyId, tenantId],
   );
-  return rowCount ?? 0;
+  return rows[0]?.key_hash ?? null;
 }
 
 /** Resolve a plaintext API key to its environment (hashed lookup). */

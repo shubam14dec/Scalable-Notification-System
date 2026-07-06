@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { getTenantByApiKey, type Tenant } from '../db/repositories';
-import { getEnvironment, membershipRole } from '../db/accounts.repo';
+import { getEnvironment, hashApiKey, membershipRole } from '../db/accounts.repo';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -8,9 +8,15 @@ declare module 'fastify' {
   }
 }
 
-// Tiny in-process cache so auth doesn't hit Postgres on every request.
+// Tiny in-process cache (keyed by key HASH) so auth doesn't hit Postgres on
+// every request. Revocation calls invalidateApiKeyCache so a revoked key
+// dies instantly in this process; across replicas the TTL bounds it to 60s.
 const cache = new Map<string, { tenant: Tenant; expiresAt: number }>();
 const CACHE_TTL_MS = 60_000;
+
+export function invalidateApiKeyCache(keyHash: string): void {
+  cache.delete(keyHash);
+}
 
 /**
  * Environment auth, two ways in:
@@ -23,7 +29,8 @@ const CACHE_TTL_MS = 60_000;
 export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   const apiKey = req.headers['x-api-key'];
   if (typeof apiKey === 'string' && apiKey.length > 0) {
-    const cached = cache.get(apiKey);
+    const keyHash = hashApiKey(apiKey);
+    const cached = cache.get(keyHash);
     if (cached && cached.expiresAt > Date.now()) {
       req.tenant = cached.tenant;
       return;
@@ -32,7 +39,7 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     if (!tenant) {
       return reply.code(401).send({ error: 'invalid api key' });
     }
-    cache.set(apiKey, { tenant, expiresAt: Date.now() + CACHE_TTL_MS });
+    cache.set(keyHash, { tenant, expiresAt: Date.now() + CACHE_TTL_MS });
     req.tenant = tenant;
     return;
   }
