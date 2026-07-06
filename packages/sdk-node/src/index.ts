@@ -1,8 +1,8 @@
 /**
- * @notify/sdk-node — server-side client for the notify platform.
+ * @asyncify-hq/node — server-side client for Asyncify.
  *
- *   const notify = new NotifyClient({ apiKey: process.env.NOTIFY_API_KEY! });
- *   await notify.trigger('order-shipped', {
+ *   const asyncify = new AsyncifyClient({ apiKey: process.env.ASYNCIFY_API_KEY! });
+ *   await asyncify.trigger('order-shipped', {
  *     to: [{ subscriberId: 'user-42', email: 'u42@example.com' }],
  *     payload: { orderId: 'ORD-1' },
  *   });
@@ -55,27 +55,27 @@ export interface WorkflowStep {
   skipIfStep?: { stepIndex: number; statusIn: string[] };
 }
 
-export class NotifyError extends Error {
+export class AsyncifyError extends Error {
   constructor(
     readonly status: number,
     message: string,
   ) {
     super(message);
-    this.name = 'NotifyError';
+    this.name = 'AsyncifyError';
   }
 }
 
-export interface NotifyClientOptions {
+export interface AsyncifyClientOptions {
   apiKey: string;
   /** Defaults to http://localhost:3000 — point at your deployment. */
   baseUrl?: string;
 }
 
-export class NotifyClient {
+export class AsyncifyClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
 
-  constructor(options: NotifyClientOptions) {
+  constructor(options: AsyncifyClientOptions) {
     if (!options.apiKey) throw new Error('apiKey is required');
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? 'http://localhost:3000').replace(/\/$/, '');
@@ -89,7 +89,7 @@ export class NotifyClient {
     });
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     if (!res.ok) {
-      throw new NotifyError(res.status, data.error ?? `request failed (${res.status})`);
+      throw new AsyncifyError(res.status, data.error ?? `request failed (${res.status})`);
     }
     return data as T;
   }

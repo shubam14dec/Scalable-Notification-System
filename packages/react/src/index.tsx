@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
- * @notify/react — drop-in notification inbox.
+ * @asyncify-hq/react — drop-in notification inbox for Asyncify.
  *
- *   const { token } = await notify.subscriberToken(userId);  // your backend
+ *   const { token } = await asyncify.subscriberToken(userId);  // your backend
  *   <NotificationInbox token={token} subscriberId={userId}
  *                      apiUrl="https://api.you.com" wsUrl="wss://ws.you.com" />
  *

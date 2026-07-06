@@ -25,7 +25,7 @@ export default function InboxPreviewPage() {
       <PageHeader title="Inbox preview" />
       <p className="-mt-4 mb-5 max-w-xl text-[12px] text-t3">
         This renders the real <Mono>&lt;NotificationInbox /&gt;</Mono> widget from{' '}
-        <Mono>@notify/react</Mono> — exactly what your users would see in your app. Trigger a
+        <Mono>@asyncify-hq/react</Mono> — exactly what your users would see in your app. Trigger a
         workflow to this subscriber and watch the bell update live.
       </p>
 

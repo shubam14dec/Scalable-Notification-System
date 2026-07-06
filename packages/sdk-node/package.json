@@ -1,7 +1,14 @@
 {
-  "name": "@notify/sdk-node",
+  "name": "@asyncify-hq/node",
   "version": "0.1.0",
-  "description": "Server-side SDK for the notify notification platform",
+  "description": "Server-side SDK for Asyncify — notification infrastructure",
+  "homepage": "https://asyncify.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shubam14dec/Scalable-Notification-System.git",
+    "directory": "packages/sdk-node"
+  },
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

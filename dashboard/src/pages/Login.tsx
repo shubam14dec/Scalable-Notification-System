@@ -9,7 +9,7 @@ function AuthFrame({ children, title }: { children: React.ReactNode; title: stri
       <div className="w-full max-w-[360px] px-4">
         <div className="mb-6 flex items-center justify-center gap-2">
           <span aria-hidden className="h-2.5 w-2.5 rounded-full" style={{ background: 'var(--accent)' }} />
-          <span className="text-[15px] font-semibold tracking-tight">notify</span>
+          <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
         </div>
         <Card className="p-6">
           <h1 className="mb-5 text-center text-[15px] font-semibold">{title}</h1>

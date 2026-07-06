@@ -156,8 +156,9 @@ export async function createApiKey(
   envName: string,
   createdBy: string | null,
 ): Promise<{ row: ApiKeyRow; plaintext: string }> {
+  // ak_ = "asyncify key". Legacy nk_ keys keep working (hashed lookup).
   const envSlug = envName.toLowerCase().startsWith('prod') ? 'live' : 'dev';
-  const plaintext = `nk_${envSlug}_${randomBytes(24).toString('hex')}`;
+  const plaintext = `ak_${envSlug}_${randomBytes(24).toString('hex')}`;
   const { rows } = await pool.query(
     `insert into api_keys (tenant_id, name, key_prefix, key_hash, created_by)
      values ($1, $2, $3, $4, $5)

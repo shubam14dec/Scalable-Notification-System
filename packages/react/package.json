@@ -1,7 +1,14 @@
 {
-  "name": "@notify/react",
+  "name": "@asyncify-hq/react",
   "version": "0.1.0",
-  "description": "Embeddable notification inbox for the notify platform",
+  "description": "Embeddable notification inbox for Asyncify",
+  "homepage": "https://asyncify.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shubam14dec/Scalable-Notification-System.git",
+    "directory": "packages/react"
+  },
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,8 +1,12 @@
-# Notification System
+# Asyncify
 
-A horizontally scalable, multi-channel notification system built from scratch.
-Design informed by the architecture of production notification systems
-operating at very large scale.
+Notification infrastructure — a horizontally scalable, multi-channel
+notification platform built from scratch. Design informed by the
+architecture of production notification systems operating at very large
+scale.
+
+SDKs: [`@asyncify-hq/node`](packages/sdk-node) ·
+[`@asyncify-hq/react`](packages/react) (drop-in `<NotificationInbox />`).
 
 **Channels:** email, SMS, push, in-app (live WebSocket push + durable inbox) —
 extensible via one provider interface.

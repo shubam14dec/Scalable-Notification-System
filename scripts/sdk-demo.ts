@@ -1,10 +1,10 @@
 /**
- * Exercises @notify/sdk-node against the local API — the exact code a
+ * Exercises @asyncify-hq/node against the local API — the exact code a
  * customer's backend would run.
  *
  *   $env:API_KEY='nk_dev_...'; npx tsx scripts/sdk-demo.ts
  */
-import { NotifyClient } from '../packages/sdk-node/src/index';
+import { AsyncifyClient } from '../packages/sdk-node/src/index';
 
 const apiKey = process.env.API_KEY;
 if (!apiKey) {
@@ -12,27 +12,27 @@ if (!apiKey) {
   process.exit(1);
 }
 
-const notify = new NotifyClient({ apiKey, baseUrl: 'http://localhost:3000' });
+const asyncify = new AsyncifyClient({ apiKey, baseUrl: 'http://localhost:3000' });
 
 async function main() {
-  const result = await notify.trigger('order-shipped', {
+  const result = await asyncify.trigger('order-shipped', {
     to: [{ subscriberId: 'sdk-user-1', email: 'sdk-user-1@example.com' }],
     payload: { name: 'SDK User', orderId: 'ORD-SDK-1', carrier: 'BlueDart', eta: 'Wednesday' },
   });
   console.log('trigger →', result);
 
-  const dup = await notify.trigger('order-shipped', {
+  const dup = await asyncify.trigger('order-shipped', {
     to: [{ subscriberId: 'sdk-user-1', email: 'sdk-user-1@example.com' }],
     payload: { name: 'SDK User', orderId: 'ORD-SDK-1', carrier: 'BlueDart', eta: 'Wednesday' },
     transactionId: result.transactionId,
   });
   console.log('same transactionId again →', dup);
 
-  const { token, expiresAt } = await notify.subscriberToken('sdk-user-1');
+  const { token, expiresAt } = await asyncify.subscriberToken('sdk-user-1');
   console.log('subscriber token →', token.slice(0, 24) + '...', 'expires', new Date(expiresAt * 1000).toISOString());
 
   await new Promise((r) => setTimeout(r, 3000));
-  const status = await notify.events.get(result.transactionId);
+  const status = await asyncify.events.get(result.transactionId);
   console.log('delivery status →', status.messages);
 }
 

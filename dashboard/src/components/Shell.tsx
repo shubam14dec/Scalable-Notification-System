@@ -125,7 +125,7 @@ export default function Shell() {
             className="h-2.5 w-2.5 rounded-full"
             style={{ background: 'var(--accent)' }}
           />
-          <span className="text-[14px] font-semibold tracking-tight">notify</span>
+          <span className="text-[14px] font-semibold tracking-tight">asyncify</span>
         </div>
 
         <div className="px-3 pb-3 pt-1">
