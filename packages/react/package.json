@@ -1,7 +1,8 @@
 {
   "name": "@asyncify-hq/react",
   "version": "0.1.0",
-  "description": "Embeddable notification inbox for Asyncify",
+  "description": "Drop-in notification inbox for Asyncify — bell, unread badge, live WebSocket updates",
+  "keywords": ["notifications", "inbox", "react", "notification-center", "asyncify", "bell"],
   "homepage": "https://asyncify.org",
   "repository": {
     "type": "git",
@@ -9,12 +10,26 @@
     "directory": "packages/react"
   },
   "license": "MIT",
+  "author": "Shubam Patil",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
   "files": ["dist"],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsup src/index.tsx --format esm,cjs --dts --clean",
+    "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
     "react": ">=18"
@@ -22,6 +37,7 @@
   "devDependencies": {
     "@types/react": "^18.3.0",
     "react": "^18.3.1",
+    "tsup": "^8.3.5",
     "typescript": "^5.7.2"
   }
 }
