@@ -199,8 +199,11 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 
 - **BullMQ jobIds must not contain `:`** unless exactly 3 colon-separated
   parts (legacy check). Use `-` separators everywhere.
-- **PowerShell 5.1** (the shell here): no `&&`; `git commit -m` breaks on
-  embedded double quotes (use single-quoted here-strings, `'@` at column 0);
+- **PowerShell 5.1** (the shell here): no `&&`; `git commit -m` messages must
+  contain NO double quotes at all — even inside a single-quoted here-string,
+  PS strips embedded `"` when passing to git.exe and the message word-splits
+  into bogus pathspecs (proven 2026-07-07). Rephrase to avoid quotes; use
+  here-strings (`'@` at column 0) only for multi-line;
   multi-line pastes execute line-by-line (give users one-liners or .ps1
   scripts); no inline `try` in expressions; a thrown cmdlet leaves the
   result variable holding its PREVIOUS value — reset `$r = $null` in loops;
