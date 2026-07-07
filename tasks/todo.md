@@ -79,7 +79,7 @@ subscriber → thanks → resolved), tsup build clean.
       `conversation`, `subscriber`, `history` (LLM-shaped
       `{role, content}[]`), `ctx.reply()`, `ctx.metadata.set()`,
       `ctx.trigger()`, `ctx.resolve()` — signals batched into the one
-      HTTP response (Novu's model). Returning a string = reply.
+      HTTP response. Returning a string = reply.
 - [x] `scripts/agent-demo.ts` (npm run agent:demo): self-registering
       sample bridge on :4100 — rule-based brain (no LLM key needed)
 - [x] Vitest: unit (signature verify, signal application, thread-key

@@ -31,7 +31,7 @@ export interface ConversationJobData {
 const BRIDGE_TIMEOUT_MS = 10_000;
 const METADATA_MAX_BYTES = 64 * 1024;
 
-/** What a bridge may send back — one reply plus batched signals, Novu-style. */
+/** What a bridge may send back — one reply plus batched signals. */
 const BridgeResponseSchema = z.object({
   reply: z.string().max(64 * 1024).optional(),
   signals: z
