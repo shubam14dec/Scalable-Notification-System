@@ -81,13 +81,11 @@ shared Redis — tests now pin REDIS_DB=15 (tests/setup.ts, skill §12).
       compares Telegram's registered webhook vs expected PUBLIC_URL
       (mismatch = visible + one-click re-register), disconnect
 - [x] Conversations UI: channel column in list + Details panel
-- [ ] E2E with a REAL bot over a REAL tunnel (user-driven): user creates
-      a bot via @BotFather + starts a tunnel (e.g. `cloudflared tunnel
-      --url http://localhost:3000` or ngrok), sets PUBLIC_URL to the
-      tunnel URL, connects the bot in the dashboard, runs the agent
-      demo, messages the bot from a phone → Telegram pushes the webhook
-      through the tunnel → brain answers in Telegram → transcript +
-      workflow breadcrumb in the dashboard. Identical path to prod.
+- [x] E2E with a REAL bot over a REAL cloudflared tunnel — USER-VERIFIED
+      2026-07-08: connected via the modal (after a token-paste 404 →
+      route now trims + shape-validates tokens), messaged the bot from a
+      phone, brain replied in Telegram, transcript + workflow breadcrumb
+      + metadata on the Conversations page. Identical path to prod.
 
 **Out of scope for Phase 2**: subscriber linking/connect buttons, media
 attachments, typing indicators, message editing, Slack/Teams/WhatsApp,

@@ -53,8 +53,18 @@ export function registerTelegramRoutes(app: FastifyInstance) {
     '/v1/agents/:identifier/channels/telegram',
     { preHandler: [authenticate] },
     async (req, reply) => {
+      // Trim first: tokens copied from the BotFather message often carry
+      // whitespace, and a malformed token 404s at Telegram confusingly.
       const parsed = z
-        .object({ botToken: z.string().min(20).max(255) })
+        .object({
+          botToken: z
+            .string()
+            .trim()
+            .regex(
+              /^\d+:[A-Za-z0-9_-]{30,}$/,
+              'not a bot token — expected the "<digits>:<letters/digits>" string BotFather sent',
+            ),
+        })
         .safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
