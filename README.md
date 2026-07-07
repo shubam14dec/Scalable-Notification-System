@@ -69,7 +69,17 @@ story is readable at `/v1/events/:transactionId/timeline`.
 
 The diagram below is the same story with every component named.
 
+> **Want the full picture?** [docs/REQUEST-FLOW.md](docs/REQUEST-FLOW.md)
+> traces one real email through every component — block diagrams, every
+> queue, worker and side path, plus a twelve-sentence narrative. For the
+> same walkthrough with the dashboard's design system applied, open
+> [docs/request-flow.html](docs/request-flow.html) in a browser.
+
 ## Architecture
+
+*(Deep-dive version of this section:
+[docs/REQUEST-FLOW.md](docs/REQUEST-FLOW.md) ·
+[docs/request-flow.html](docs/request-flow.html))*
 
 Rule of thumb for what runs on what: **Postgres** holds anything permanent,
 **Redis** holds the queues and everything in motion, **ClickHouse** gets an

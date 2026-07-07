@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body>
+<title>Asyncify — Anatomy of a Notification</title>
+<style>
+  :root {
+    --bg: #0b0b0d;
+    --surface: #121216;
+    --surface-2: #1a1a20;
+    --surface-3: #22222a;
+    --border: #26262e;
+    --border-strong: #34343e;
+    --text: #ececf1;
+    --muted: #9a9aa7;
+    --faint: #6e6e7b;
+    --accent: #8b74ff;
+    --accent-ink: #0b0b0d;
+    --accent-dim: rgba(139, 116, 255, 0.13);
+    --accent-line: rgba(139, 116, 255, 0.55);
+    --ok: #46b37f;   --ok-dim: rgba(70, 179, 127, 0.14);
+    --warn: #d9a13b; --warn-dim: rgba(217, 161, 59, 0.14);
+    --err: #e5484d;  --err-dim: rgba(229, 72, 77, 0.14);
+    --info: #5b96f7; --info-dim: rgba(91, 150, 247, 0.14);
+    --sans: "Geist", -apple-system, "Segoe UI", system-ui, Roboto, "Helvetica Neue", sans-serif;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fafafa; --surface: #ffffff; --surface-2: #f4f4f6; --surface-3: #ececef;
+      --border: #e4e4e9; --border-strong: #d2d2da;
+      --text: #1b1b21; --muted: #5f5f6b; --faint: #91919c;
+      --accent: #6a4fe0; --accent-ink: #ffffff;
+      --accent-dim: rgba(106, 79, 224, 0.09); --accent-line: rgba(106, 79, 224, 0.5);
+      --ok: #1e7a4d;   --ok-dim: rgba(30, 122, 77, 0.1);
+      --warn: #99690e; --warn-dim: rgba(153, 105, 14, 0.1);
+      --err: #c22f38;  --err-dim: rgba(194, 47, 56, 0.09);
+      --info: #2461ce; --info-dim: rgba(36, 97, 206, 0.09);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0b0d; --surface: #121216; --surface-2: #1a1a20; --surface-3: #22222a;
+    --border: #26262e; --border-strong: #34343e;
+    --text: #ececf1; --muted: #9a9aa7; --faint: #6e6e7b;
+    --accent: #8b74ff; --accent-ink: #0b0b0d;
+    --accent-dim: rgba(139, 116, 255, 0.13); --accent-line: rgba(139, 116, 255, 0.55);
+    --ok: #46b37f;   --ok-dim: rgba(70, 179, 127, 0.14);
+    --warn: #d9a13b; --warn-dim: rgba(217, 161, 59, 0.14);
+    --err: #e5484d;  --err-dim: rgba(229, 72, 77, 0.14);
+    --info: #5b96f7; --info-dim: rgba(91, 150, 247, 0.14);
+  }
+  :root[data-theme="light"] {
+    --bg: #fafafa; --surface: #ffffff; --surface-2: #f4f4f6; --surface-3: #ececef;
+    --border: #e4e4e9; --border-strong: #d2d2da;
+    --text: #1b1b21; --muted: #5f5f6b; --faint: #91919c;
+    --accent: #6a4fe0; --accent-ink: #ffffff;
+    --accent-dim: rgba(106, 79, 224, 0.09); --accent-line: rgba(106, 79, 224, 0.5);
+    --ok: #1e7a4d;   --ok-dim: rgba(30, 122, 77, 0.1);
+    --warn: #99690e; --warn-dim: rgba(153, 105, 14, 0.1);
+    --err: #c22f38;  --err-dim: rgba(194, 47, 56, 0.09);
+    --info: #2461ce; --info-dim: rgba(36, 97, 206, 0.09);
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); font-size: 14px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 20px 72px; }
+
+  /* ---------- header ---------- */
+  header { margin-bottom: 8px; }
+  .wordmark {
+    display: inline-flex; align-items: baseline; gap: 2px;
+    font-weight: 650; font-size: 15px; letter-spacing: -0.01em;
+  }
+  .wordmark .dot { color: var(--accent); }
+  h1 {
+    font-size: 26px; font-weight: 650; letter-spacing: -0.02em;
+    margin: 14px 0 6px; text-wrap: balance;
+  }
+  .sub { color: var(--muted); max-width: 68ch; margin: 0 0 4px; }
+  .sub code { font-family: var(--mono); font-size: 12.5px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+
+  /* ---------- legend ---------- */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+    margin: 18px 0 30px; padding: 12px 16px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12.5px; color: var(--muted);
+  }
+  .legend .item { display: inline-flex; align-items: center; gap: 8px; }
+
+  /* ---------- primitives ---------- */
+  .step {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; flex: none; border-radius: 50%;
+    background: var(--accent); color: var(--accent-ink);
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+  }
+  .band {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 18px 16px; position: relative;
+  }
+  .band.traced { border-color: var(--accent-line); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--faint); margin: 0 0 12px;
+  }
+  .eyebrow b { color: var(--muted); font-weight: 600; }
+  .node {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px;
+    padding: 12px 14px;
+  }
+  .node.hot { border-color: var(--accent-line); background: linear-gradient(0deg, var(--accent-dim), var(--accent-dim)), var(--surface-2); }
+  .node h3 { margin: 0 0 4px; font-size: 13.5px; font-weight: 640; display: flex; align-items: center; gap: 8px; letter-spacing: -0.01em; }
+  .node p { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .node p + p { margin-top: 4px; }
+  .m { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+  .dim { color: var(--faint); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 5px;
+    padding: 3px 8px; white-space: nowrap;
+  }
+  .chip.hl { color: var(--text); border-color: var(--border-strong); }
+
+  /* connectors */
+  .conn { display: flex; flex-direction: column; align-items: center; padding: 2px 0; }
+  .conn .line { width: 1px; height: 14px; background: var(--border-strong); }
+  .conn .head { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid var(--border-strong); }
+  .conn.traced .line { background: var(--accent-line); }
+  .conn.traced .head { border-top-color: var(--accent-line); }
+  .conn .lbl {
+    margin: 6px 0; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 12px; text-align: center; max-width: 92%;
+  }
+  .conn.traced .lbl { border-color: var(--accent-line); color: var(--text); }
+  .conn .lbl .q { color: var(--accent); font-weight: 600; }
+
+  /* queue pulse — the one signature element */
+  .pulse { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: 1px; animation: pulse 2.4s ease-in-out infinite; }
+  .pulse.quiet { background: var(--faint); animation: none; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+
+  /* queue grid */
+  .qgrid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 8px; }
+  .qcol { display: flex; flex-direction: column; gap: 6px; }
+  .qcol .qhead { font-size: 12px; font-weight: 640; padding: 2px 2px 4px; letter-spacing: -0.01em; }
+  .q {
+    font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px;
+    padding: 5px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .q.on { color: var(--text); border-color: var(--accent-line); background: linear-gradient(0deg, var(--accent-dim), var(--accent-dim)), var(--surface-2); }
+  .scrollx { overflow-x: auto; padding-bottom: 4px; }
+
+  /* side-by-side: spine node + branch */
+  .split { display: grid; grid-template-columns: minmax(0, 2.1fr) minmax(0, 1fr); gap: 10px; align-items: stretch; }
+  .branch { border-style: dashed; }
+  .branch h3 { color: var(--muted); }
+  @media (max-width: 760px) { .split { grid-template-columns: 1fr; } .qgrid { grid-template-columns: repeat(2, minmax(140px, 1fr)); } }
+
+  /* lifecycle strip */
+  .life { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .badge {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    border-radius: 999px; padding: 3px 10px; border: 1px solid transparent;
+  }
+  .b-ok   { color: var(--ok);   background: var(--ok-dim); }
+  .b-warn { color: var(--warn); background: var(--warn-dim); }
+  .b-err  { color: var(--err);  background: var(--err-dim); }
+  .b-info { color: var(--info); background: var(--info-dim); }
+  .b-mut  { color: var(--muted); background: var(--surface-2); border-color: var(--border); }
+  .life .arr { color: var(--faint); font-size: 12px; }
+
+  /* narrative */
+  .story { margin-top: 34px; }
+  h2 { font-size: 17px; font-weight: 650; letter-spacing: -0.015em; margin: 34px 0 10px; }
+  .story ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .story li { display: flex; gap: 10px; align-items: baseline; color: var(--muted); max-width: 84ch; }
+  .story li .step { transform: translateY(3px); }
+  .story li strong { color: var(--text); font-weight: 600; }
+  .story li code { font-family: var(--mono); font-size: 12px; color: var(--text); }
+
+  /* data plane */
+  .plane { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .store h3 .m { font-size: 12px; }
+  .store ul { margin: 6px 0 0; padding-left: 16px; color: var(--muted); font-size: 12.5px; }
+  .store li { margin: 2px 0; }
+  .store li code { font-family: var(--mono); font-size: 11px; color: var(--text); }
+
+  footer { margin-top: 44px; color: var(--faint); font-size: 12px; border-top: 1px solid var(--border); padding-top: 14px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:focus-visible, .node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  code.blk {
+    display: block; font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; margin-top: 8px; color: var(--text);
+    overflow-x: auto; white-space: pre;
+  }
+  code.blk .c { color: var(--faint); }
+  code.blk .s { color: var(--ok); }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="wordmark">asyncify<span class="dot">.</span></span>
+    <h1>Anatomy of a notification</h1>
+    <p class="sub">
+      Every component a request touches, end to end. The <span class="step" style="vertical-align:-4px">1</span>–<span class="step" style="vertical-align:-4px">12</span>
+      trail follows one concrete journey — your application sends an <em>order&nbsp;shipped</em> email — and the same spine carries
+      <code>sms</code>, <code>push</code> and <code>in-app</code>. The one idea behind the whole design: <strong>the caller never waits
+      for the slow part.</strong> The API writes the request down, answers <code>202</code> in milliseconds, and everything below
+      happens in the background, stage by stage, connected by queues.
+    </p>
+  </header>
+
+  <div class="legend" role="note">
+    <span class="item"><span class="step">n</span> the traced email request</span>
+    <span class="item"><span class="pulse"></span><span class="m">queue</span> — hops between stages are BullMQ queues on Redis</span>
+    <span class="item"><span style="width:18px;border-top:1px dashed var(--border-strong);display:inline-block"></span> side path (overflow, digest, dead-letter)</span>
+    <span class="item"><span class="badge b-ok">status</span> message lifecycle</span>
+  </div>
+
+  <div class="legend" role="note" aria-label="glossary">
+    <span class="item"><b style="color:var(--text)">queue</b>&nbsp;— a waiting line of jobs in Redis</span>
+    <span class="item"><b style="color:var(--text)">worker</b>&nbsp;— a process that takes jobs off a queue; more workers = more throughput</span>
+    <span class="item"><b style="color:var(--text)">tenant</b>&nbsp;— one customer environment; every row, limit and queue job is scoped to it</span>
+    <span class="item"><b style="color:var(--text)">outbox</b>&nbsp;— the permanent Postgres record everything can be rebuilt from</span>
+    <span class="item"><b style="color:var(--text)">circuit breaker</b>&nbsp;— stop calling a provider that keeps failing; try the next one</span>
+  </div>
+
+  <!-- ═══════════ LAYER: your application ═══════════ -->
+  <section class="band traced" aria-label="Your application">
+    <p class="eyebrow"><b>Your application</b> · the only code you write</p>
+    <div class="grid3">
+      <div class="node hot">
+        <h3><span class="step">1</span> Your backend</h3>
+        <p>Order ships → one SDK call with your server-side API key. Same call for any channel mix — the workflow decides.</p>
+        <code class="blk"><span class="c">// @asyncify-hq/node</span>
+await asyncify.trigger(<span class="s">'order-shipped'</span>, {
+  to: [{ subscriberId: <span class="s">'user-42'</span>,
+         email: <span class="s">'ana@shop.com'</span> }],
+  payload: { order: <span class="s">'#1042'</span> },
+  transactionId: <span class="s">'order-1042-shipped'</span>
+})</code>
+      </div>
+      <div class="node">
+        <h3>Your frontend</h3>
+        <p><span class="m">&lt;NotificationInbox /&gt;</span> from <span class="m">@asyncify-hq/react</span>. Holds only a scoped subscriber token (<span class="m">nst_…</span>, HMAC) — never an API key. Reads inbox REST, listens live on WebSocket.</p>
+      </div>
+      <div class="node">
+        <h3>Asyncify dashboard <span class="m dim">:5173</span></h3>
+        <p>Where you shape the flow before any request exists: <strong>workflows</strong> (steps, priorities, conditions, digests), <strong>templates</strong> (MJML, versioned), <strong>integrations</strong> (your provider keys), <strong>topics</strong>, subscribers, activity timeline, analytics. Auth: JWT + <span class="m">x-environment-id</span>.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="conn traced">
+    <div class="line"></div>
+    <div class="lbl">HTTPS · <span class="m">POST /v1/events/trigger</span> · <span class="m">x-api-key: ak_…</span></div>
+    <div class="line"></div><div class="head"></div>
+  </div>
+
+  <!-- ═══════════ LAYER: API ═══════════ -->
+  <section class="band traced" aria-label="API">
+    <p class="eyebrow"><b>API</b> · the front door: check, record, reply fast · Fastify · <span class="m">:3000</span> · stateless — run as many copies as you like</p>
+    <div class="grid3">
+      <div class="node hot">
+        <h3><span class="step">2</span> Authenticate</h3>
+        <p>Key is SHA-256-hashed and looked up (60s cache, invalidated on revoke) → resolves your <strong>organization → environment (tenant)</strong>. Every later step is scoped to that tenant.</p>
+      </div>
+      <div class="node hot">
+        <h3><span class="step">3</span> Tenant rate check <span class="m dim">burst QoS</span></h3>
+        <p>Under limit → straight through. Over soft limit → diverted to the <strong>overflow queue</strong>, trickled back later — a bursty tenant can't starve others. Over 5× → <span class="m">429</span>.</p>
+      </div>
+      <div class="node hot">
+        <h3><span class="step">4</span> Accept &amp; persist <span class="m dim">≈ ms</span></h3>
+        <p>Dedupe on <span class="m">(tenant, transactionId)</span> — the same request sent twice can never notify twice, so retries are always safe. Event row written to the Postgres outbox, workflow validated, one job enqueued. Your backend gets <span class="badge b-info">202 Accepted</span> and moves on.</p>
+      </div>
+    </div>
+    <div class="chips" aria-label="other API surfaces">
+      <span class="chip hl">/v1/workflows</span><span class="chip hl">/v1/templates + /preview</span><span class="chip hl">/v1/integrations + /test</span>
+      <span class="chip hl">/v1/topics</span><span class="chip">/v1/subscribers</span><span class="chip">/v1/subscriber-tokens</span>
+      <span class="chip">/v1/inbox/:subscriberId</span><span class="chip">/v1/events/:txn/timeline</span><span class="chip">/v1/events/broadcast</span>
+      <span class="chip">/v1/suppressions</span><span class="chip">/v1/analytics</span><span class="chip">/webhooks/:provider</span>
+      <span class="chip">/o/:messageId.gif</span><span class="chip">/metrics</span>
+    </div>
+  </section>
+
+  <div class="conn traced">
+    <div class="line"></div>
+    <div class="lbl"><span class="pulse"></span><span class="q">trigger</span> queue · jobId = <span class="m">evt-{transactionId}</span></div>
+    <div class="line"></div><div class="head"></div>
+  </div>
+
+  <!-- ═══════════ LAYER: trigger worker ═══════════ -->
+  <section class="band traced" aria-label="Trigger worker">
+    <p class="eyebrow"><b>Worker · resolve the audience</b> · figures out exactly who should receive this · <span class="m">:3002</span></p>
+    <div class="split">
+      <div class="node hot">
+        <h3><span class="step">5</span> Trigger worker</h3>
+        <p>Turns "who" into concrete recipients, in chunks of 100:</p>
+        <p><strong>Direct list</strong> → chunked as-is. · <strong>Topic</strong> (a named group, <span class="m">to: {topic}</span>) → members read page by page, pausing whenever downstream queues get too full (backpressure — Redis memory stays flat for any audience size). · <strong>Broadcast</strong> → pages every subscriber in the environment the same way. One fan-out job per chunk.</p>
+      </div>
+      <div class="node branch">
+        <h3>↩ Overflow queue</h3>
+        <p>Requests diverted at <span class="step" style="vertical-align:-4px">3</span> re-enter here at a controlled trickle once the tenant has budget again. Nothing is dropped below the hard limit.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="conn traced">
+    <div class="line"></div>
+    <div class="lbl"><span class="pulse"></span><span class="q">fanout</span> queue · one job per 100 recipients</div>
+    <div class="line"></div><div class="head"></div>
+  </div>
+
+  <!-- ═══════════ LAYER: fan-out worker ═══════════ -->
+  <section class="band traced" aria-label="Fan-out worker">
+    <p class="eyebrow"><b>Worker · one job becomes N messages</b> · one message per person, per channel, per workflow step</p>
+    <div class="split">
+      <div class="node hot">
+        <h3><span class="step">6</span> Fan-out worker <span class="m dim">per recipient × per workflow step</span></h3>
+        <p>① Upsert subscribers · ② drop anyone on the <strong>suppression list</strong> (batch check) · ③ evaluate <strong>step conditions</strong> against payload + subscriber (<span class="m">plan = "pro"</span>?) · ④ pin the <strong>template version</strong> so later edits can't change an in-flight send · ⑤ bulk-insert <strong>message rows</strong> — unique on <span class="m">(event, subscriber, channel, step)</span>, the second dedupe wall · ⑥ <span class="m">addBulk</span> delivery jobs, <span class="m">jobId = messageId</span>.</p>
+      </div>
+      <div class="node branch">
+        <h3>⏲ Digest window</h3>
+        <p>Digest steps don't enqueue — they append to a Redis window per subscriber. When it closes, one summary message carries all items (<span class="m">{{digest_items}}</span>); merged events get a terminal <span class="m">merged</span> row so they still settle.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="conn traced">
+    <div class="line"></div>
+    <div class="lbl"><span class="pulse"></span> 12 <span class="q">delivery</span> queues · channel × priority</div>
+    <div class="line"></div><div class="head"></div>
+  </div>
+
+  <!-- ═══════════ LAYER: delivery queues ═══════════ -->
+  <section class="band traced" aria-label="Delivery queues">
+    <p class="eyebrow"><b>Queue plane</b> · twelve separate waiting lines, so channels and priorities never block each other · Redis + BullMQ · <span class="step" style="vertical-align:-3px">7</span> the email lands in its lane</p>
+    <div class="scrollx">
+      <div class="qgrid">
+        <div class="qcol"><div class="qhead">email</div>
+          <div class="q">deliver-email-p0 <span class="dim">OTP</span></div>
+          <div class="q on"><span class="pulse"></span>deliver-email-p1 ← <b>ours</b></div>
+          <div class="q">deliver-email-p2 <span class="dim">marketing</span></div>
+        </div>
+        <div class="qcol"><div class="qhead">sms</div>
+          <div class="q">deliver-sms-p0</div><div class="q">deliver-sms-p1</div><div class="q">deliver-sms-p2</div>
+        </div>
+        <div class="qcol"><div class="qhead">push</div>
+          <div class="q">deliver-push-p0</div><div class="q">deliver-push-p1</div><div class="q">deliver-push-p2</div>
+        </div>
+        <div class="qcol"><div class="qhead">in-app</div>
+          <div class="q">deliver-inapp-p0</div><div class="q">deliver-inapp-p1</div><div class="q">deliver-inapp-p2</div>
+        </div>
+      </div>
+    </div>
+    <p style="margin:10px 0 0;color:var(--muted);font-size:12.5px">
+      Priority lanes are why a promo blast to a million users never delays a login code: p0 has its own queue, its own concurrency —
+      and <span class="m">WORKER_TIERS=p0</span> can pin whole worker processes to it. Per-channel rate limiters throttle each lane independently.
+    </p>
+  </section>
+
+  <div class="conn traced">
+    <div class="line"></div><div class="head"></div>
+  </div>
+
+  <!-- ═══════════ LAYER: delivery workers ═══════════ -->
+  <section class="band traced" aria-label="Delivery workers">
+    <p class="eyebrow"><b>Worker · the hot path</b> · read message → render → send → update one row. Nothing else.</p>
+    <div class="split">
+      <div class="node hot">
+        <h3><span class="step">8</span> Prepare</h3>
+        <p>Status guard (already sent? stop — safe re-delivery) · honor step <strong>delay</strong> · check the <strong>skip-if gate</strong>: "skip this reminder if step A was opened/read since it went out" — decided now, at send time, not at fan-out · render the <strong>pinned MJML template</strong> with Handlebars, inject the open-tracking pixel, derive the plaintext part.</p>
+      </div>
+      <div class="node hot">
+        <h3><span class="step">9</span> Send with failover</h3>
+        <p>Your tenant's <strong>integration chain</strong> (your provider accounts, credentials encrypted at rest with AES-256-GCM, decrypted only here) is tried in order, each behind a <strong>circuit breaker</strong>. Temporary error → retry with exponential backoff. Provider says "bad address" → <span class="badge b-err">failed</span>, no retry. First provider down → the next one sends it. Retries exhausted → <strong>dead-letter queue</strong>, held for replay instead of lost.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="conn traced">
+    <div class="line"></div>
+    <div class="lbl"><span class="step" style="vertical-align:-4px">10</span>&nbsp; provider APIs · four channels</div>
+    <div class="line"></div><div class="head"></div>
+  </div>
+
+  <!-- ═══════════ LAYER: channels ═══════════ -->
+  <section class="band" aria-label="Channels and providers">
+    <p class="eyebrow"><b>Channels &amp; providers</b> · configured per environment in the integration store</p>
+    <div class="qgrid scrollx" style="display:grid">
+      <div class="node hot">
+        <h3>✉ Email</h3>
+        <p><span class="m">SMTP · SendGrid · Resend</span></p>
+        <p>Lands in the recipient's inbox with the tracking pixel. Dev: Mailpit <span class="m">:8025</span> catches everything.</p>
+      </div>
+      <div class="node">
+        <h3>▤ SMS</h3>
+        <p><span class="m">Twilio</span></p>
+        <p>Plain text to the phone; delivery receipts come back by webhook.</p>
+      </div>
+      <div class="node">
+        <h3>⬒ Push</h3>
+        <p><span class="m">FCM</span></p>
+        <p>Device notification; dead device tokens are auto-suppressed on the provider's "unregistered" error.</p>
+      </div>
+      <div class="node">
+        <h3>◉ In-app</h3>
+        <p><span class="m">Postgres row + Redis pub/sub → WS gateway :3001</span></p>
+        <p>The message row <em>is</em> the durable inbox. Online → pushed live to <span class="m">&lt;NotificationInbox /&gt;</span>, marked delivered. Offline → waiting, unread, next login.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="conn">
+    <div class="line"></div>
+    <div class="lbl">the world answers back</div>
+    <div class="line"></div><div class="head"></div>
+  </div>
+
+  <!-- ═══════════ LAYER: feedback ═══════════ -->
+  <section class="band" aria-label="Feedback loop">
+    <p class="eyebrow"><b>Feedback loop</b> · closes the story on every message</p>
+    <div class="grid3">
+      <div class="node">
+        <h3><span class="step">11</span> Provider webhooks</h3>
+        <p>Signed callbacks (HMAC, timestamped) → <span class="m">status-events</span> queue → status worker updates the row: <span class="badge b-ok">delivered</span>, or <span class="badge b-err">bounced</span> / complaint — which also writes the address to the <strong>suppression list</strong> so step <span class="step" style="vertical-align:-4px">6</span> never emails it again.</p>
+      </div>
+      <div class="node">
+        <h3>Open tracking</h3>
+        <p>Recipient opens the email → the pixel fires <span class="m">GET /o/:messageId.gif</span> → <span class="badge b-ok">opened</span>. This is the timestamp the skip-if gate at <span class="step" style="vertical-align:-4px">8</span> reads to cancel redundant reminders.</p>
+      </div>
+      <div class="node">
+        <h3><span class="step">12</span> Settle &amp; observe</h3>
+        <p>A 30s sweep marks the event <span class="badge b-ok">completed</span> once every message is terminal. Execution logs never touch the hot path: Redis buffer → batch writer → Postgres + ClickHouse. The whole story per request: <span class="m">/v1/events/:txn/timeline</span>.</p>
+      </div>
+    </div>
+    <div class="life" aria-label="message lifecycle">
+      <span class="badge b-mut">queued</span><span class="arr">→</span>
+      <span class="badge b-info">sent</span><span class="arr">→</span>
+      <span class="badge b-ok">delivered</span><span class="arr">→</span>
+      <span class="badge b-ok">opened / read</span>
+      <span class="arr" style="margin-left:14px">⌁</span>
+      <span class="badge b-warn">retrying</span><span class="arr">→</span>
+      <span class="badge b-err">failed</span><span class="arr">→</span>
+      <span class="badge b-mut">dead-letter → replay</span>
+      <span class="arr" style="margin-left:14px">⌁</span>
+      <span class="badge b-err">bounced</span><span class="arr">→</span>
+      <span class="badge b-mut">suppressed</span>
+    </div>
+  </section>
+
+  <!-- ═══════════ data plane ═══════════ -->
+  <h2>The plane underneath — who remembers what</h2>
+  <div class="plane">
+    <div class="node store">
+      <h3>Postgres <span class="m dim">:5433</span> · source of truth</h3>
+      <ul>
+        <li><code>events</code> (outbox) + <code>messages</code> — every send, forever auditable</li>
+        <li><code>organizations · environments · api_keys</code> (hashed) · <code>org_members</code> (RBAC)</li>
+        <li><code>workflows · templates + template_versions · topics · subscribers</code></li>
+        <li><code>integrations</code> (sealed creds) · <code>suppressions</code> · execution logs</li>
+        <li>DR: the reconciler can rebuild every queue from this outbox alone</li>
+      </ul>
+    </div>
+    <div class="node store">
+      <h3>Redis · everything in motion</h3>
+      <ul>
+        <li>All BullMQ queues + <code>jobId</code> dedupe</li>
+        <li>Rate-limit windows · digest windows · log buffer</li>
+        <li>Pub/sub fabric for live in-app delivery</li>
+        <li>Loses power? Postgres outbox + reconciler restore the world</li>
+      </ul>
+    </div>
+    <div class="node store">
+      <h3>ClickHouse <span class="m dim">:8123</span> · analytics</h3>
+      <ul>
+        <li>Dual-written execution logs, 90-day TTL</li>
+        <li>Feeds <code>/v1/analytics</code> and the dashboard charts</li>
+        <li>Aggregations never compete with the send path for IOPS</li>
+      </ul>
+    </div>
+    <div class="node store">
+      <h3>Observability</h3>
+      <ul>
+        <li>Prometheus <code>/metrics</code> on API and every worker</li>
+        <li>OpenTelemetry — trace context rides <em>inside job payloads</em>, so one trace spans API → queues → workers → provider (Jaeger <code>:16686</code>)</li>
+        <li>Queue depths → the dashboard's sidebar pulse</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═══════════ narrative ═══════════ -->
+  <div class="story">
+    <h2>The same journey, in twelve sentences</h2>
+    <ol>
+      <li><span class="step">1</span><span>Your backend calls <code>trigger('order-shipped', …)</code> with a <strong>transactionId</strong> — the SDK is a thin, zero-dependency HTTP client.</span></li>
+      <li><span class="step">2</span><span>The API hashes your <code>ak_</code> key and resolves your tenant; every row and queue job from here on is scoped to it.</span></li>
+      <li><span class="step">3</span><span>Your tenant's rate budget is checked — bursts divert to the overflow queue instead of degrading anyone else.</span></li>
+      <li><span class="step">4</span><span>The event is deduped, persisted to the Postgres outbox, one job is enqueued, and you get <strong>202</strong> in milliseconds — the caller never waits on a single send.</span></li>
+      <li><span class="step">5</span><span>The trigger worker resolves the audience — direct list, streamed <strong>topic</strong> members, or full broadcast — into fan-out jobs of 100.</span></li>
+      <li><span class="step">6</span><span>The fan-out worker drops suppressed addresses, evaluates each step's <strong>conditions</strong>, parks digest steps in their window, pins the <strong>template version</strong>, and writes one deduped message row per recipient × step.</span></li>
+      <li><span class="step">7</span><span>Each message enters its lane — <code>deliver-email-p1</code> here — so OTPs (p0) never queue behind campaigns (p2).</span></li>
+      <li><span class="step">8</span><span>At send time the delivery worker re-checks reality: not already sent, delay elapsed, and the <strong>skip-if gate</strong> hasn't been satisfied by an earlier step being opened.</span></li>
+      <li><span class="step">9</span><span>The pinned MJML template renders with the payload, the pixel goes in, and <strong>sendWithFailover</strong> walks your integration chain behind circuit breakers — retry, fail over, or dead-letter.</span></li>
+      <li><span class="step">10</span><span>The provider hands it to the inbox — while sms, push and in-app rides the identical spine to phones, devices and your <code>&lt;NotificationInbox /&gt;</code>.</span></li>
+      <li><span class="step">11</span><span>Delivery receipts and bounces flow back through signed webhooks; bounces auto-populate the suppression list that step 6 consults.</span></li>
+      <li><span class="step">12</span><span>Logs batch into Postgres + ClickHouse off the hot path, the sweep settles the event, and <code>/v1/events/:txn/timeline</code> can replay the whole story.</span></li>
+    </ol>
+  </div>
+
+  <footer>
+    asyncify<span style="color:var(--accent)">.</span> — multi-channel notification infrastructure · API :3000 · workers :3002 · WS :3001 · dashboard :5173
+  </footer>
+</div>
+
+</body></html>
