@@ -45,6 +45,10 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+(nothing — between tasks)
+
+## Recently finished
+
 ### Conversations / Agents — Phase 2b: Email channel — COMPLETE
 (user-verified 2026-07-08: real Postmark inbound through the tunnel,
 reply delivered to the real inbox via re-added Resend, Re: threading,
@@ -179,8 +183,6 @@ shared Redis — tests now pin REDIS_DB=15 (tests/setup.ts, skill §12).
 **Out of scope for Phase 2**: subscriber linking/connect buttons, media
 attachments, typing indicators, message editing, Slack/Teams/WhatsApp,
 email inbound-parse (next phase candidate).
-
-## Recently finished
 
 ### Conversations / Agents — Phase 1 (ACI direction) — COMPLETE
 
