@@ -226,7 +226,17 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 - **Publishing**: account has 2FA-on-publish; `prepublishOnly` rebuilds;
   scoped packages need `publishConfig.access: public` (already set).
 
-## 12. Email domain knowledge lives in its own skill
+## 12. Tests own Redis db 15 — never share queues with the dev fleet
+
+Integration tests enqueue real BullMQ jobs; a dev worker fleet on the
+same Redis raced the suite's own processor calls and flipped a
+history-count assertion depending on who won (passed twice by luck
+before failing). `tests/setup.ts` pins `REDIS_DB=15` before any import,
+so test jobs are invisible to the fleet and vice versa. If a test's
+behavior changes when `npm run worker` is running, suspect shared state
+first. Postgres stays shared (fresh random org per suite covers it).
+
+## 13. Email domain knowledge lives in its own skill
 
 Deliverability (SPF/DKIM/DMARC, warming, reputation thresholds),
 compliance (CAN-SPAM/GDPR/CASL, unsubscribe rules), provider error
@@ -234,7 +244,7 @@ classification for new providers, and the known compliance gaps are in
 `.claude/skills/email-delivery/SKILL.md`. Consult it before email
 features, new providers, or template work.
 
-## 13. Dashboard design system — "Quiet Infrastructure" (condensed)
+## 14. Dashboard design system — "Quiet Infrastructure" (condensed)
 
 Tokens live in `dashboard/src/styles.css` — the single source of truth; no
 hardcoded hex in components. Geist Sans for UI, **Geist Mono for every

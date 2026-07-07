@@ -249,6 +249,22 @@ create table if not exists agents (
   unique (tenant_id, identifier)
 );
 
+-- Channel connections: an agent's identity on an external messaging
+-- platform (v1: telegram). Credentials (bot token + the webhook secret we
+-- mint) are sealed; config holds public facts (bot username/id).
+create table if not exists agent_connections (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants(id),
+  agent_id    uuid not null references agents(id) on delete cascade,
+  channel     text not null, -- telegram
+  credentials text not null, -- sealed JSON {botToken, webhookSecret}
+  config      jsonb not null default '{}', -- {botId, botUsername}
+  status      text not null default 'active',
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  unique (agent_id, channel)
+);
+
 create table if not exists conversations (
   id              uuid primary key default gen_random_uuid(),
   tenant_id       uuid not null references tenants(id),

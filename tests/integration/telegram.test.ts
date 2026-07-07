@@ -1,0 +1,274 @@
+/**
+ * Telegram channel integration: the production path end to end, with a
+ * stub standing in for api.telegram.org (TELEGRAM_API_BASE) and the real
+ * @asyncify-hq/agent SDK as the bridge. Everything else — connect flow,
+ * webhook ingestion, conversation core, processor, reply delivery — is
+ * the exact code production runs.
+ *
+ * Requires: `docker compose up -d postgres redis` and `npm run migrate`.
+ */
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Job } from 'bullmq';
+import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { buildApp } from '../../src/api/app';
+import { closeQueues } from '../../src/shared/queues';
+import { redis } from '../../src/shared/redis';
+import { pool } from '../../src/db/pool';
+import {
+  processConversation,
+  type ConversationJobData,
+} from '../../src/workers/processors/conversation.processor';
+import { createHandler, defineAgent } from '../../packages/agent/src/index';
+
+const BOT_TOKEN = '7000001:AA-itest-telegram-token';
+
+let app: FastifyInstance;
+let apiKey = '';
+let tenantId = '';
+let signingSecret = '';
+let bridge: Server;
+let bridgeUrl = '';
+
+// ---- stub Telegram API: records every call, answers like the real one ----
+let tgStub: Server;
+const tgCalls: Array<{ method: string; body: Record<string, unknown> }> = [];
+let webhookSecretSeen = '';
+
+function startTelegramStub(): Promise<void> {
+  tgStub = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const method = String(req.url).split('/').pop() ?? '';
+      const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      tgCalls.push({ method, body });
+      const results: Record<string, unknown> = {
+        getMe: { id: 7000001, is_bot: true, username: 'itest_bot' },
+        setWebhook: true,
+        deleteWebhook: true,
+        getWebhookInfo: { url: 'https://example.test/hook', pending_update_count: 0 },
+        sendMessage: { message_id: 4242 },
+      };
+      if (method === 'setWebhook') webhookSecretSeen = String(body.secret_token ?? '');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: method in results, result: results[method], description: method in results ? undefined : 'unknown method' }));
+    });
+  });
+  return new Promise((r) => tgStub.listen(0, () => r()));
+}
+
+const sends = () => tgCalls.filter((c) => c.method === 'sendMessage');
+
+const brain = defineAgent({
+  onMessage(ctx) {
+    if (ctx.message.text.includes('order')) {
+      ctx.metadata.set('topic', 'orders');
+      return 'Replacement on the way!';
+    }
+    return `heard on ${ctx.conversation.channel}: ${ctx.message.text}`;
+  },
+});
+
+const json = (res: { body: string }) => JSON.parse(res.body);
+let connectionId = '';
+
+function tgUpdate(updateId: number, text: string, userId = 555001) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId * 10,
+      date: 1_700_000_000,
+      text,
+      from: { id: userId, is_bot: false, first_name: 'Ana', username: 'ana_tg' },
+      chat: { id: userId, type: 'private' },
+    },
+  };
+}
+
+async function postUpdate(update: unknown, secret = webhookSecretSeen) {
+  return app.inject({
+    method: 'POST',
+    url: `/webhooks/telegram/${connectionId}`,
+    headers: { 'x-telegram-bot-api-secret-token': secret },
+    payload: update as Record<string, unknown>,
+  });
+}
+
+beforeAll(async () => {
+  await startTelegramStub();
+  process.env.TELEGRAM_API_BASE = `http://localhost:${(tgStub.address() as AddressInfo).port}`;
+
+  app = await buildApp();
+  const email = `tg-${Date.now()}-${Math.floor(Math.random() * 1e6)}@itest.local`;
+  const signup = await app.inject({
+    method: 'POST',
+    url: '/auth/signup',
+    payload: { name: 'TG IT', email, password: 'integration-pw-1', organizationName: 'TG IT Org' },
+  });
+  const dev = json(signup).environments.find((e: { name: string }) => e.name === 'Development');
+  apiKey = dev.apiKey;
+  tenantId = dev.id;
+
+  bridge = createServer((req, res) => createHandler(brain, { signingSecret })(req, res));
+  await new Promise<void>((r) => bridge.listen(0, r));
+  bridgeUrl = `http://localhost:${(bridge.address() as AddressInfo).port}/`;
+
+  const created = await app.inject({
+    method: 'POST',
+    url: '/v1/agents',
+    headers: { 'x-api-key': apiKey },
+    payload: { identifier: 'tg-support', name: 'TG Support', bridgeUrl },
+  });
+  signingSecret = json(created).signingSecret;
+});
+
+afterAll(async () => {
+  delete process.env.TELEGRAM_API_BASE;
+  tgStub?.close();
+  bridge?.close();
+  await app.close();
+  await closeQueues();
+  await redis.quit();
+  await pool.end();
+});
+
+describe('connect flow', () => {
+  test('validates the token, stores the connection, registers the webhook', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents/tg-support/channels/telegram',
+      headers: { 'x-api-key': apiKey },
+      payload: { botToken: BOT_TOKEN },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(json(res).botUsername).toBe('itest_bot');
+    connectionId = json(res).webhookUrl.split('/').pop();
+
+    const setWebhook = tgCalls.find((c) => c.method === 'setWebhook');
+    expect(setWebhook?.body.url).toBe(`http://localhost:3000/webhooks/telegram/${connectionId}`);
+    expect(webhookSecretSeen).toMatch(/^[0-9a-f]{48}$/);
+  });
+
+  test('channels listing surfaces live webhook state', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/agents/tg-support/channels',
+      headers: { 'x-api-key': apiKey },
+    });
+    const tg = json(res).channels.find((c: { channel: string }) => c.channel === 'telegram');
+    expect(tg.config.botUsername).toBe('itest_bot');
+    expect(tg.webhook.url).toBe('https://example.test/hook');
+    expect(tg.webhook.expectedUrl).toContain(`/webhooks/telegram/${connectionId}`);
+  });
+
+  test('reconnect re-registers against the current PUBLIC_URL', async () => {
+    const before = tgCalls.filter((c) => c.method === 'setWebhook').length;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents/tg-support/channels/telegram/reconnect',
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(tgCalls.filter((c) => c.method === 'setWebhook').length).toBe(before + 1);
+  });
+});
+
+describe('inbound webhook', () => {
+  test('rejects a wrong or missing secret token', async () => {
+    expect((await postUpdate(tgUpdate(1, 'hi'), 'wrong-secret')).statusCode).toBe(401);
+    const noHeader = await app.inject({
+      method: 'POST',
+      url: `/webhooks/telegram/${connectionId}`,
+      payload: tgUpdate(1, 'hi'),
+    });
+    expect(noHeader.statusCode).toBe(401);
+  });
+
+  test('unknown connection is a 404', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/telegram/2a2c2e2e-0000-4000-8000-000000000000',
+      payload: tgUpdate(1, 'hi'),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  test('a text message opens a telegram conversation for tg-<userId>', async () => {
+    const res = await postUpdate(tgUpdate(100, 'hello from telegram'));
+    expect(res.statusCode).toBe(200);
+    expect(json(res).ok).toBe(true);
+
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    const conv = json(list).conversations[0];
+    expect(conv.channel).toBe('telegram');
+    expect(conv.subscriberId).toBe('tg-555001');
+  });
+
+  test('a redelivered update_id is acked as duplicate, not re-ingested', async () => {
+    const res = await postUpdate(tgUpdate(100, 'hello from telegram'));
+    expect(json(res).duplicate).toBe(true);
+  });
+
+  test('non-text and group updates are acked but skipped', async () => {
+    const sticker = { update_id: 101, message: { message_id: 1, date: 1, from: { id: 555001, is_bot: false }, chat: { id: 555001, type: 'private' } } };
+    expect(json(await postUpdate(sticker)).skipped).toBe(true);
+    const group = tgUpdate(102, 'in a group');
+    group.message.chat.type = 'group';
+    expect(json(await postUpdate(group)).skipped).toBe(true);
+  });
+});
+
+describe('reply delivery', () => {
+  test('the brain answers back into the telegram chat, exactly once', async () => {
+    await postUpdate(tgUpdate(200, 'where is my order?'));
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    const conv = json(list).conversations[0];
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const turn = json(detail).messages.findLast((m: { role: string }) => m.role === 'user');
+
+    const data: ConversationJobData = { tenantId, conversationId: conv.id, messageId: turn.id };
+    await processConversation({ data } as Job<ConversationJobData>);
+
+    expect(sends().length).toBe(1);
+    expect(sends()[0].body.chat_id).toBe('555001');
+    expect(sends()[0].body.text).toBe('Replacement on the way!');
+
+    // Crash-retry simulation: the send-once guard must hold.
+    await processConversation({ data } as Job<ConversationJobData>);
+    expect(sends().length).toBe(1);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(json(after).conversation.metadata.topic).toBe('orders');
+  });
+});
+
+describe('disconnect', () => {
+  test('deletes the webhook and the connection; webhook then 404s', async () => {
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/v1/agents/tg-support/channels/telegram',
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(json(res).deleted).toBe(true);
+    expect(tgCalls.some((c) => c.method === 'deleteWebhook')).toBe(true);
+    expect((await postUpdate(tgUpdate(300, 'anyone home?'))).statusCode).toBe(404);
+  });
+});

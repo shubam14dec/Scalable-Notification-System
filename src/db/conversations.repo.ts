@@ -134,6 +134,74 @@ export async function deleteAgent(tenantId: string, identifier: string): Promise
   return rowCount ?? 0;
 }
 
+// ---- channel connections ----
+
+export interface AgentConnection {
+  id: string;
+  tenant_id: string;
+  agent_id: string;
+  channel: string;
+  credentials: string; // sealed — open only where the channel client needs it
+  config: Record<string, unknown>;
+  status: 'active' | 'disabled';
+  created_at: string;
+  updated_at: string;
+}
+
+/** Connect (or re-connect) a channel: one connection per (agent, channel). */
+export async function upsertConnection(c: {
+  tenantId: string;
+  agentId: string;
+  channel: string;
+  sealedCredentials: string;
+  config: Record<string, unknown>;
+}): Promise<AgentConnection> {
+  const { rows } = await pool.query(
+    `insert into agent_connections (tenant_id, agent_id, channel, credentials, config)
+     values ($1, $2, $3, $4, $5)
+     on conflict (agent_id, channel) do update set
+       credentials = excluded.credentials,
+       config      = excluded.config,
+       status      = 'active',
+       updated_at  = now()
+     returning *`,
+    [c.tenantId, c.agentId, c.channel, c.sealedCredentials, JSON.stringify(c.config)],
+  );
+  return rows[0];
+}
+
+export async function getConnectionById(id: string): Promise<AgentConnection | null> {
+  const { rows } = await pool.query('select * from agent_connections where id = $1', [id]);
+  return rows[0] ?? null;
+}
+
+export async function getConnectionForAgent(
+  agentId: string,
+  channel: string,
+): Promise<AgentConnection | null> {
+  const { rows } = await pool.query(
+    'select * from agent_connections where agent_id = $1 and channel = $2',
+    [agentId, channel],
+  );
+  return rows[0] ?? null;
+}
+
+export async function listConnectionsForAgent(agentId: string): Promise<AgentConnection[]> {
+  const { rows } = await pool.query(
+    'select * from agent_connections where agent_id = $1 order by channel',
+    [agentId],
+  );
+  return rows;
+}
+
+export async function deleteConnection(agentId: string, channel: string): Promise<number> {
+  const { rowCount } = await pool.query(
+    'delete from agent_connections where agent_id = $1 and channel = $2',
+    [agentId, channel],
+  );
+  return rowCount ?? 0;
+}
+
 /** Subscriber row by primary key (conversations store the uuid). */
 export async function getSubscriberById(id: string): Promise<{
   id: string;
@@ -289,6 +357,26 @@ export async function insertConversationMessage(m: {
 export async function getConversationMessage(id: string): Promise<ConversationMessage | null> {
   const { rows } = await pool.query('select * from conversation_messages where id = $1', [id]);
   return rows[0] ?? null;
+}
+
+/** For retry paths: recover the row a dedupe-blocked insert points at. */
+export async function getConversationMessageByDedupe(
+  conversationId: string,
+  dedupeKey: string,
+): Promise<ConversationMessage | null> {
+  const { rows } = await pool.query(
+    'select * from conversation_messages where conversation_id = $1 and dedupe_key = $2',
+    [conversationId, dedupeKey],
+  );
+  return rows[0] ?? null;
+}
+
+/** Send-once bookkeeping (e.g. the telegram message id once delivered). */
+export async function updateConversationMessageRaw(id: string, raw: unknown): Promise<void> {
+  await pool.query('update conversation_messages set raw = $2 where id = $1', [
+    id,
+    JSON.stringify(raw),
+  ]);
 }
 
 export async function conversationTranscript(

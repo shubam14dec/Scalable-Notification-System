@@ -8,17 +8,22 @@ import { internalTrigger } from '../../core/internal-trigger';
 import { signWebhook } from '../../api/webhook-signature';
 import { openSecret } from '../../auth/secret-box';
 import { inAppPubSubChannel } from '../../providers/inapp';
+import { telegram } from '../../channels/telegram';
 import {
   conversationHistoryBefore,
   getAgentById,
+  getConnectionForAgent,
   getConversation,
   getConversationMessage,
+  getConversationMessageByDedupe,
   getSubscriberById,
   insertConversationMessage,
   resolveConversation,
+  updateConversationMessageRaw,
   updateConversationMetadata,
   type Agent,
   type Conversation,
+  type ConversationMessage,
 } from '../../db/conversations.repo';
 
 export interface ConversationJobData {
@@ -131,23 +136,19 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   const { reply, signals } = parsed.data;
 
   if (reply !== undefined && reply.length > 0) {
-    const replyRow = await insertConversationMessage({
-      conversationId,
-      tenantId,
-      role: 'agent',
-      content: reply,
-      dedupeKey: `reply-${messageId}`,
-    });
+    // Retry-safe in two layers: the dedupe key stops a duplicate ROW, and
+    // deliverReply's send-once guard stops a duplicate SEND when a prior
+    // attempt crashed between inserting the row and delivering it.
+    const replyRow =
+      (await insertConversationMessage({
+        conversationId,
+        tenantId,
+        role: 'agent',
+        content: reply,
+        dedupeKey: `reply-${messageId}`,
+      })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
     if (replyRow) {
-      await publishConversationEvent(conversation, subscriber.external_id, agent, {
-        type: 'conversation.message',
-        message: {
-          id: replyRow.id,
-          role: 'agent',
-          text: reply,
-          createdAt: replyRow.created_at,
-        },
-      });
+      await deliverReply(conversation, subscriber.external_id, agent, replyRow);
     }
   }
 
@@ -191,9 +192,11 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
     } else if (signal.type === 'resolve') {
       await resolveConversation(conversationId, signal.summary);
       await systemNote(conversation, messageId, signalIndex, `conversation resolved${signal.summary ? `: ${signal.summary}` : ''}`);
-      await publishConversationEvent(conversation, subscriber.external_id, agent, {
-        type: 'conversation.resolved',
-      });
+      if (conversation.channel === 'inapp') {
+        await publishConversationEvent(conversation, subscriber.external_id, agent, {
+          type: 'conversation.resolved',
+        });
+      }
     }
   }
 
@@ -205,6 +208,48 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
       `agent ${agent.identifier} handled turn: reply=${reply !== undefined && reply.length > 0} ` +
       `signals=${signals.map((s) => s.type).join(',') || 'none'}`,
   });
+}
+
+/**
+ * Channel-aware reply delivery. in-app: publish on the subscriber's WS
+ * pub/sub channel (the row is already the durable inbox copy). telegram:
+ * sendMessage via the connection's bot, recording the telegram message id
+ * on the row so a retried job never sends the same reply twice.
+ */
+async function deliverReply(
+  conversation: Conversation,
+  subscriberExternalId: string,
+  agent: Agent,
+  replyRow: ConversationMessage,
+): Promise<void> {
+  if (conversation.channel === 'inapp') {
+    await publishConversationEvent(conversation, subscriberExternalId, agent, {
+      type: 'conversation.message',
+      message: {
+        id: replyRow.id,
+        role: 'agent',
+        text: replyRow.content,
+        createdAt: replyRow.created_at,
+      },
+    });
+    return;
+  }
+
+  if (conversation.channel === 'telegram') {
+    const raw = (replyRow.raw ?? {}) as { telegramMessageId?: number };
+    if (raw.telegramMessageId) return; // already delivered on a prior attempt
+    const connection = await getConnectionForAgent(agent.id, 'telegram');
+    if (!connection || connection.status !== 'active') {
+      logger.warn({ agent: agent.identifier }, 'telegram reply dropped: channel not connected');
+      return;
+    }
+    const { botToken } = JSON.parse(openSecret(connection.credentials)) as { botToken: string };
+    const sent = await telegram.sendMessage(botToken, conversation.thread_key, replyRow.content);
+    await updateConversationMessageRaw(replyRow.id, { ...raw, telegramMessageId: sent.message_id });
+    return;
+  }
+
+  logger.warn({ channel: conversation.channel }, 'reply for unsupported channel dropped');
 }
 
 /** Transcript breadcrumb for a signal — deduped so retries can't repeat it. */

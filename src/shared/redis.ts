@@ -10,6 +10,7 @@ export function createRedis(): Redis {
   return new Redis({
     host: env.redisHost,
     port: env.redisPort,
+    db: env.redisDb,
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
   });

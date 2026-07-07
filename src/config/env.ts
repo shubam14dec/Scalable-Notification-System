@@ -21,6 +21,9 @@ export const env = {
 
   redisHost: process.env.REDIS_HOST ?? 'localhost',
   redisPort: int('REDIS_PORT', 6379),
+  // Nonzero only in tests (vitest setup pins 15): isolates test queues,
+  // dedupe keys and rate limits from a dev worker fleet on the same Redis.
+  redisDb: int('REDIS_DB', 0),
 
   smtpHost: process.env.SMTP_HOST ?? 'localhost',
   smtpPort: int('SMTP_PORT', 1025),

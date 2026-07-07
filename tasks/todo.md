@@ -22,7 +22,75 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-(nothing — between tasks)
+### Conversations / Agents — Phase 2: Telegram channel (plan pending user OK)
+
+Goal: the "any channel, same brain" proof. A customer connects their
+Telegram bot to an agent; end-users message the bot; the SAME
+conversation core + bridge + brain answer back in Telegram. Zero agent
+code changes — the channel is pure platform work.
+
+Design decisions (locked unless you object):
+- **Connections**: new `agent_connections` table (tenant, agent, channel,
+  sealed credentials {botToken}, config {secretToken, botUsername},
+  status; unique (agent_id, channel)) — NOT the integrations table
+  (that's outbound failover chains; this is a per-agent identity).
+- **Identity**: subscriber auto-created as `tg-<telegramUserId>`;
+  conversation thread_key = telegram chat id (so outbound needs no
+  subscriber schema change). Linking a tg user to an existing app
+  subscriber (deep-link /start token) = deferred, noted for Phase 2.5.
+- **Inbound**: ONE path — webhook `POST /webhooks/telegram/:connectionId`
+  verified via Telegram's `X-Telegram-Bot-Api-Secret-Token` (we mint the
+  secret at connect time, sealed in config). Idempotency free of charge:
+  Telegram's `update_id` is the message dedupe key. NO dev poller (user
+  decision: no local-only shortcuts) — local dev runs a real tunnel and
+  sets PUBLIC_URL to it, so Telegram pushes exactly as in production.
+  Because tunnel URLs rotate, the connect API must support re-registering
+  the webhook (reconnect action) and surface getWebhookInfo status.
+- **Outbound**: conversation.processor becomes channel-aware — 'inapp' →
+  existing WS publish; 'telegram' → sendMessage via the connection's bot
+  token, with send-once tracking (reply row records the telegram message
+  id in `raw`; a retried job re-sends only if it isn't there).
+- **Connect flow**: POST /v1/agents/:id/channels/telegram {botToken} →
+  we validate via getMe + register setWebhook(PUBLIC_URL/webhooks/...,
+  secret_token). DELETE disconnects (deleteWebhook). Token sealed with
+  secret-box, never returned.
+
+**Slice 1 — backend** — DONE: 81 tests green twice consecutively.
+Bonus root-cause fix: suite was racing the live dev worker fleet on
+shared Redis — tests now pin REDIS_DB=15 (tests/setup.ts, skill §12).
+- [x] Schema: `agent_connections` + repo functions
+- [x] `src/channels/telegram.ts` — tiny client (getMe, setWebhook,
+      deleteWebhook, getWebhookInfo, sendMessage), base URL read
+      per-call from TELEGRAM_API_BASE (stub-able in tests only)
+- [x] Routes: connect (getMe-validated, secret minted+sealed, setWebhook
+      registered), reconnect (re-register after PUBLIC_URL/tunnel
+      change), channels list w/ live getWebhookInfo, disconnect
+      (best-effort deleteWebhook) + inbound webhook (secret-token 401,
+      update_id dedupe, private text only, 200-acks what it skips)
+- [x] conversation.processor: channel-aware deliverReply (inapp → WS,
+      telegram → sendMessage w/ send-once guard via raw.telegramMessageId,
+      recovers the row when a retry hits the reply dedupe)
+- [x] Integration tests (10): connect/reconnect/webhook-state, bad
+      secret 401, unknown connection 404, duplicate update ack,
+      non-text/group skip, reply lands in chat exactly once across a
+      crash-retry, disconnect kills the webhook
+
+**Slice 2 — surfaces + real-bot E2E (build → verify → commit)**
+- [ ] Dashboard Agents page: per-agent "Connect Telegram" (paste bot
+      token in a modal — never in chat), connected state showing
+      webhook status (getWebhookInfo), re-register + disconnect actions
+- [ ] Conversations UI: channel column/badge (list already carries it)
+- [ ] E2E with a REAL bot over a REAL tunnel (user-driven): user creates
+      a bot via @BotFather + starts a tunnel (e.g. `cloudflared tunnel
+      --url http://localhost:3000` or ngrok), sets PUBLIC_URL to the
+      tunnel URL, connects the bot in the dashboard, runs the agent
+      demo, messages the bot from a phone → Telegram pushes the webhook
+      through the tunnel → brain answers in Telegram → transcript +
+      workflow breadcrumb in the dashboard. Identical path to prod.
+
+**Out of scope for Phase 2**: subscriber linking/connect buttons, media
+attachments, typing indicators, message editing, Slack/Teams/WhatsApp,
+email inbound-parse (next phase candidate).
 
 ## Recently finished
 
