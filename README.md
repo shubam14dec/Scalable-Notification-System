@@ -161,6 +161,21 @@ POST /v1/events/trigger ──202──▶ caller gets transactionId immediately
 | Async status-callback ingestion (bounce storms can't slow the API) | `src/api/routes/webhooks.ts` |
 | Queue-depth + breaker observability | `GET /ops/queues`, `GET /ops/breakers` |
 
+## Agents & conversations (two-way)
+
+Notifications talk *at* people; **agents** talk *with* them. Register an
+agent (a bridge URL we call), write ~20 lines with
+[`@asyncify-hq/agent`](packages/agent), and users can converse with it
+from the in-app `<AgentChat />` widget, **Telegram**, or **email** — same
+brain on every channel, every transcript in the dashboard, and the agent
+can fire real notification workflows mid-conversation (`ctx.trigger`).
+Try it: `npm run agent:demo`, then chat from the dashboard's Inbox
+preview.
+
+Channel setup and the local-tunnel → production migration (PUBLIC_URL,
+Telegram re-register, Postmark inbound, custom MX domain when DNS is
+available): **[docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md)**.
+
 ## Quickstart
 
 Requires Node 20+, Docker.

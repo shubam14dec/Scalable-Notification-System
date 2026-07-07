@@ -22,7 +22,12 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Conversations / Agents — Phase 2b: Email channel (plan pending user OK)
+### Conversations / Agents — Phase 2b: Email channel — COMPLETE
+(user-verified 2026-07-08: real Postmark inbound through the tunnel,
+reply delivered to the real inbox via re-added Resend, Re: threading,
+resolve, transcript + metadata in dashboard. "everythign worked
+awesome". Production migration doc: docs/AGENT-CHANNELS.md, linked
+from README. Commits f6f78f0 / f6a5ac1 + docs.)
 
 Goal: notifications become conversations — a user REPLIES to an email
 and the agent answers. Third channel on the same core; zero SDK changes.
@@ -72,13 +77,10 @@ Design decisions:
       conversation), Message-ID dedupe, quoted-reply stripping, reply
       send-once, suppressed address → no send + breadcrumb
 **Slice 2 — surfaces + real E2E (user-driven)**
-- [ ] Channels modal: email section (inbound address input, webhook URL
+- [x] Channels modal: email section (inbound address input, webhook URL
       with copy button + Postmark setup steps, connection state)
-- [ ] E2E: user signs up for Postmark (free) → copies the server's
-      inbound address into the modal → pastes our webhook URL into
-      Postmark's inbound settings → emails the agent from
-      shubham@automote.io → reply arrives back there via re-added
-      Resend integration
+- [x] E2E user-verified: Postmark inbound → tunnel → brain → Resend
+      reply back to the real inbox, threaded; resolve; transcript OK
 
 **User-side prerequisites (flagging early):** a free Postmark account
 (inbound needs no approval, no DNS) and re-adding the Resend
