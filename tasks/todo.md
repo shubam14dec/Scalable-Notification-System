@@ -22,6 +22,27 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+(nothing — between tasks)
+
+## Recently finished
+
+### Conversations / Agents — Phase 1 (ACI direction) — COMPLETE
+
+User-verified in the browser 2026-07-08: chat panel live reply, welcome
+email in Mailpit (Resend integration removed), Conversations page
+transcript + metadata all confirmed working. Commits 8e0bcb6 (core),
+785efb7 (SDK+demo+tests), 210e659 (surfaces) — NOT pushed yet.
+
+**Review:** the two-way pipe reused almost everything — queues, HMAC
+webhook signing, secret-box, subscriber tokens, WS pub/sub, StatusBadge.
+Genuinely new: 3 tables, 1 processor, 1 SDK package, 2 dashboard pages.
+Next candidates: push to GitHub · publish @asyncify-hq/agent · Phase 2
+inbound channels (Telegram first, then email inbound-parse) · Phase 3
+managed LLM brain · onAction/interactive cards.
+
+<details>
+<summary>Original plan (all items done)</summary>
+
 ### Conversations / Agents — Phase 1 (ACI direction; approved)
 
 Goal: make the pipe two-way. A customer registers an **agent** (a bridge
@@ -95,6 +116,8 @@ attachments.
 plain text/markdown replies; bridge auth = per-agent HMAC secret
 (AES-sealed at rest like integration creds); inbound auth = subscriber
 tokens (browser) or api key (server).
+
+</details>
 
 ## Done (compressed history)
 
