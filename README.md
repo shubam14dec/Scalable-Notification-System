@@ -11,6 +11,64 @@ SDKs: [`@asyncify-hq/node`](packages/sdk-node) ·
 **Channels:** email, SMS, push, in-app (live WebSocket push + durable inbox) —
 extensible via one provider interface.
 
+## How it works — the simple version
+
+Your app makes **one API call**; Asyncify figures out *who* to notify, on
+*which channels*, and delivers it reliably — even when providers fail or a
+million people need the same message.
+
+The core trick is that **the caller never waits for the slow part**. It works
+like a restaurant: the waiter takes your order, hands you a token, and walks
+away — the kitchen cooks in the background. In code: the API writes the
+request down, replies `202 Accepted` in milliseconds, and queues do the rest.
+
+A request passes through six hands:
+
+1. **Your app triggers an event.**
+   *One-liner: "Ana's order shipped → run the `order-shipped` workflow for her."*
+2. **The API accepts it (fast).** It checks your API key, checks you're not
+   over your rate limit, ignores duplicates (same `transactionId` twice =
+   sent once), saves the event, and replies immediately.
+   *One-liner: "Got it, here's your receipt (`transactionId`) — check back anytime."*
+3. **The trigger worker works out the audience.** A direct list, a **topic**
+   (a named group), or literally everyone (broadcast) — sliced into batches
+   of 100 so no single job is huge.
+   *One-liner: "'Everyone following repo X' → 40,000 people → 400 small jobs."*
+4. **The fan-out worker turns one event into individual messages.** Per
+   person, per channel, per workflow step — skipping anyone on the
+   suppression list (bounced/complained), applying the workflow's rules
+   (conditions, delays, digest windows), and locking in the template version.
+   *One-liner: "Ana gets an email now and a push in 10 minutes unless she reads the email first."*
+5. **Delivery queues, sorted by channel and priority.** Twelve separate
+   lanes (email/SMS/push/in-app × P0/P1/P2) — like an airport fast-track,
+   an urgent OTP never stands behind a marketing blast.
+   *One-liner: "Login codes ride P0; the newsletter rides P2; they never share a lane."*
+6. **The delivery worker actually sends it.** Renders the template, calls
+   *your* configured provider (SendGrid, Twilio, FCM…), retries on hiccups,
+   fails over to your backup provider, and parks hopeless jobs in a
+   dead-letter queue for replay.
+   *One-liner: "SendGrid is down? The same email leaves via SMTP ten seconds later."*
+
+Then the world reports back: providers send webhooks ("delivered" /
+"bounced"), email opens fire a tracking pixel, and every message's full
+story is readable at `/v1/events/:transactionId/timeline`.
+
+**Words you'll see everywhere** (one line each):
+
+| Word | Meaning |
+|---|---|
+| **Workflow** | A recipe: which channels, in what order, with what rules ("email, wait 10m, then push"). |
+| **Subscriber** | A person you notify (their email, phone, device tokens, preferences). |
+| **Topic** | A named group of subscribers you can target with one call. |
+| **Integration** | Your provider account (e.g. SendGrid key) stored encrypted; chains give you failover. |
+| **Template** | Versioned MJML email design; in-flight messages keep the version they started with. |
+| **Digest** | "Don't send 30 emails in an hour — send one summary." |
+| **Suppression list** | Addresses that bounced or complained; we never send to them again automatically. |
+| **Queue / worker** | The waiting line (Redis) and the process that takes jobs off it. Scale = add more workers. |
+| **Idempotency** | Safe retries: sending the same request twice can never create two notifications. |
+
+The diagram below is the same story with every component named.
+
 ## Architecture
 
 ```
