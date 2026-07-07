@@ -71,33 +71,55 @@ The diagram below is the same story with every component named.
 
 ## Architecture
 
+Rule of thumb for what runs on what: **Postgres** holds anything permanent,
+**Redis** holds the queues and everything in motion, **ClickHouse** gets an
+analytics copy, and every box marked *worker* is a plain Node process you can
+run N copies of.
+
 ```
-POST /v1/events/trigger  ──202──▶ caller gets transactionId immediately
-        │  validate · rate-limit (per tenant) · dedupe (transactionId) · persist
+POST /v1/events/trigger ──202──▶ caller gets transactionId immediately
+        │                                          (API: Fastify, stateless — run N)
+        │  auth: hashed api key lookup             (Postgres, 60s cache in-process)
+        │  rate-limit per tenant                   (Redis counters — hold across replicas)
+        │  dedupe on transactionId                 (Redis SETNX + Postgres unique index)
+        │  persist event row = the outbox          (Postgres)
         ▼
-   [trigger queue]
+   [trigger queue]                                 (BullMQ queue on Redis)
         ▼
-  trigger worker ── splits recipients into batches of 100
+  trigger worker ── resolves audience: direct list / topic members / broadcast,
+        │           paged from Postgres, split into batches of 100
         ▼
-   [fanout queue]
+   [fanout queue]                                  (BullMQ queue on Redis)
         ▼
-  fanout worker ── upsert subscriber · preferences · render · persist message
+  fanout worker ── upsert subscribers              (Postgres)
+        │          suppression check, batched      (Postgres)
+        │          step conditions · preferences   (in-process, against payload)
+        │          digest window: park + merge     (Redis list per subscriber)
+        │          pin template version            (Postgres)
+        │          persist message rows, deduped   (Postgres unique key)
         ▼
-   [deliver.{email|sms|push|inapp}.{p0|p1|p2}]   ← 12 isolated queues
+   [deliver.{email|sms|push|inapp}.{p0|p1|p2}]     (12 isolated BullMQ queues on Redis)
         ▼
-  delivery workers ── per-tier concurrency · per-channel rate limiter
-        │              circuit breaker + provider failover chain
-        │              retries: exp backoff + jitter → dead-letter queue
+  delivery workers ── per-tier concurrency · per-channel rate limiter (Redis)
+        │              render pinned MJML template (template from Postgres)
+        │              circuit breaker + failover chain
+        │                (provider creds: Postgres, AES-256-GCM sealed)
+        │              retries: exp backoff + jitter → dead-letter queue (Redis)
+        │              update ONE message row      (Postgres — the whole hot-path write)
         ▼
-     providers (SMTP → log-fallback, sms-mock, push-mock, in-app)
+     providers (SMTP/SendGrid/Resend · Twilio · FCM · in-app)
 
-  in-app: message row IS the inbox (durable) ─▶ Redis pub/sub (1 channel per
-  subscriber) ─▶ WS gateway nodes (stateless, run N of them) ─▶ live sockets;
-  online = 'delivered' receipt, offline = waits in inbox as 'sent'
+  in-app: message row IS the inbox (durable, Postgres) ─▶ Redis pub/sub
+  (1 channel per subscriber) ─▶ WS gateway nodes (stateless, run N of them)
+  ─▶ live sockets; online = 'delivered' receipt, offline = waits as 'sent'
 
-  provider callbacks ─▶ [status-events] ─▶ status worker ─▶ message status
-  all pipeline steps ─▶ Redis log buffer ─▶ batch writer ─▶ execution_logs
-  dead jobs ─▶ [dead-letter] ─▶ scripts/replay-dlq.ts
+  provider callbacks ─▶ [status-events queue (Redis)] ─▶ status worker
+                        ─▶ message status (Postgres); bounces → suppression list (Postgres)
+  all pipeline steps ─▶ log buffer (Redis list) ─▶ batch writer
+                        ─▶ execution_logs (Postgres + ClickHouse copy, 90d TTL)
+  dead jobs ─▶ [dead-letter (Redis)] ─▶ scripts/replay-dlq.ts
+  event settled 'completed' by 30s sweep (Postgres); DR: reconciler rebuilds
+  all Redis queue state from the Postgres outbox
 ```
 
 ### Engineering principles in the code
