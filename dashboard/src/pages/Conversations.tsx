@@ -97,6 +97,7 @@ export default function ConversationsPage() {
               <tr>
                 <th className={th}>Subscriber</th>
                 <th className={th}>Agent</th>
+                <th className={th}>Channel</th>
                 <th className={th}>Last message</th>
                 <th className={th}>Status</th>
                 <th className={`${th} text-right`}>Turns</th>
@@ -115,6 +116,9 @@ export default function ConversationsPage() {
                   </td>
                   <td className={td}>
                     <Mono className="text-t2">{c.agent.identifier}</Mono>
+                  </td>
+                  <td className={td}>
+                    <Mono className="text-t3">{c.channel}</Mono>
                   </td>
                   <td className={`${td} max-w-[320px]`}>
                     <span className="block truncate text-[12px] text-t2">{c.lastMessagePreview ?? '—'}</span>
@@ -153,6 +157,7 @@ export function ConversationDetailPage() {
       api<{
         conversation: {
           id: string;
+          channel: string;
           status: 'active' | 'resolved';
           metadata: Record<string, unknown>;
           summary: string | null;
@@ -228,6 +233,10 @@ export function ConversationDetailPage() {
                 <div className="flex items-center justify-between gap-2">
                   <dt className="text-t3">Status</dt>
                   <dd><StatusBadge status={data.conversation.status} /></dd>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-t3">Channel</dt>
+                  <dd><Mono className="text-t2">{data.conversation.channel}</Mono></dd>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <dt className="text-t3">Turns</dt>

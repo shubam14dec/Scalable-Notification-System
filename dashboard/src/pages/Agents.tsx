@@ -28,6 +28,154 @@ interface Agent {
   createdAt: string;
 }
 
+interface ChannelInfo {
+  channel: string;
+  status: string;
+  config: { botUsername?: string };
+  webhook: {
+    url?: string;
+    pendingUpdates?: number;
+    lastError?: string | null;
+    expectedUrl?: string;
+    error?: string;
+  } | null;
+}
+
+/**
+ * Per-agent channel connections (v1: Telegram). Paste a bot token, we
+ * validate it with Telegram and register the webhook against PUBLIC_URL;
+ * the modal shows what Telegram actually has registered, so a stale
+ * tunnel URL is visible and one click away from fixed.
+ */
+function ChannelsModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState('');
+  const invalidate = () =>
+    void queryClient.invalidateQueries({ queryKey: ['agent-channels', agent.identifier] });
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['agent-channels', agent.identifier],
+    queryFn: () => api<{ channels: ChannelInfo[] }>(`/v1/agents/${agent.identifier}/channels`),
+  });
+  const telegram = data?.channels.find((c) => c.channel === 'telegram');
+
+  const connect = useMutation({
+    mutationFn: (botToken: string) =>
+      api(`/v1/agents/${agent.identifier}/channels/telegram`, { method: 'POST', body: { botToken } }),
+    onSuccess: () => {
+      setError('');
+      invalidate();
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const reconnect = useMutation({
+    mutationFn: () =>
+      api(`/v1/agents/${agent.identifier}/channels/telegram/reconnect`, { method: 'POST' }),
+    onSuccess: () => {
+      setError('');
+      invalidate();
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const disconnect = useMutation({
+    mutationFn: () => api(`/v1/agents/${agent.identifier}/channels/telegram`, { method: 'DELETE' }),
+    onSuccess: invalidate,
+  });
+
+  const webhookHealthy =
+    telegram?.webhook?.url && telegram.webhook.url === telegram.webhook.expectedUrl;
+
+  return (
+    <Modal open onClose={onClose} title={`Channels — ${agent.identifier}`}>
+      {isLoading ? (
+        <Skeleton className="h-24 w-full" />
+      ) : telegram ? (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[13px] text-t1">Telegram</span>
+            <StatusBadge status={webhookHealthy ? 'active' : 'failed'} />
+          </div>
+          <dl className="space-y-2 text-[12px]">
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-t3">Bot</dt>
+              <dd><Mono>@{telegram.config.botUsername ?? '—'}</Mono></dd>
+            </div>
+            <div>
+              <dt className="mb-1 text-t3">Webhook registered with Telegram</dt>
+              <dd><Mono className="break-all text-t2">{telegram.webhook?.url || 'none'}</Mono></dd>
+            </div>
+            {!webhookHealthy && telegram.webhook?.expectedUrl && (
+              <div>
+                <dt className="mb-1 text-t3">Expected (current PUBLIC_URL)</dt>
+                <dd><Mono className="break-all text-t2">{telegram.webhook.expectedUrl}</Mono></dd>
+              </div>
+            )}
+            {telegram.webhook?.lastError && (
+              <div>
+                <dt className="mb-1 text-t3">Last delivery error from Telegram</dt>
+                <dd className="text-err">{telegram.webhook.lastError}</dd>
+              </div>
+            )}
+          </dl>
+          {!webhookHealthy && (
+            <p className="text-[12px] text-t3">
+              The registered webhook doesn't match this server's public URL — if your tunnel
+              or domain changed, re-register it.
+            </p>
+          )}
+          {error && <p className="text-[12px] text-err">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="danger" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
+              Disconnect
+            </Button>
+            <Button variant="primary" onClick={() => reconnect.mutate()} disabled={reconnect.isPending}>
+              {reconnect.isPending ? 'Registering…' : 'Re-register webhook'}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const token = String(new FormData(e.currentTarget).get('botToken') ?? '');
+            if (token) connect.mutate(token);
+          }}
+        >
+          <p className="text-[12px] text-t2">
+            Create a bot with <Mono>@BotFather</Mono> on Telegram (<Mono>/newbot</Mono>), then
+            paste its token here. We validate it, register the webhook, and messages to the bot
+            flow to this agent. Requires this server to be reachable from the internet
+            (PUBLIC_URL) — locally, run a tunnel.
+          </p>
+          <Field label="Bot token">
+            <Input
+              name="botToken"
+              required
+              autoFocus
+              placeholder="7000000000:AA..."
+              className="font-mono"
+              type="password"
+              autoComplete="off"
+            />
+          </Field>
+          {error && <p className="text-[12px] text-err">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" disabled={connect.isPending}>
+              {connect.isPending ? 'Connecting…' : 'Connect Telegram'}
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
 /** Shown once after create/rotate — the same doctrine as API keys. */
 function SecretReveal({ secret, onClose }: { secret: string; onClose: () => void }) {
   return (
@@ -114,6 +262,7 @@ export default function AgentsPage() {
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Agent | null>(null);
+  const [channelsFor, setChannelsFor] = useState<Agent | null>(null);
   const [secret, setSecret] = useState('');
   const [error, setError] = useState('');
 
@@ -212,6 +361,9 @@ export default function AgentsPage() {
                     <Mono className="text-t3">{timeAgo(a.createdAt)}</Mono>
                   </td>
                   <td className={`${td} text-right whitespace-nowrap`}>
+                    <Button variant="ghost" onClick={() => setChannelsFor(a)}>
+                      Channels
+                    </Button>
                     <Button variant="ghost" onClick={() => setEditing(a)}>
                       Edit
                     </Button>
@@ -290,6 +442,8 @@ http.createServer(createHandler(support, {
           />
         </Modal>
       )}
+
+      {channelsFor && <ChannelsModal agent={channelsFor} onClose={() => setChannelsFor(null)} />}
 
       {secret && <SecretReveal secret={secret} onClose={() => setSecret('')} />}
     </>

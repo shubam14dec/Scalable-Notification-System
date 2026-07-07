@@ -75,11 +75,12 @@ shared Redis — tests now pin REDIS_DB=15 (tests/setup.ts, skill §12).
       non-text/group skip, reply lands in chat exactly once across a
       crash-retry, disconnect kills the webhook
 
-**Slice 2 — surfaces + real-bot E2E (build → verify → commit)**
-- [ ] Dashboard Agents page: per-agent "Connect Telegram" (paste bot
-      token in a modal — never in chat), connected state showing
-      webhook status (getWebhookInfo), re-register + disconnect actions
-- [ ] Conversations UI: channel column/badge (list already carries it)
+**Slice 2 — surfaces + real-bot E2E**
+- [x] Dashboard Agents page: Channels modal per agent — connect (token
+      pasted in a password field, never in chat), connected state
+      compares Telegram's registered webhook vs expected PUBLIC_URL
+      (mismatch = visible + one-click re-register), disconnect
+- [x] Conversations UI: channel column in list + Details panel
 - [ ] E2E with a REAL bot over a REAL tunnel (user-driven): user creates
       a bot via @BotFather + starts a tunnel (e.g. `cloudflared tunnel
       --url http://localhost:3000` or ngrok), sets PUBLIC_URL to the
