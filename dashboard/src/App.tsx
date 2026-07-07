@@ -14,6 +14,8 @@ import TemplatesPage, { TemplateEditorPage } from './pages/Templates';
 import IntegrationsPage from './pages/Integrations';
 import ApiKeysPage from './pages/ApiKeys';
 import InboxPreviewPage from './pages/InboxPreview';
+import AgentsPage from './pages/Agents';
+import ConversationsPage, { ConversationDetailPage } from './pages/Conversations';
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   return session.authed ? children : <Navigate to="/login" replace />;
@@ -45,6 +47,9 @@ export default function App() {
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/templates/new" element={<TemplateEditorPage />} />
           <Route path="/templates/:key" element={<TemplateEditorPage />} />
+          <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/conversations" element={<ConversationsPage />} />
+          <Route path="/conversations/:id" element={<ConversationDetailPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/keys" element={<ApiKeysPage />} />
           <Route path="/inbox-preview" element={<InboxPreviewPage />} />

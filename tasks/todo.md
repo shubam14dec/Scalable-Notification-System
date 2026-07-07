@@ -65,14 +65,20 @@ subscriber → thanks → resolved), tsup build clean.
       dedupe/reopen) + integration via buildApp()+inject with a stub
       bridge server
 
-**Slice 3 — surfaces (build → verify → commit)**
-- [ ] `packages/react`: `<AgentChat agentIdentifier … />` chat panel
-      (subscriber-token auth, REST send + existing WS live replies),
-      design-system compliant; dogfood on the dashboard Inbox-preview
-      page
-- [ ] Dashboard: Agents page (list/create/edit: identifier, bridge URL,
-      secret shown once) + Conversations list & transcript view under
-      Activity (frontend-design plugin + skill §13)
+**Slice 3 — surfaces** — DONE: 71 tests green, dashboard tsc+vite build
+clean, widget transcript endpoint verified live (subscriber token,
+system rows excluded). Deviation from plan: Conversations got its own
+nav item + /conversations route instead of living under Activity —
+less blast radius on the existing Activity page, clearer nav.
+- [x] `packages/react`: `useAgentChat` + `<AgentChat …/>` chat panel
+      (optimistic sends w/ client messageId, REST transcript via new
+      GET /v1/agents/:id/conversation, live replies over the existing
+      WS, resolve/reopen aware); dogfooded on Inbox-preview
+- [x] Dashboard: Agents page (create w/ secret-shown-once, edit, rotate
+      secret, enable/disable, delete, empty state teaches the SDK) +
+      Conversations list (agent/status filters, 10s poll) + transcript
+      detail (chat layout, system breadcrumbs centered, metadata +
+      details side panel, manual resolve)
 
 **End-to-end verification (the Ana demo, per skill §1):** start
 everything + demo bridge → send "where is my order #1042" in the widget

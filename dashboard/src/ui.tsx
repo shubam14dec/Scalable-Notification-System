@@ -66,6 +66,9 @@ const STATUS_STYLES: Record<string, { color: string; label?: string }> = {
   complaint: { color: 'var(--err)' },
   skipped: { color: 'var(--t3)' },
   merged: { color: 'var(--t3)' },
+  active: { color: 'var(--info)' },
+  resolved: { color: 'var(--ok)' },
+  disabled: { color: 'var(--t3)' },
 };
 
 export function StatusBadge({ status }: { status: string }) {

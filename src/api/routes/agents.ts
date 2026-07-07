@@ -10,6 +10,7 @@ import {
   conversationTranscript,
   createAgent,
   deleteAgent,
+  findConversationByThread,
   getAgent,
   getConversation,
   insertConversationMessage,
@@ -225,6 +226,32 @@ export function registerAgentRoutes(app: FastifyInstance) {
         messageId: message.id,
         status: conversation.status,
       });
+    },
+  );
+
+  /**
+   * The widget's own thread (subscriber-token friendly). System rows are
+   * internal breadcrumbs — end users only see user/agent turns.
+   */
+  app.get<{ Params: { identifier: string }; Querystring: { subscriberId?: string } }>(
+    '/v1/agents/:identifier/conversation',
+    async (req, reply) => {
+      const subscriberId = req.query.subscriberId ?? '';
+      if (!subscriberId) return reply.code(400).send({ error: 'subscriberId is required' });
+      if (!(await authenticateSender(req, reply, subscriberId))) return;
+
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+
+      const conversation = await findConversationByThread(agent.id, 'inapp', subscriberId);
+      if (!conversation) return { conversation: null, messages: [] };
+      const messages = await conversationTranscript(conversation.id);
+      return {
+        conversation: { id: conversation.id, status: conversation.status },
+        messages: messages
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.created_at })),
+      };
     },
   );
 

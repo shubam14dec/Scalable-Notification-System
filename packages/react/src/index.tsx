@@ -147,6 +147,295 @@ export interface NotificationInboxProps extends UseNotificationsOptions {
   align?: 'left' | 'right';
 }
 
+/* ------------------------------------------------------------------ */
+/* Agent chat — talk to an Asyncify agent from your app.               */
+/* ------------------------------------------------------------------ */
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'agent';
+  content: string;
+  createdAt: string;
+  /** True while the optimistic copy waits for the server's 202. */
+  pending?: boolean;
+}
+
+export interface UseAgentChatOptions {
+  token: string;
+  subscriberId: string;
+  /** The agent's identifier from the Asyncify dashboard. */
+  agentIdentifier: string;
+  apiUrl?: string;
+  wsUrl?: string;
+}
+
+export function useAgentChat({
+  token,
+  subscriberId,
+  agentIdentifier,
+  apiUrl = '',
+  wsUrl,
+}: UseAgentChatOptions) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [status, setStatus] = useState<'active' | 'resolved'>('active');
+  const [connected, setConnected] = useState(false);
+
+  const headers = useCallback(
+    () => ({ 'content-type': 'application/json', 'x-subscriber-token': token }),
+    [token],
+  );
+
+  // Durable transcript over REST.
+  useEffect(() => {
+    let alive = true;
+    fetch(
+      `${apiUrl}/v1/agents/${encodeURIComponent(agentIdentifier)}/conversation?subscriberId=${encodeURIComponent(subscriberId)}`,
+      { headers: headers() },
+    )
+      .then((res) => res.json())
+      .then((data: { conversation: { status: 'active' | 'resolved' } | null; messages: ChatMessage[] }) => {
+        if (!alive) return;
+        setMessages(data.messages ?? []);
+        if (data.conversation) setStatus(data.conversation.status);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [apiUrl, agentIdentifier, subscriberId, headers]);
+
+  // Live agent replies over the same WebSocket the inbox uses.
+  useEffect(() => {
+    if (!wsUrl) return;
+    const ws = new WebSocket(`${wsUrl}/?token=${encodeURIComponent(token)}`);
+    ws.onopen = () => setConnected(true);
+    ws.onclose = () => setConnected(false);
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(String(event.data)) as {
+          type: string;
+          conversation?: { agentIdentifier: string };
+          message?: { id: string; role: 'agent'; text: string; createdAt: string };
+        };
+        if (msg.conversation?.agentIdentifier !== agentIdentifier) return;
+        if (msg.type === 'conversation.message' && msg.message) {
+          const incoming: ChatMessage = {
+            id: msg.message.id,
+            role: 'agent',
+            content: msg.message.text,
+            createdAt: msg.message.createdAt,
+          };
+          setMessages((prev) =>
+            prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming],
+          );
+          setStatus('active');
+        } else if (msg.type === 'conversation.resolved') {
+          setStatus('resolved');
+        }
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+    return () => ws.close();
+  }, [wsUrl, token, agentIdentifier]);
+
+  const send = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const messageId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      // Optimistic: the user's turn appears immediately.
+      setMessages((prev) => [
+        ...prev,
+        { id: messageId, role: 'user', content: trimmed, createdAt: new Date().toISOString(), pending: true },
+      ]);
+      setStatus('active');
+      try {
+        const res = await fetch(
+          `${apiUrl}/v1/agents/${encodeURIComponent(agentIdentifier)}/messages`,
+          {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ subscriberId, text: trimmed, messageId }),
+          },
+        );
+        if (!res.ok) throw new Error(`send failed (${res.status})`);
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, pending: false } : m)));
+      } catch {
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+        throw new Error('message not sent — check your connection and try again');
+      }
+    },
+    [apiUrl, agentIdentifier, subscriberId, headers],
+  );
+
+  return { messages, status, connected, send };
+}
+
+export interface AgentChatProps extends UseAgentChatOptions {
+  theme?: 'dark' | 'light';
+  /** Header title; defaults to the agent identifier. */
+  title?: string;
+  placeholder?: string;
+  height?: number;
+}
+
+export function AgentChat(props: AgentChatProps) {
+  const { theme = 'dark', title = props.agentIdentifier, placeholder = 'Type a message…', height = 380 } = props;
+  const { messages, status, connected, send } = useAgentChat(props);
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState('');
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const c = palettes[theme];
+  const font = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+  }, [messages.length]);
+
+  const submit = async () => {
+    const text = draft;
+    setDraft('');
+    setError('');
+    try {
+      await send(text);
+    } catch (err) {
+      setDraft(text);
+      setError((err as Error).message);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: 360,
+        height,
+        background: c.bg,
+        border: `1px solid ${c.border}`,
+        borderRadius: 10,
+        fontFamily: font,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 14px',
+          borderBottom: `1px solid ${c.border}`,
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 600, color: c.text }}>{title}</span>
+        <span style={{ fontSize: 11, color: c.text2 }}>
+          {status === 'resolved' ? 'resolved' : connected ? 'online' : 'offline'}
+        </span>
+      </div>
+
+      <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
+        {messages.length === 0 ? (
+          <p style={{ padding: '24px 8px', textAlign: 'center', fontSize: 12, color: c.text2 }}>
+            Start the conversation — the agent answers right here.
+          </p>
+        ) : (
+          messages.map((m) => (
+            <div
+              key={m.id}
+              style={{
+                display: 'flex',
+                justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
+                marginBottom: 8,
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: '80%',
+                  padding: '7px 10px',
+                  borderRadius: 10,
+                  fontSize: 13,
+                  lineHeight: 1.45,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  opacity: m.pending ? 0.6 : 1,
+                  ...(m.role === 'user'
+                    ? { background: c.badge, color: c.badgeText, borderBottomRightRadius: 3 }
+                    : {
+                        background: c.hover,
+                        color: c.text,
+                        border: `1px solid ${c.border}`,
+                        borderBottomLeftRadius: 3,
+                      }),
+                }}
+              >
+                {m.content}
+              </div>
+            </div>
+          ))
+        )}
+        {status === 'resolved' && (
+          <p style={{ margin: '10px 0 2px', textAlign: 'center', fontSize: 11, color: c.text2 }}>
+            Conversation resolved — send a message to reopen it.
+          </p>
+        )}
+      </div>
+
+      {error && (
+        <p style={{ margin: 0, padding: '6px 14px', fontSize: 11, color: c.text2 }}>{error}</p>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+        style={{ display: 'flex', gap: 8, borderTop: `1px solid ${c.border}`, padding: 10 }}
+      >
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={placeholder}
+          aria-label="Message"
+          style={{
+            flex: 1,
+            height: 32,
+            padding: '0 10px',
+            borderRadius: 8,
+            border: `1px solid ${c.border}`,
+            background: 'transparent',
+            color: c.text,
+            fontSize: 13,
+            fontFamily: font,
+            outline: 'none',
+          }}
+        />
+        <button
+          type="submit"
+          disabled={!draft.trim()}
+          aria-label="Send message"
+          style={{
+            height: 32,
+            padding: '0 14px',
+            borderRadius: 8,
+            border: 'none',
+            background: c.badge,
+            color: c.badgeText,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: draft.trim() ? 'pointer' : 'default',
+            opacity: draft.trim() ? 1 : 0.5,
+          }}
+        >
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export function NotificationInbox(props: NotificationInboxProps) {
   const { theme = 'dark', title = 'Notifications', align = 'right' } = props;
   const { items, unread, connected, markAllRead } = useNotifications(props);

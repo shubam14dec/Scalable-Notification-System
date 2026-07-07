@@ -174,6 +174,19 @@ export async function openConversation(c: {
   return rows[0];
 }
 
+/** The widget's lookup: the one conversation for this agent+channel+thread. */
+export async function findConversationByThread(
+  agentId: string,
+  channel: string,
+  threadKey: string,
+): Promise<Conversation | null> {
+  const { rows } = await pool.query(
+    'select * from conversations where agent_id = $1 and channel = $2 and thread_key = $3',
+    [agentId, channel, threadKey],
+  );
+  return rows[0] ?? null;
+}
+
 export async function getConversation(
   tenantId: string,
   id: string,

@@ -208,6 +208,46 @@ describe('the two-way loop', () => {
   });
 });
 
+describe('widget transcript endpoint', () => {
+  test('returns the thread without system rows; token-scoped', async () => {
+    const mint = await app.inject({
+      method: 'POST',
+      url: '/v1/subscriber-tokens',
+      headers: { 'x-api-key': apiKey },
+      payload: { subscriberId: 'ana' },
+    });
+    const token = json(mint).token;
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/agents/itest-support/conversation?subscriberId=ana',
+      headers: { 'x-subscriber-token': token },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = json(res);
+    expect(body.conversation.status).toBeDefined();
+    expect(body.messages.length).toBeGreaterThan(0);
+    expect(body.messages.every((m: { role: string }) => m.role !== 'system')).toBe(true);
+
+    const other = await app.inject({
+      method: 'GET',
+      url: '/v1/agents/itest-support/conversation?subscriberId=bob',
+      headers: { 'x-subscriber-token': token },
+    });
+    expect(other.statusCode).toBe(403);
+  });
+
+  test('no conversation yet returns an empty thread, not an error', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/agents/itest-support/conversation?subscriberId=never-spoke',
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(json(res)).toEqual({ conversation: null, messages: [] });
+  });
+});
+
 describe('subscriber-token inbound auth', () => {
   test('widget credential works and is scoped to its subscriber', async () => {
     const mint = await app.inject({
