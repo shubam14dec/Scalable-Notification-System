@@ -207,7 +207,11 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   multi-line pastes execute line-by-line (give users one-liners or .ps1
   scripts); no inline `try` in expressions; a thrown cmdlet leaves the
   result variable holding its PREVIOUS value — reset `$r = $null` in loops;
-  long `Start-Sleep` is blocked — poll in a loop or use Monitor.
+  long `Start-Sleep` is blocked — poll in a loop or use Monitor;
+  NEVER round-trip UTF-8 files through `Get-Content`/`Set-Content` —
+  PS 5.1 decodes BOM-less UTF-8 as the legacy codepage and every
+  em-dash/arrow becomes mojibake (proven on tasks/todo.md 2026-07-07).
+  Edit files with the Edit/Write tools only.
 - **ioredis is pinned to exactly 5.10.1** to match bullmq's bundled copy;
   upgrading only one side breaks typechecking.
 - **@types/mjml declares `mjml2html` as async** — always `await` it.
