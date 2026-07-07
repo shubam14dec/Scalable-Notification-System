@@ -85,18 +85,18 @@ Design decisions:
 - Suppression list respected: an address on the suppression list gets
   no agent replies (check before send, system breadcrumb if dropped).
 
-**Slice 1 — backend (build → verify vs injected Postmark payloads → commit)**
-- [ ] Inbound route (Postmark JSON: FromFull.Email, Subject, TextBody,
+**Slice 1 — backend** — DONE (commit f6f78f0): 98 tests green.
+- [x] Inbound route (Postmark JSON: FromFull.Email, Subject, TextBody,
       MessageID): query-secret auth, strip quoted tail, upsert
       subscriber (external_id = sender email), open conversation
       channel='email', dedupe on MessageID, enqueue
-- [ ] Connect/disconnect/list routes for the email channel (mint
+- [x] Connect/disconnect/list routes for the email channel (mint
       secret, store inbound address; list shows the webhook URL to
       paste into Postmark)
-- [ ] deliverReply email branch via sendWithFailover + suppression
+- [x] deliverReply email branch via sendWithFailover + suppression
       check + send-once; In-Reply-To/References headers via a small
       extension to RenderedMessage (headers?: Record<string,string>)
-- [ ] Tests: auth (bad key 401), threading (same sender → same
+- [x] Tests: auth (bad key 401), threading (same sender → same
       conversation), Message-ID dedupe, quoted-reply stripping, reply
       send-once, suppressed address → no send + breadcrumb
 **Slice 2 — surfaces + real E2E (user-driven)**
@@ -187,7 +187,7 @@ email inbound-parse (next phase candidate).
 User-verified in the browser 2026-07-08: chat panel live reply, welcome
 email in Mailpit (Resend integration removed), Conversations page
 transcript + metadata all confirmed working. Commits 8e0bcb6 (core),
-785efb7 (SDK+demo+tests), 210e659 (surfaces) — NOT pushed yet.
+785efb7 (SDK+demo+tests), 210e659 (surfaces) — all pushed.
 
 **Review:** the two-way pipe reused almost everything — queues, HMAC
 webhook signing, secret-box, subscriber tokens, WS pub/sub, StatusBadge.
