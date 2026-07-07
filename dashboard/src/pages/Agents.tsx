@@ -31,7 +31,7 @@ interface Agent {
 interface ChannelInfo {
   channel: string;
   status: string;
-  config: { botUsername?: string };
+  config: { botUsername?: string; address?: string };
   webhook: {
     url?: string;
     pendingUpdates?: number;
@@ -39,6 +39,100 @@ interface ChannelInfo {
     expectedUrl?: string;
     error?: string;
   } | null;
+}
+
+/** Email: user brings a provider inbound address, we hand back the webhook URL. */
+function EmailChannelSection({
+  agent,
+  connection,
+  onChange,
+}: {
+  agent: Agent;
+  connection: ChannelInfo | undefined;
+  onChange: () => void;
+}) {
+  const [error, setError] = useState('');
+
+  const connect = useMutation({
+    mutationFn: (address: string) =>
+      api(`/v1/agents/${agent.identifier}/channels/email`, { method: 'POST', body: { address } }),
+    onSuccess: () => {
+      setError('');
+      onChange();
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const disconnect = useMutation({
+    mutationFn: () => api(`/v1/agents/${agent.identifier}/channels/email`, { method: 'DELETE' }),
+    onSuccess: onChange,
+  });
+
+  if (connection) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[13px] text-t1">Email</span>
+          <StatusBadge status="active" />
+        </div>
+        <dl className="space-y-2 text-[12px]">
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-t3">Agent address</dt>
+            <dd><Mono className="break-all">{connection.config.address}</Mono></dd>
+          </div>
+          <div>
+            <dt className="mb-1 text-t3">
+              Webhook URL — paste into your provider's inbound settings (Postmark: Servers →
+              Default Inbound Stream → Settings → Webhook)
+            </dt>
+            <dd>{connection.webhook?.url && <CopyField value={connection.webhook.url} />}</dd>
+          </div>
+        </dl>
+        <p className="text-[11px] text-t3">
+          Emails sent to the address arrive here as conversations; the agent's replies go out
+          through this environment's email integrations.
+        </p>
+        <div className="flex justify-end">
+          <Button variant="danger" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
+            Disconnect
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const address = String(new FormData(e.currentTarget).get('address') ?? '');
+        if (address) connect.mutate(address);
+      }}
+    >
+      <p className="text-[12px] text-t2">
+        Give this agent an email address. No DNS needed: a free Postmark account includes an
+        inbound address (Servers → Default Inbound Stream) like{' '}
+        <Mono>hash@inbound.postmarkapp.com</Mono> — paste it below, then paste the webhook URL
+        we generate back into Postmark.
+      </p>
+      <Field label="Inbound address">
+        <Input
+          name="address"
+          required
+          type="email"
+          placeholder="hash@inbound.postmarkapp.com"
+          className="font-mono"
+        />
+      </Field>
+      {error && <p className="text-[12px] text-err">{error}</p>}
+      <div className="flex justify-end">
+        <Button variant="primary" type="submit" disabled={connect.isPending}>
+          {connect.isPending ? 'Connecting…' : 'Connect email'}
+        </Button>
+      </div>
+    </form>
+  );
 }
 
 /**
@@ -84,14 +178,13 @@ function ChannelsModal({ agent, onClose }: { agent: Agent; onClose: () => void }
     onSuccess: invalidate,
   });
 
+  const email = data?.channels.find((c) => c.channel === 'email');
   const webhookHealthy =
     telegram?.webhook?.url && telegram.webhook.url === telegram.webhook.expectedUrl;
 
-  return (
-    <Modal open onClose={onClose} title={`Channels — ${agent.identifier}`}>
-      {isLoading ? (
-        <Skeleton className="h-24 w-full" />
-      ) : telegram ? (
+  const telegramSection = isLoading ? (
+    <Skeleton className="h-24 w-full" />
+  ) : telegram ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-[13px] text-t1">Telegram</span>
@@ -171,6 +264,18 @@ function ChannelsModal({ agent, onClose }: { agent: Agent; onClose: () => void }
             </Button>
           </div>
         </form>
+  );
+
+  return (
+    <Modal open onClose={onClose} title={`Channels — ${agent.identifier}`}>
+      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-t3">Telegram</p>
+      {telegramSection}
+      <div className="my-4 border-t border-bd" />
+      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-t3">Email</p>
+      {isLoading ? (
+        <Skeleton className="h-24 w-full" />
+      ) : (
+        <EmailChannelSection agent={agent} connection={email} onChange={invalidate} />
       )}
     </Modal>
   );
