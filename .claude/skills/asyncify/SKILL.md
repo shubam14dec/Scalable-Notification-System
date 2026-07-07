@@ -95,7 +95,26 @@ Fastest loop: `npm test` (51 tests, ~6s, needs docker pg+redis up) →
 all email; `scripts/send-test.ps1 -ApiKey ...` fires a trigger; every
 message's full story is at `/v1/events/:txn/timeline`.
 
-## 2. Restart what you changed — processes don't reload code
+## 2. The "start everything" / "stop everything" runbook
+
+When the user says **"start everything"** (all commands from the repo root
+`notification-system/`, Node processes as background tasks):
+
+1. `docker compose up -d --wait` — postgres (host :5433), redis, mailpit
+   (UI :8025), clickhouse (:8123), jaeger (UI :16686). Volumes persist
+   all data; migrate/seed are NOT needed on restart.
+2. Start four background processes: `npm run api` · `npm run worker` ·
+   `npm run ws` · `npm run dev` in `dashboard/`.
+3. Verify before reporting ready: GET :3000/health (api), :3002/health
+   (worker), :3001/health (ws), :5173 (dashboard). Report the four
+   statuses; only claim "everything is up" when all four return.
+
+**"Stop everything"**: stop the four Node background tasks, then
+`docker compose stop` (never `down -v` — that deletes data volumes).
+Login: dashboard user shubam@xmobility.ai; env API keys are in the
+dashboard (API keys page). Everything survives restarts.
+
+## 3. Restart what you changed — processes don't reload code
 
 api, worker, and ws are long-running tsx processes; edits do nothing until
 the owning process restarts. The WS gateway once rejected all new hashed API
@@ -104,7 +123,7 @@ code. Map: `src/workers/**` or providers → restart worker · `src/api/**` or
 auth → restart api AND ws (gateway imports auth code) · `dashboard/**` →
 vite hot-reloads, no restart. After upgrades, restart all three.
 
-## 3. Every pipeline step declares its idempotency key before it's written
+## 4. Every pipeline step declares its idempotency key before it's written
 
 The system's safety rests on layered dedupe: `events(tenant_id,
 transaction_id)` unique, `messages(event_id, subscriber_id, channel,
@@ -115,7 +134,7 @@ new queue hop or writer, decide its dedupe key first — and remember the
 flip side: jobId dedupe silently swallows intentional replays, so replays
 must carry a nonce (see the reconciler's `replay` field).
 
-## 4. The hot path never waits on bookkeeping
+## 5. The hot path never waits on bookkeeping
 
 Delivery must only do: read message → call provider → update one row.
 Everything else is deferred: execution logs go to a Redis buffer drained in
@@ -125,7 +144,7 @@ feature needs to record something, the question is never "where do I write
 this" but "which async channel carries it." Adding a synchronous aggregate
 to the send path is how notification platforms die (DB IOPS).
 
-## 5. Answer questions by asking reality, not memory
+## 6. Answer questions by asking reality, not memory
 
 Claims about the reference codebase were settled by grepping its actual
 source; npm name availability by hitting `registry.npmjs.org/<name>` (404 =
@@ -135,7 +154,7 @@ when the id splits into exactly 3 parts — which is why it worked for months
 then broke). A two-minute check beats a confident guess every time it was
 tried here.
 
-## 6. Distrust your own green checkmarks
+## 7. Distrust your own green checkmarks
 
 Two self-checks in this project were wrong: an availability probe returned
 "FREE" for everything because Cloudflare was blocking the request, and a
@@ -147,7 +166,7 @@ manual result (revoked keys kept working for 60s when cached). Tests explore
 sequences humans don't think to try — keep adding them for every behavior
 worth keeping.
 
-## 7. Ship in phase-sized slices: build → verify → commit+push → memory
+## 8. Ship in phase-sized slices: build → verify → commit+push → memory
 
 Each phase (A–G) landed as one verified, pushed commit whose message tells
 the story, plus a memory update. Never stack a second feature on an
@@ -156,7 +175,7 @@ end abruptly (services get killed, laptops close). The commit log doubles as
 the project's changelog. Beware `git add -A` and `git add <dir>` sweeping in
 local-only files — a reference file once reached the public repo that way.
 
-## 8. User-found friction outranks the roadmap
+## 9. User-found friction outranks the roadmap
 
 The best fixes in this repo came from the user clicking around, not from the
 plan: "why is it processing?" → the settle sweep; "the sidebar covers the
@@ -166,7 +185,7 @@ When the user reports friction, fix it before resuming feature work — and
 where the fix is generalizable, make it a product feature (the `align`
 prop), not a one-off patch.
 
-## 9. Secrets hygiene
+## 10. Secrets hygiene
 
 Anything pasted into chat is burned — the npm token used for publishing was
 revoked immediately after. Provider credentials are AES-256-GCM sealed
@@ -176,7 +195,7 @@ revocation must call `invalidateApiKeyCache`. `.npmrc` and `.env` are
 gitignored. Browsers only ever get subscriber tokens (`nst_`), never API
 keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 
-## 10. Project gotchas ledger
+## 11. Project gotchas ledger
 
 - **BullMQ jobIds must not contain `:`** unless exactly 3 colon-separated
   parts (legacy check). Use `-` separators everywhere.
@@ -200,7 +219,7 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 - **Publishing**: account has 2FA-on-publish; `prepublishOnly` rebuilds;
   scoped packages need `publishConfig.access: public` (already set).
 
-## 11. Email domain knowledge lives in its own skill
+## 12. Email domain knowledge lives in its own skill
 
 Deliverability (SPF/DKIM/DMARC, warming, reputation thresholds),
 compliance (CAN-SPAM/GDPR/CASL, unsubscribe rules), provider error
@@ -208,7 +227,7 @@ classification for new providers, and the known compliance gaps are in
 `.claude/skills/email-delivery/SKILL.md`. Consult it before email
 features, new providers, or template work.
 
-## 12. Dashboard design system — "Quiet Infrastructure" (condensed)
+## 13. Dashboard design system — "Quiet Infrastructure" (condensed)
 
 Tokens live in `dashboard/src/styles.css` — the single source of truth; no
 hardcoded hex in components. Geist Sans for UI, **Geist Mono for every
