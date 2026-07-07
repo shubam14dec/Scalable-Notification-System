@@ -90,6 +90,8 @@ export class SmtpEmailProvider implements ChannelProvider {
         subject: message.subject ?? '(no subject)',
         text: message.body,
         html: toHtmlBody(message),
+        replyTo: message.replyTo,
+        headers: message.headers,
       });
       return { providerMessageId: info.messageId ?? randomUUID() };
     } catch (err) {
@@ -128,6 +130,8 @@ export class SendGridEmailProvider implements ChannelProvider {
       body: JSON.stringify({
         personalizations: [{ to: [{ email: message.to.email }] }],
         from: { email: this.config.from },
+        ...(message.replyTo ? { reply_to: { email: message.replyTo } } : {}),
+        ...(message.headers ? { headers: message.headers } : {}),
         subject: message.subject ?? '(no subject)',
         content: [
           { type: 'text/plain', value: message.body },
@@ -174,6 +178,8 @@ export class ResendEmailProvider implements ChannelProvider {
       body: JSON.stringify({
         from: this.config.from,
         to: [message.to.email],
+        ...(message.replyTo ? { reply_to: message.replyTo } : {}),
+        ...(message.headers ? { headers: message.headers } : {}),
         subject: message.subject ?? '(no subject)',
         text: message.body,
         html: toHtmlBody(message),

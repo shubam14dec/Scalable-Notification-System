@@ -9,6 +9,8 @@ import { signWebhook } from '../../api/webhook-signature';
 import { openSecret } from '../../auth/secret-box';
 import { inAppPubSubChannel } from '../../providers/inapp';
 import { telegram } from '../../channels/telegram';
+import { sendWithFailover } from '../../providers/registry';
+import { isSuppressed } from '../../db/repositories';
 import {
   conversationHistoryBefore,
   getAgentById,
@@ -148,7 +150,7 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
         dedupeKey: `reply-${messageId}`,
       })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
     if (replyRow) {
-      await deliverReply(conversation, subscriber.external_id, agent, replyRow);
+      await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
     }
   }
 
@@ -221,6 +223,7 @@ async function deliverReply(
   subscriberExternalId: string,
   agent: Agent,
   replyRow: ConversationMessage,
+  inboundRow: ConversationMessage,
 ): Promise<void> {
   if (conversation.channel === 'inapp') {
     await publishConversationEvent(conversation, subscriberExternalId, agent, {
@@ -246,6 +249,48 @@ async function deliverReply(
     const { botToken } = JSON.parse(openSecret(connection.credentials)) as { botToken: string };
     const sent = await telegram.sendMessage(botToken, conversation.thread_key, replyRow.content);
     await updateConversationMessageRaw(replyRow.id, { ...raw, telegramMessageId: sent.message_id });
+    return;
+  }
+
+  if (conversation.channel === 'email') {
+    const raw = (replyRow.raw ?? {}) as { providerMessageId?: string };
+    if (raw.providerMessageId) return; // already delivered on a prior attempt
+    const toEmail = conversation.thread_key;
+    // The suppression list is absolute: a bounced/complained address gets
+    // no agent replies either. Visible in the transcript, not silent.
+    if (await isSuppressed(conversation.tenant_id, 'email', toEmail)) {
+      await insertConversationMessage({
+        conversationId: conversation.id,
+        tenantId: conversation.tenant_id,
+        role: 'system',
+        content: `reply not emailed: ${toEmail} is on the suppression list`,
+        dedupeKey: `suppressed-${replyRow.id}`,
+      });
+      return;
+    }
+    const connection = await getConnectionForAgent(agent.id, 'email');
+    const address = (connection?.config as { address?: string } | null)?.address;
+    const inboundRaw = (inboundRow.raw ?? {}) as { subject?: string; rfcMessageId?: string | null };
+    const subject = inboundRaw.subject
+      ? inboundRaw.subject.replace(/^(re:\s*)+/i, '')
+      : `Message from ${agent.name}`;
+    // The tenant's normal integration chain: breakers + failover included.
+    const sent = await sendWithFailover('email', {
+      messageId: replyRow.id,
+      tenantId: conversation.tenant_id,
+      to: { email: toEmail },
+      subject: `Re: ${subject}`,
+      body: replyRow.content,
+      replyTo: address,
+      headers: inboundRaw.rfcMessageId
+        ? { 'In-Reply-To': inboundRaw.rfcMessageId, References: inboundRaw.rfcMessageId }
+        : undefined,
+    });
+    await updateConversationMessageRaw(replyRow.id, {
+      ...raw,
+      providerMessageId: sent.providerMessageId,
+      provider: sent.provider,
+    });
     return;
   }
 

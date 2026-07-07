@@ -5,3 +5,7 @@
  * jobs can never leak into the real pipeline.
  */
 process.env.REDIS_DB ??= '15';
+
+// Pin PUBLIC_URL: dotenv never overrides pre-set vars, so tests stay
+// hermetic even when .env points at a live tunnel for manual E2E.
+process.env.PUBLIC_URL = 'http://localhost:3000';

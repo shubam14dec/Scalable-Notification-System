@@ -22,7 +22,71 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Conversations / Agents — Phase 2: Telegram channel (plan pending user OK)
+### Conversations / Agents — Phase 2b: Email channel (plan pending user OK)
+
+Goal: notifications become conversations — a user REPLIES to an email
+and the agent answers. Third channel on the same core; zero SDK changes.
+
+Design decisions:
+- **Inbound = provider inbound webhook** (production path; works locally
+  through the same cloudflared tunnel because it's plain HTTP). v1
+  provider: **Postmark Inbound** — chosen over SendGrid Parse because
+  the user has no DNS access: Postmark hands every account a ready
+  inbound address (`<hash>@inbound.postmarkapp.com`), zero MX records,
+  clean JSON payload; a custom domain via MX later = same webhook, no
+  code change. Route: `POST /webhooks/email/:connectionId?key=<secret>`
+  — auth = minted secret in the query, sealed at rest.
+- **Agent address**: whatever inbound address the user's Postmark server
+  has (stored in config {address}); routing to the agent is by
+  connectionId in the webhook URL, NOT by parsing To (v1: one agent per
+  Postmark server; multi-agent plus-tag routing noted for later). The
+  connect modal collects the address + shows the webhook URL to paste
+  into Postmark's inbound settings.
+- **Threading**: thread_key = normalized sender email (one thread per
+  sender per agent — same shape as inapp/telegram). Dedupe key =
+  inbound Message-ID header (falls back to provider envelope id).
+  Reply-quoting stripped to the top-most text (naive `On ... wrote:` /
+  `>` trimming, v1).
+- **Outbound**: deliverReply grows an email branch — build a
+  RenderedMessage from the reply row and hand it to the EXISTING
+  `sendWithFailover('email', …)` (tenant integration chain, breakers,
+  failover all free). From = agent address, To = thread_key,
+  Subject = `Re: <last inbound subject>`, In-Reply-To = inbound
+  Message-ID so mail clients thread it. Send-once guard identical to
+  telegram (raw.providerMessageId).
+- Suppression list respected: an address on the suppression list gets
+  no agent replies (check before send, system breadcrumb if dropped).
+
+**Slice 1 — backend (build → verify vs injected Postmark payloads → commit)**
+- [ ] Inbound route (Postmark JSON: FromFull.Email, Subject, TextBody,
+      MessageID): query-secret auth, strip quoted tail, upsert
+      subscriber (external_id = sender email), open conversation
+      channel='email', dedupe on MessageID, enqueue
+- [ ] Connect/disconnect/list routes for the email channel (mint
+      secret, store inbound address; list shows the webhook URL to
+      paste into Postmark)
+- [ ] deliverReply email branch via sendWithFailover + suppression
+      check + send-once; In-Reply-To/References headers via a small
+      extension to RenderedMessage (headers?: Record<string,string>)
+- [ ] Tests: auth (bad key 401), threading (same sender → same
+      conversation), Message-ID dedupe, quoted-reply stripping, reply
+      send-once, suppressed address → no send + breadcrumb
+**Slice 2 — surfaces + real E2E (user-driven)**
+- [ ] Channels modal: email section (inbound address input, webhook URL
+      with copy button + Postmark setup steps, connection state)
+- [ ] E2E: user signs up for Postmark (free) → copies the server's
+      inbound address into the modal → pastes our webhook URL into
+      Postmark's inbound settings → emails the agent from
+      shubham@automote.io → reply arrives back there via re-added
+      Resend integration
+
+**User-side prerequisites (flagging early):** a free Postmark account
+(inbound needs no approval, no DNS) and re-adding the Resend
+integration for real outbound. NO domain/MX access required.
+
+### Conversations / Agents — Phase 2: Telegram channel — COMPLETE
+(user-verified on a real bot over a real tunnel 2026-07-08; commits
+451eb2b / cf91806 / ce65f1b, pushed)
 
 Goal: the "any channel, same brain" proof. A customer connects their
 Telegram bot to an agent; end-users message the bot; the SAME

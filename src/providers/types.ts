@@ -10,6 +10,10 @@ export interface RenderedMessage {
   htmlBody?: string;
   /** When set (email channel), providers embed this 1px open-tracking image. */
   pixelUrl?: string;
+  /** Email: where a human reply should go (agent conversations set this). */
+  replyTo?: string;
+  /** Email: extra RFC headers (In-Reply-To/References for threading). */
+  headers?: Record<string, string>;
 }
 
 export interface SendResult {

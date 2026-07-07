@@ -22,7 +22,9 @@ import {
 } from '../../src/workers/processors/conversation.processor';
 import { createHandler, defineAgent } from '../../packages/agent/src/index';
 
-const BOT_TOKEN = '7000001:AA-itest-telegram-token';
+// Realistic shape: real bot tokens are <digits>:<35 chars of [A-Za-z0-9_-]>,
+// and the connect route validates that shape before calling Telegram.
+const BOT_TOKEN = '7000001:AAitest-telegram-token_0123456789AB';
 
 let app: FastifyInstance;
 let apiKey = '';

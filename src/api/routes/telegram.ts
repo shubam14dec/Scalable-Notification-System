@@ -8,6 +8,7 @@ import { getQueue, QUEUE } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
 import { sealSecret, openSecret } from '../../auth/secret-box';
 import { telegram, type TelegramUpdate } from '../../channels/telegram';
+import { emailWebhookUrl } from './email-channel';
 import { upsertSubscriber } from '../../db/repositories';
 import {
   deleteConnection,
@@ -153,6 +154,11 @@ export function registerTelegramRoutes(app: FastifyInstance) {
           } catch (err) {
             webhook = { error: (err as Error).message };
           }
+        } else if (c.channel === 'email') {
+          // Unlike telegram (we register the webhook), the USER pastes this
+          // URL into their provider — so it stays retrievable here. It is
+          // our minted inbound credential, tenant-admin scoped.
+          webhook = { url: emailWebhookUrl(c.id, c.credentials) };
         }
         out.push({ channel: c.channel, status: c.status, config: c.config, webhook, createdAt: c.created_at });
       }
