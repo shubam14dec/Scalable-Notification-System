@@ -31,6 +31,12 @@ export const QUEUE = {
   OVERFLOW: 'overflow',
   /** Jobs that exhausted retries or hit a permanent error, kept for replay. */
   DLQ: 'dead-letter',
+  /**
+   * Inbound conversation turns awaiting dispatch to an agent's bridge URL.
+   * jobId = conv msg row id (dash-separated per the jobId gotcha), so a
+   * re-enqueued turn can never double-dispatch.
+   */
+  CONVERSATION: 'conversation-inbound',
 } as const;
 
 export function deliveryQueueName(channel: Channel, priority: Priority): string {
@@ -43,6 +49,7 @@ export const ALL_QUEUE_NAMES: string[] = [
   QUEUE.STATUS,
   QUEUE.OVERFLOW,
   QUEUE.DLQ,
+  QUEUE.CONVERSATION,
   ...CHANNELS.flatMap((c) => PRIORITIES.map((p) => deliveryQueueName(c, p))),
 ];
 

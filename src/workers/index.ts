@@ -22,6 +22,7 @@ import { processFanout } from './processors/fanout.processor';
 import { processDelivery } from './processors/delivery.processor';
 import { processStatus } from './processors/status.processor';
 import { processOverflow } from './processors/overflow.processor';
+import { processConversation, onConversationDead } from './processors/conversation.processor';
 
 const workers: Worker[] = [];
 
@@ -50,6 +51,11 @@ function main() {
   makeWorker(QUEUE.TRIGGER, processTrigger, { concurrency: env.triggerConcurrency });
   makeWorker(QUEUE.FANOUT, processFanout, { concurrency: env.fanoutConcurrency });
   makeWorker(QUEUE.STATUS, processStatus, { concurrency: env.statusConcurrency });
+
+  // Conversations: dispatch inbound turns to agent bridge URLs. Bridge calls
+  // block on customer infrastructure (up to 10s), so this stays isolated
+  // from the delivery lanes — a slow bridge can never starve sends.
+  makeWorker(QUEUE.CONVERSATION, processConversation, { concurrency: 10 }, onConversationDead);
 
   // Overflow trickle: low concurrency + a global replay cap, so diverted
   // bursts re-enter the pipeline gently no matter how many tenants burst.

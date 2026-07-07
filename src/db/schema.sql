@@ -228,6 +228,65 @@ create table if not exists execution_logs (
 create index if not exists exec_logs_txn_idx on execution_logs (transaction_id);
 create index if not exists exec_logs_created_idx on execution_logs (created_at);
 
+-- Conversations layer: an AGENT is a customer-registered brain (a bridge
+-- URL we call with normalized conversation events, HMAC-signed with a
+-- per-agent secret sealed like integration credentials). Conversations
+-- thread inbound subscriber messages with the agent's replies; the message
+-- rows are the durable transcript, deduped so retried jobs can never
+-- duplicate a turn.
+
+create table if not exists agents (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants(id),
+  identifier     text not null,   -- stable id used by SDKs/routes
+  name           text not null,
+  description    text,
+  bridge_url     text not null,
+  signing_secret text not null,   -- sealed (AES-256-GCM, see secret-box.ts)
+  status         text not null default 'active', -- active | disabled
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (tenant_id, identifier)
+);
+
+create table if not exists conversations (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants(id),
+  agent_id        uuid not null references agents(id) on delete cascade,
+  subscriber_id   uuid not null references subscribers(id),
+  channel         text not null default 'inapp',
+  -- One conversation per (agent, channel, thread): for in-app the thread IS
+  -- the subscriber; external channels (Phase 2) put their thread id here.
+  thread_key      text not null,
+  status          text not null default 'active', -- active | resolved
+  metadata        jsonb not null default '{}',    -- ctx.metadata.*, <=64KB
+  summary         text,
+  message_count   int not null default 0,
+  last_message_at timestamptz not null default now(),
+  created_at      timestamptz not null default now(),
+  unique (agent_id, channel, thread_key)
+);
+
+create index if not exists conversations_tenant_recent_idx
+  on conversations (tenant_id, last_message_at desc);
+
+create table if not exists conversation_messages (
+  id              uuid primary key default gen_random_uuid(),
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  tenant_id       uuid not null references tenants(id),
+  role            text not null, -- user | agent | system
+  content         text not null,
+  -- Idempotency wall: client message ids and reply-to-<inbound id> keys land
+  -- here, so API retries and re-run bridge jobs can't duplicate a turn.
+  dedupe_key      text not null,
+  raw             jsonb,
+  created_at      timestamptz not null default now(),
+  unique (conversation_id, dedupe_key)
+);
+
+create index if not exists conversation_messages_conv_idx
+  on conversation_messages (conversation_id, created_at);
+
 -- ---- Backfill for installs created before the accounts layer ----
 -- Give orphan environments a default organization, and move their legacy
 -- plaintext api_key into the hashed api_keys table (old keys keep working).

@@ -16,6 +16,7 @@ import { registerIntegrationRoutes } from './routes/integrations';
 import { registerTopicRoutes } from './routes/topics';
 import { registerTrackingRoutes } from './routes/tracking';
 import { registerTemplateRoutes } from './routes/templates';
+import { registerAgentRoutes } from './routes/agents';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -50,6 +51,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerTopicRoutes(app);
   registerTrackingRoutes(app);
   registerTemplateRoutes(app);
+  registerAgentRoutes(app);
   registerTriggerRoutes(app);
   registerAdminRoutes(app);
   registerEventRoutes(app);
