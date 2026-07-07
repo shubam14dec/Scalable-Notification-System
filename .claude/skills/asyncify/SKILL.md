@@ -114,6 +114,16 @@ When the user says **"start everything"** (all commands from the repo root
 Login: dashboard user shubam@xmobility.ai; env API keys are in the
 dashboard (API keys page). Everything survives restarts.
 
+**Memory pressure is real on this ~7GB machine** — Node processes get
+OOM-killed when free RAM drops under ~1GB (has taken down the API alone
+and the whole stack at once, several times). Symptoms: a background task
+exits with no error, or `VirtualAlloc failed` / `Could not determine
+Node.js install directory` in its output. It's the environment, not the
+code — just restart the dead process(es); nothing is lost (all state is
+in Docker/Postgres). If it keeps happening, tell the user to free RAM
+(close browser tabs / other apps). Restarting all four at once is fine
+but riskier when free RAM is already low; restart individually then.
+
 ## 3. Restart what you changed — processes don't reload code
 
 api, worker, and ws are long-running tsx processes; edits do nothing until
