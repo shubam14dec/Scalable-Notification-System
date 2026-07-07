@@ -6,6 +6,29 @@ plans get a short review section, then move to Done.
 
 ## Backlog (next candidates, in rough value order)
 
+**Agents / conversations — future phases** (continuation of the shipped
+inapp/telegram/email platform; promoted here from the Phase-1/2 parked
+notes. Order within this cluster is rough — reorder freely.)
+
+- [ ] Managed LLM brain (Phase 3): a customer pastes an Anthropic key +
+      a system prompt in the dashboard and we run the Claude loop
+      ourselves instead of POSTing a bridge URL — zero customer code,
+      reuses all three channels + the whole conversation core. v1 scope:
+      agent gains a `runtime` mode + sealed Anthropic key + system
+      prompt; conversation.processor branches to an LLM call (system +
+      `ctx.history` → reply) instead of the bridge POST. Tools
+      (exposing `trigger` as an LLM tool, built-ins) are a later slice.
+      READ the claude-api skill before writing the Anthropic call.
+- [ ] Interactive cards + `onAction`: buttons in the `<AgentChat />`
+      widget + Telegram inline keyboards, an `onAction({actionId,value})`
+      handler in `@asyncify-hq/agent`, card components in the reply
+      shape. Unlocks the human-in-the-loop approval pattern later.
+- [ ] Subscriber linking (`tg-<id>` / email sender → real app
+      subscriber): deep-link `/start <token>` for Telegram (+ an email
+      equivalent) so a channel identity merges into an existing
+      subscriber instead of a standalone `tg-`/email-addressed one.
+      (Deferred from Phase 2.5 — see the Telegram design notes.)
+
 - [ ] Landing page for asyncify.org (public face; domain currently unpointed)
 - [ ] Release automation: Changesets + GitHub Actions publish pipeline
       (fresh npm token straight into GitHub Secrets)
