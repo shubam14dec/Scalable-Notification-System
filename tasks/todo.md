@@ -51,6 +51,10 @@ notes. Order within this cluster is rough — reorder freely.)
 (user-verified 2026-07-08 with a real z.ai GLM-4.7 agent through the
 Anthropic-compatible base URL: persona followed, conversation memory
 across turns, live replies in the widget, transcript on Conversations.
+CHANNEL PARITY user-verified same day: flipping the channel-connected
+support-demo agent to runtime=managed made the REAL Telegram bot and
+the REAL Postmark email address GLM-powered with zero reconfiguration
+— "it worked on both telegram and email".
 Metadata/resolve correctly empty — v1 brain has no signals by design;
 LLM tool-use is the follow-up backlog item. Commits 9e05980 / 84a97d9 /
 fa2dc9f. Diagnosis note: user's key carries z.ai Coding-Plan quota on
