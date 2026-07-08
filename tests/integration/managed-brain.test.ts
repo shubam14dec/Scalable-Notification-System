@@ -82,15 +82,15 @@ function startLlmStub(): Promise<void> {
         return;
       }
       const refusal = stubMode === 'refusal';
+      // Echo only the user's words — not the platform-internal reminder.
+      const lastText = String(body.messages.at(-1)?.content ?? '').split(
+        '\n\n<platform_reminder>',
+      )[0];
       res.end(
         JSON.stringify(
           refusal
             ? envelope([], 'refusal', body.model)
-            : envelope(
-                [{ type: 'text', text: `echo(${body.messages.at(-1)?.content})` }],
-                'end_turn',
-                body.model,
-              ),
+            : envelope([{ type: 'text', text: `echo(${lastText})` }], 'end_turn', body.model),
         ),
       );
     });
@@ -222,7 +222,7 @@ describe('the managed turn', () => {
     expect(last.body.system).toBe('You are the Acme support agent. Be brief.');
     // Second turn carries the full history: user, assistant, then the new turn.
     expect(last.body.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
-    expect(last.body.messages.at(-1)?.content).toBe('and again');
+    expect(String(last.body.messages.at(-1)?.content)).toContain('and again');
 
     const t = await transcript(conversationId);
     const replies = t.messages.filter((m: { role: string }) => m.role === 'agent');
@@ -436,6 +436,22 @@ describe('the tool loop', () => {
       (m) => typeof m.content === 'string' && m.content.includes('[action taken:'),
     );
     expect(prose).toBe(false);
+  });
+
+  test('the per-turn reminder rides the wire but never the transcript', async () => {
+    const turn = await sendTurn('reminder check', 'tool-7');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    // On the wire: the CURRENT user message carries the reminder...
+    const wire = String(seen.at(-1)!.body.messages.at(-1)?.content);
+    expect(wire).toContain('<platform_reminder>');
+    expect(wire).toContain('trigger_workflow in this turn');
+
+    // ...but the stored transcript stays clean (nothing to accumulate or
+    // imitate on later turns).
+    const t = await transcript(turn.conversationId);
+    const stored = t.messages.find((m: { content: string }) => m.content.includes('reminder check'));
+    expect(stored.content).toBe('reminder check');
   });
 
   test('a forged [action taken:] line in the reply is stripped and flagged', async () => {
