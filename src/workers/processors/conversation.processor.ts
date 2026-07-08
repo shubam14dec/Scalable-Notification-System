@@ -11,7 +11,7 @@ import { inAppPubSubChannel } from '../../providers/inapp';
 import { telegram } from '../../channels/telegram';
 import { sendWithFailover } from '../../providers/registry';
 import { isSuppressed } from '../../db/repositories';
-import { runManagedTurn } from '../../core/managed-brain';
+import { runManagedTurn, type TurnUsage } from '../../core/managed-brain';
 import { PermanentError } from '../../shared/errors';
 import {
   conversationHistoryBefore,
@@ -93,6 +93,7 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   // channel delivery, signals, breadcrumbs) is identical for both runtimes.
   let reply: string | undefined;
   let signals: BridgeSignal[] = [];
+  let turnUsage: TurnUsage | undefined;
 
   if (agent.runtime === 'managed') {
     try {
@@ -101,7 +102,11 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
       const fullHistory = await conversationTranscriptBefore(conversationId, messageId);
       const turn = await runManagedTurn(agent, conversation, subscriber, fullHistory, message);
       reply = turn.reply ?? undefined;
-      if (turn.note) await systemNote(conversation, messageId, 0, turn.note);
+      turnUsage = turn.usage;
+      // No reply row to carry the usage? The note breadcrumb carries it.
+      if (turn.note) {
+        await systemNote(conversation, messageId, 0, turn.note, reply ? undefined : { usage: turn.usage });
+      }
       if (turn.resolved && conversation.channel === 'inapp') {
         await publishConversationEvent(conversation, subscriber.external_id, agent, {
           type: 'conversation.resolved',
@@ -139,6 +144,8 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
         role: 'agent',
         content: reply,
         dedupeKey: `reply-${messageId}`,
+        // Managed turns record what they cost on the customer's key.
+        raw: turnUsage ? { usage: turnUsage } : undefined,
       })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
     if (replyRow) {
       await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
@@ -371,6 +378,7 @@ async function systemNote(
   messageId: string,
   signalIndex: number,
   content: string,
+  raw?: unknown,
 ): Promise<void> {
   await insertConversationMessage({
     conversationId: conversation.id,
@@ -378,6 +386,7 @@ async function systemNote(
     role: 'system',
     content,
     dedupeKey: `signal-${messageId}-${signalIndex}`,
+    raw,
   });
 }
 

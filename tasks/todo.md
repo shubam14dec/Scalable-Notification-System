@@ -10,9 +10,8 @@ plans get a short review section, then move to Done.
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
 
-- [ ] Managed-brain polish (parked from Phase 3/3b): streaming replies,
-      token-usage accounting (usage fields already in every response),
-      per-agent max_tokens / loop-cap config
+- [ ] Streaming managed replies (parked from 3c: WS protocol + gateway +
+      widget surface for 1–2s chat replies — revisit if replies grow)
 - [ ] Interactive cards + `onAction`: buttons in the `<AgentChat />`
       widget + Telegram inline keyboards, an `onAction({actionId,value})`
       handler in `@asyncify-hq/agent`, card components in the reply
@@ -42,6 +41,39 @@ notes. Order within this cluster is rough — reorder freely.)
 (nothing — between tasks)
 
 ## Recently finished
+
+### Conversations / Agents — Phase 3c: Managed-brain polish — COMPLETE
+(2026-07-09: usage accounting + per-agent max_tokens. 116 tests;
+streaming stays parked. Live check: chat as maya → Details panel shows
+LLM usage line with real z.ai token counts.)
+
+Goal: the two cheap-and-real polish items — token-usage accounting
+(customers pay per token on their own key; we currently drop the
+counts) and per-agent max_tokens (the knob that controls that spend).
+Streaming replies stay parked: large surface (WS protocol + gateway +
+widget) for 1–2s chat replies.
+
+Design:
+- **Usage accounting**: the tool loop accumulates `usage` across ALL
+  model calls in a turn (input + output tokens, call count) →
+  BrainTurnResult carries it → processor stores it on the reply row's
+  `raw.usage` (crash-retry safe: written with the row). Conversation
+  detail endpoint sums transcript usage → dashboard Details panel
+  shows "LLM usage: N in / M out (K calls)" per conversation; per-turn
+  numbers ride the transcript response for later UI.
+- **Per-agent max_tokens**: `agents.max_tokens` int nullable (brain
+  default 1024 when null), accepted on create/PATCH (bounds 256–8192),
+  managed panel gets a numeric field. Loop cap stays a constant.
+
+**Slice (single): backend + dashboard + tests**
+- [x] managed-brain: accumulate usage across loop calls; honor
+      agent.max_tokens
+- [x] Schema/repo/routes: max_tokens column + validation + agentView
+- [x] Processor: usage → reply row raw
+- [x] API: conversation detail returns per-message usage + totals
+- [x] Dashboard: Details panel usage line; managed form max_tokens field
+- [x] Tests: usage recorded + totaled, max_tokens reaches the wire,
+      bounds validation
 
 ### Conversations / Agents — Phase 3b: LLM tool-use — COMPLETE
 (user-verified 2026-07-08. Clean-thread E2E with real GLM-4.7: all

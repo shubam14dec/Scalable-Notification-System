@@ -165,6 +165,7 @@ export function ConversationDetailPage() {
           createdAt: string;
         };
         messages: TranscriptMessage[];
+        usage: { inputTokens: number; outputTokens: number; modelCalls: number };
       }>(`/v1/conversations/${id}`),
     refetchInterval: 5_000,
   });
@@ -246,6 +247,18 @@ export function ConversationDetailPage() {
                   <dt className="text-t3">Started</dt>
                   <dd><Mono className="text-t2">{timeAgo(data.conversation.createdAt)}</Mono></dd>
                 </div>
+                {data.usage.modelCalls > 0 && (
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-t3">LLM usage</dt>
+                    <dd>
+                      <Mono className="text-t2">
+                        {data.usage.inputTokens.toLocaleString()} in ·{' '}
+                        {data.usage.outputTokens.toLocaleString()} out ·{' '}
+                        {data.usage.modelCalls} calls
+                      </Mono>
+                    </dd>
+                  </div>
+                )}
                 {data.conversation.summary && (
                   <div>
                     <dt className="mb-1 text-t3">Summary</dt>

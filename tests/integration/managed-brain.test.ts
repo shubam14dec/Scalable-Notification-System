@@ -421,6 +421,47 @@ describe('the tool loop', () => {
     expect(annotated[0].content).toContain('Replacement queued');
   });
 
+  test('usage is recorded per turn and totaled per conversation', async () => {
+    // Two model calls in this turn (tool round + final) -> 20 in / 10 out.
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_u1', name: 'set_metadata', input: { key: 'usage_check', value: 1 } },
+      ]),
+      textResponse('Noted!'),
+    ];
+    const turn = await sendTurn('note this down', 'usage-1');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const t = await transcript(turn.conversationId);
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.usage).toEqual({ inputTokens: 20, outputTokens: 10, modelCalls: 2 });
+    // Conversation totals accumulate across every managed turn in the thread.
+    expect(t.usage.modelCalls).toBeGreaterThanOrEqual(2);
+    expect(t.usage.inputTokens).toBeGreaterThanOrEqual(20);
+  });
+
+  test('per-agent max_tokens reaches the wire; bounds are enforced', async () => {
+    const tooSmall = await app.inject({
+      method: 'PATCH',
+      url: '/v1/agents/glm-support',
+      headers: { 'x-api-key': apiKey },
+      payload: { maxTokens: 100 },
+    });
+    expect(tooSmall.statusCode).toBe(400);
+
+    const ok = await app.inject({
+      method: 'PATCH',
+      url: '/v1/agents/glm-support',
+      headers: { 'x-api-key': apiKey },
+      payload: { maxTokens: 512 },
+    });
+    expect(json(ok).agent.maxTokens).toBe(512);
+
+    const turn = await sendTurn('cap check', 'usage-2');
+    await runWorker(turn.conversationId, turn.messageId);
+    expect(seen.at(-1)!.body.max_tokens).toBe(512);
+  });
+
   test('a tenant with no workflows gets no trigger tool', async () => {
     // Fresh org: no workflows seeded.
     const email = `brain2-${Date.now()}@itest.local`;

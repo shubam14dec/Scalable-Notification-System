@@ -31,7 +31,7 @@ import {
  */
 
 export const DEFAULT_MODEL = 'claude-opus-4-8';
-const MAX_TOKENS = 1024; // chat replies are short; raise per-agent later
+const DEFAULT_MAX_TOKENS = 1024; // chat replies are short; per-agent override
 const REQUEST_TIMEOUT_MS = 60_000;
 /**
  * Model calls per TURN (not per conversation): how many "let me do one
@@ -41,6 +41,13 @@ const REQUEST_TIMEOUT_MS = 60_000;
  */
 const MAX_MODEL_CALLS = 5;
 
+/** Token spend for one turn, summed across every model call in the loop. */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  modelCalls: number;
+}
+
 export interface BrainTurnResult {
   /** The reply to deliver; null when the model refused or sent no text. */
   reply: string | null;
@@ -48,6 +55,8 @@ export interface BrainTurnResult {
   resolved: boolean;
   /** Transcript breadcrumb (refusal, truncation, loop cap) — visible. */
   note?: string;
+  /** What this turn cost on the customer's key. */
+  usage: TurnUsage;
 }
 
 interface Subscriber {
@@ -89,13 +98,14 @@ export async function runManagedTurn(
   ];
 
   let resolved = false;
+  const usage: TurnUsage = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
 
   for (let call = 1; call <= MAX_MODEL_CALLS; call += 1) {
     let response: Anthropic.Message;
     try {
       response = await client.messages.create({
         model: agent.model ?? DEFAULT_MODEL,
-        max_tokens: MAX_TOKENS,
+        max_tokens: agent.max_tokens ?? DEFAULT_MAX_TOKENS,
         ...(agent.system_prompt ? { system: agent.system_prompt } : {}),
         tools,
         messages,
@@ -114,10 +124,14 @@ export async function runManagedTurn(
       throw new TransientError(`brain call failed: ${(err as Error).message}`, err);
     }
 
+    usage.modelCalls += 1;
+    usage.inputTokens += response.usage?.input_tokens ?? 0;
+    usage.outputTokens += response.usage?.output_tokens ?? 0;
+
     // Check stop_reason before reading content (refusals can carry none).
     if (response.stop_reason === 'refusal') {
       logger.info({ agent: agent.identifier }, 'managed brain refused the turn');
-      return { reply: null, resolved, note: 'the model declined to answer this message' };
+      return { reply: null, resolved, note: 'the model declined to answer this message', usage };
     }
 
     messages.push({ role: 'assistant', content: response.content });
@@ -126,7 +140,12 @@ export async function runManagedTurn(
       if (call === MAX_MODEL_CALLS) {
         // Still asking for tools on the last permitted call: stop here.
         // Effects already executed are applied and idempotent.
-        return { reply: null, resolved, note: 'tool loop limit reached before a final reply' };
+        return {
+          reply: null,
+          resolved,
+          note: 'tool loop limit reached before a final reply',
+          usage,
+        };
       }
       const toolUses = response.content.filter(
         (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
@@ -167,11 +186,12 @@ export async function runManagedTurn(
           : reply.length === 0
             ? 'the model produced no reply text'
             : undefined,
+      usage,
     };
   }
 
   // Unreachable (the cap returns inside the loop), but keep TS satisfied.
-  return { reply: null, resolved, note: 'tool loop limit reached before a final reply' };
+  return { reply: null, resolved, note: 'tool loop limit reached before a final reply', usage };
 }
 
 /**

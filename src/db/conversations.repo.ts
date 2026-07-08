@@ -22,6 +22,7 @@ export interface Agent {
   system_prompt: string | null;
   llm_base_url: string | null;
   llm_credentials: string | null; // sealed {apiKey} — write-only via the API
+  max_tokens: number | null; // per-reply output cap (null = brain default)
   status: 'active' | 'disabled';
   created_at: string;
   updated_at: string;
@@ -67,12 +68,13 @@ export async function createAgent(a: {
   systemPrompt?: string;
   llmBaseUrl?: string;
   sealedLlmCredentials?: string;
+  maxTokens?: number;
 }): Promise<Agent | null> {
   const { rows } = await pool.query(
     `insert into agents
        (tenant_id, identifier, name, description, runtime, bridge_url,
-        signing_secret, model, system_prompt, llm_base_url, llm_credentials)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
     [
@@ -87,6 +89,7 @@ export async function createAgent(a: {
       a.systemPrompt ?? null,
       a.llmBaseUrl ?? null,
       a.sealedLlmCredentials ?? null,
+      a.maxTokens ?? null,
     ],
   );
   return rows[0] ?? null;
@@ -126,6 +129,7 @@ export async function updateAgent(
     systemPrompt?: string;
     llmBaseUrl?: string | null;
     sealedLlmCredentials?: string;
+    maxTokens?: number;
   },
 ): Promise<Agent | null> {
   const { rows } = await pool.query(
@@ -140,6 +144,7 @@ export async function updateAgent(
        -- '' sentinel clears the base URL (back to api.anthropic.com)
        llm_base_url    = case when $10::text = '' then null else coalesce($10, llm_base_url) end,
        llm_credentials = coalesce($11, llm_credentials),
+       max_tokens      = coalesce($12, max_tokens),
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -155,6 +160,7 @@ export async function updateAgent(
       patch.systemPrompt ?? null,
       patch.llmBaseUrl === null ? '' : (patch.llmBaseUrl ?? null),
       patch.sealedLlmCredentials ?? null,
+      patch.maxTokens ?? null,
     ],
   );
   return rows[0] ?? null;

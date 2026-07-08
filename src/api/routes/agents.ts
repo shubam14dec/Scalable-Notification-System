@@ -45,6 +45,7 @@ const AgentSchema = z
     bridgeUrl: z.string().url().max(2048).optional(),
     model: z.string().min(1).max(255).optional(),
     systemPrompt: z.string().max(100_000).optional(),
+    maxTokens: z.number().int().min(256).max(8192).optional(),
     llm: LlmConfigSchema.optional(),
   })
   .refine((a) => a.runtime !== 'bridge' || Boolean(a.bridgeUrl), {
@@ -64,6 +65,7 @@ const AgentPatchSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   model: z.string().min(1).max(255).optional(),
   systemPrompt: z.string().max(100_000).optional(),
+  maxTokens: z.number().int().min(256).max(8192).optional(),
   llm: LlmConfigSchema.optional(),
 });
 
@@ -85,6 +87,7 @@ function agentView(agent: Agent) {
     model: agent.model,
     systemPrompt: agent.system_prompt,
     llmBaseUrl: agent.llm_base_url,
+    maxTokens: agent.max_tokens,
     hasLlmKey: Boolean(agent.llm_credentials),
     status: agent.status,
     createdAt: agent.created_at,
@@ -147,6 +150,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       sealedSecret: sealSecret(secret),
       model: parsed.data.model,
       systemPrompt: parsed.data.systemPrompt,
+      maxTokens: parsed.data.maxTokens,
       llmBaseUrl: parsed.data.llm?.baseUrl ?? undefined,
       sealedLlmCredentials: parsed.data.llm?.apiKey
         ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
@@ -204,6 +208,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
         status: parsed.data.status,
         model: parsed.data.model,
         systemPrompt: parsed.data.systemPrompt,
+        maxTokens: parsed.data.maxTokens,
         llmBaseUrl: parsed.data.llm === undefined ? undefined : parsed.data.llm.baseUrl,
         sealedLlmCredentials: parsed.data.llm?.apiKey
           ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
@@ -356,6 +361,19 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const conversation = await getConversation(req.tenant.id, req.params.id);
       if (!conversation) return reply.code(404).send({ error: 'unknown conversation' });
       const messages = await conversationTranscript(conversation.id);
+
+      // Managed turns record their model spend on the row; sum for the panel.
+      const totals = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
+      const usageOf = (m: { raw: unknown }) => {
+        const usage = (m.raw as { usage?: typeof totals } | null)?.usage;
+        if (usage) {
+          totals.inputTokens += usage.inputTokens ?? 0;
+          totals.outputTokens += usage.outputTokens ?? 0;
+          totals.modelCalls += usage.modelCalls ?? 0;
+        }
+        return usage;
+      };
+
       return {
         conversation: {
           id: conversation.id,
@@ -372,7 +390,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
           role: m.role,
           content: m.content,
           createdAt: m.created_at,
+          usage: usageOf(m),
         })),
+        usage: totals,
       };
     },
   );

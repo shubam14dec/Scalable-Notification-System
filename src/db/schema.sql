@@ -258,6 +258,7 @@ alter table agents add column if not exists model text;
 alter table agents add column if not exists system_prompt text;
 alter table agents add column if not exists llm_base_url text;
 alter table agents add column if not exists llm_credentials text; -- sealed {apiKey}
+alter table agents add column if not exists max_tokens int; -- managed reply cap (null = default)
 
 -- Channel connections: an agent's identity on an external messaging
 -- platform (v1: telegram). Credentials (bot token + the webhook secret we

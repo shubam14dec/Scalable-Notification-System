@@ -28,6 +28,7 @@ interface Agent {
   model: string | null;
   systemPrompt: string | null;
   llmBaseUrl: string | null;
+  maxTokens: number | null;
   hasLlmKey: boolean;
   status: 'active' | 'disabled';
   createdAt: string;
@@ -41,6 +42,7 @@ interface AgentBody {
   bridgeUrl?: string;
   model?: string;
   systemPrompt?: string;
+  maxTokens?: number;
   llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
@@ -351,6 +353,8 @@ function AgentForm({
         } else {
           body.model = str('model') || undefined;
           body.systemPrompt = str('systemPrompt') || undefined;
+          const maxTokens = Number.parseInt(str('maxTokens'), 10);
+          if (Number.isFinite(maxTokens)) body.maxTokens = maxTokens;
           const apiKey = str('llmApiKey');
           const baseUrl = str('llmBaseUrl');
           // On edit, a blank key means "keep the stored one".
@@ -409,6 +413,17 @@ function AgentForm({
           </Field>
           <Field label="Model" hint="Defaults to claude-opus-4-8; use your endpoint's model id if you set a base URL">
             <Input name="model" placeholder="claude-opus-4-8" defaultValue={initial?.model ?? ''} className="font-mono" />
+          </Field>
+          <Field label="Max reply tokens" hint="Per-reply output cap, 256–8192 (blank = 1024). Controls spend on your key">
+            <Input
+              name="maxTokens"
+              type="number"
+              min={256}
+              max={8192}
+              placeholder="1024"
+              defaultValue={initial?.maxTokens ?? ''}
+              className="font-mono"
+            />
           </Field>
           <Field
             label="API key"
@@ -644,6 +659,7 @@ http.createServer(createHandler(support, {
                 bridgeUrl: body.bridgeUrl,
                 model: body.model,
                 systemPrompt: body.systemPrompt,
+                maxTokens: body.maxTokens,
                 llm: body.llm,
               })
             }
