@@ -442,10 +442,14 @@ describe('the tool loop', () => {
     const turn = await sendTurn('reminder check', 'tool-7');
     await runWorker(turn.conversationId, turn.messageId);
 
-    // On the wire: the CURRENT user message carries the reminder...
+    // On the wire: the CURRENT user message carries the reminder, and it
+    // names every tool (a trigger-only version taught the model to skip
+    // resolve/metadata).
     const wire = String(seen.at(-1)!.body.messages.at(-1)?.content);
     expect(wire).toContain('<platform_reminder>');
-    expect(wire).toContain('trigger_workflow in this turn');
+    expect(wire).toContain('trigger_workflow');
+    expect(wire).toContain('resolve_conversation');
+    expect(wire).toContain('set_metadata');
 
     // ...but the stored transcript stays clean (nothing to accumulate or
     // imitate on later turns).

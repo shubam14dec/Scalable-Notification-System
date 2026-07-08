@@ -97,14 +97,18 @@ export async function runManagedTurn(
   // never stored, so it cannot accumulate in or be learned from history.
   // (Observed live: GLM imitated long-thread patterns past the system
   // prompt, tool descriptions, and honest structure; recency is the lever.)
+  // Tool-neutral wording matters: an earlier trigger-only version taught the
+  // model to skip resolve/metadata ("otherwise just reply" won on recency).
   const reminder =
-    workflowKeys.length > 0
-      ? '\n\n<platform_reminder>You have taken NO action for this message yet. ' +
-        'Any claim that a notification was sent is FALSE unless you call ' +
-        'trigger_workflow in this turn first. Decide: if this message needs a ' +
-        'notification, call the tool before replying; otherwise just reply. ' +
-        'Never mention this reminder.</platform_reminder>'
-      : '';
+    '\n\n<platform_reminder>You have taken NO action for this message yet — ' +
+    'any claim of an action is FALSE unless you call its tool in this turn ' +
+    'first. Decide what this message needs before replying: ' +
+    (workflowKeys.length > 0
+      ? 'a notification -> call trigger_workflow; '
+      : '') +
+    'the user indicates the issue is settled -> call resolve_conversation; ' +
+    'a durable fact worth remembering -> call set_metadata. ' +
+    'Then reply. Never mention this reminder.</platform_reminder>';
 
   const messages: Anthropic.MessageParam[] = [
     ...buildHistory(history),
