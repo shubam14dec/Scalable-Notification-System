@@ -43,7 +43,64 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — between tasks)
+### Conversations / Agents — Phase 3b: LLM tool-use (plan pending user OK)
+
+Goal: the zero-code agent gets hands. The managed brain can now
+`trigger_workflow` (real notifications mid-chat), `set_metadata`, and
+`resolve_conversation` — closing the gap with the SDK brain. No UI
+changes; every managed agent gets the tools automatically.
+
+Design decisions:
+- **Manual bounded tool loop, NOT the SDK Tool Runner**: the runner is
+  beta-namespace (`client.beta.messages`), which Anthropic-COMPATIBLE
+  endpoints (z.ai) can't be assumed to serve. Plain `messages.create`
+  + a hand-rolled loop (max 5 iterations) is maximally compatible and
+  the skill blesses manual loops when you own the whole loop. Evidence
+  tools work on z.ai compat: Claude Code (fully tool-driven) runs on it.
+- **Three tools, raw JSON schema** (skill: prescriptive descriptions
+  that say WHEN to call):
+  · `trigger_workflow {workflowKey, payload?}` — workflowKey is an
+    **enum of the tenant's actual workflow keys** (fetched per turn),
+    so the model cannot hallucinate one; tool omitted if none exist
+  · `set_metadata {key, value}` — conversation notes (64KB cap holds)
+  · `resolve_conversation {summary?}` — close the thread
+- **Loop discipline (per skill)**: execute ALL tool_use blocks in one
+  assistant turn, return ALL tool_results in a SINGLE user message
+  (splitting trains the model out of parallel calls); failures return
+  `is_error: true` results so the model can adapt; append the full
+  `response.content` back each iteration; stop on any non-tool_use
+  stop_reason; refusal → breadcrumb as in v1; loop cap exhausted →
+  breadcrumb + best-effort last text.
+- **Retry-safety with a nondeterministic brain**: a retried job re-runs
+  the LLM, which may order tool calls differently — so index-based
+  dedupe (bridge-style) is NOT safe here. Managed tool effects use
+  CONTENT-keyed idempotency instead: trigger txn =
+  `conv-<messageId>-<workflowKey>` (a re-run re-fires as duplicate
+  no-op), resolve/metadata already idempotent, breadcrumb dedupe keys
+  content-based. Bridge path untouched (its signals are deterministic).
+- Tool results feed the model real outcomes ("workflow queued, txn …" /
+  "unknown workflow" as is_error) — the model can tell the user what
+  it actually did.
+
+**Slice 1 — backend (build → verify vs scripted stub → commit)**
+- [ ] managed-brain.ts: tool definitions (enum from tenant workflows),
+      bounded loop, content-keyed effect execution + breadcrumbs
+- [ ] Tests (stub scripts multi-turn tool_use): trigger creates a real
+      event w/ deterministic txn + breadcrumb, metadata lands, resolve
+      closes + reopen works, tool error → is_error → model recovers,
+      re-run job → NO duplicate trigger, loop cap stops runaway,
+      no-tools tenant → trigger tool absent
+**Slice 2 — real E2E (user-driven, zero setup)**
+- [ ] User tightens the GLM agent's system prompt (e.g. "when a user
+      reports a missing order, trigger the order-shipped workflow and
+      tell them; when the issue is settled, resolve") → asks about an
+      order in the widget → real email lands + breadcrumb in transcript
+      → metadata visible → "thanks" resolves. Optionally repeat on
+      Telegram for the full effect.
+
+**Out of scope**: streaming, cards/onAction (separate backlog item),
+letting the LLM read subscriber PII beyond what v1 already sends,
+token-usage accounting.
 
 ## Recently finished
 

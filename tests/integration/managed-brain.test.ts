@@ -33,12 +33,30 @@ interface SeenRequest {
     model: string;
     system?: string;
     max_tokens: number;
-    messages: Array<{ role: string; content: string }>;
+    tools?: Array<{ name: string; input_schema: { properties?: Record<string, { enum?: string[] }> } }>;
+    messages: Array<{ role: string; content: unknown }>;
   };
 }
 const seen: SeenRequest[] = [];
 /** Behavior switch per test: 'ok' | 'refusal' | 'auth' | 'overloaded'. */
 let stubMode: 'ok' | 'refusal' | 'auth' | 'overloaded' = 'ok';
+/** Scripted responses (multi-round tool conversations); consumed FIFO. */
+let stubQueue: unknown[] = [];
+
+const envelope = (content: unknown[], stopReason: string, model = 'glm-4-test') => ({
+  id: 'msg_stub_1',
+  type: 'message',
+  role: 'assistant',
+  model,
+  content,
+  stop_reason: stopReason,
+  stop_sequence: null,
+  usage: { input_tokens: 10, output_tokens: 5 },
+});
+
+const toolUseResponse = (uses: Array<{ id: string; name: string; input: unknown }>) =>
+  envelope(uses.map((u) => ({ type: 'tool_use', ...u })), 'tool_use');
+const textResponse = (text: string) => envelope([{ type: 'text', text }], 'end_turn');
 
 function startLlmStub(): Promise<void> {
   llmStub = createServer((req, res) => {
@@ -48,6 +66,11 @@ function startLlmStub(): Promise<void> {
       const body = JSON.parse(raw) as SeenRequest['body'];
       seen.push({ apiKey: req.headers['x-api-key'] as string | undefined, body });
       res.setHeader('content-type', 'application/json');
+      if (stubQueue.length > 0) {
+        const scripted = stubQueue.shift()!;
+        res.end(JSON.stringify(scripted));
+        return;
+      }
       if (stubMode === 'auth') {
         res.statusCode = 401;
         res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
@@ -60,16 +83,15 @@ function startLlmStub(): Promise<void> {
       }
       const refusal = stubMode === 'refusal';
       res.end(
-        JSON.stringify({
-          id: 'msg_stub_1',
-          type: 'message',
-          role: 'assistant',
-          model: body.model,
-          content: refusal ? [] : [{ type: 'text', text: `echo(${body.messages.at(-1)?.content})` }],
-          stop_reason: refusal ? 'refusal' : 'end_turn',
-          stop_sequence: null,
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
+        JSON.stringify(
+          refusal
+            ? envelope([], 'refusal', body.model)
+            : envelope(
+                [{ type: 'text', text: `echo(${body.messages.at(-1)?.content})` }],
+                'end_turn',
+                body.model,
+              ),
+        ),
       );
     });
   });
@@ -116,6 +138,18 @@ beforeAll(async () => {
   const dev = json(signup).environments.find((e: { name: string }) => e.name === 'Development');
   apiKey = dev.apiKey;
   tenantId = dev.id;
+
+  // A workflow for trigger_workflow to hit (inapp: no provider needed).
+  await app.inject({
+    method: 'PUT',
+    url: '/v1/workflows',
+    headers: { 'x-api-key': apiKey },
+    payload: {
+      key: 'brain-wf',
+      name: 'Brain workflow',
+      steps: [{ channel: 'inapp', subject: 'Hi {{name}}', body: 'Replacement for {{name}}' }],
+    },
+  });
 });
 
 afterAll(async () => {
@@ -242,5 +276,165 @@ describe('the managed turn', () => {
     const t = await transcript(conversationId);
     const replies = t.messages.filter((m: { role: string }) => m.role === 'agent');
     expect(replies.at(-1).content).toBe('echo(busy time)');
+  });
+});
+
+describe('the tool loop', () => {
+  const toolScript = () => [
+    toolUseResponse([
+      { id: 'toolu_1', name: 'trigger_workflow', input: { workflowKey: 'brain-wf', payload: { name: 'Ana' } } },
+      { id: 'toolu_2', name: 'set_metadata', input: { key: 'topic', value: 'missing-order' } },
+    ]),
+    textResponse('Replacement queued — check your inbox!'),
+  ];
+  let conversationId = '';
+  let toolTurnMessageId = '';
+
+  test('the tool menu carries the tenant workflow enum', async () => {
+    const turn = await sendTurn('menu check', 'tool-0');
+    conversationId = turn.conversationId;
+    await runWorker(turn.conversationId, turn.messageId);
+    const tools = seen.at(-1)!.body.tools!;
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'resolve_conversation',
+      'set_metadata',
+      'trigger_workflow',
+    ]);
+    const trigger = tools.find((t) => t.name === 'trigger_workflow')!;
+    expect(trigger.input_schema.properties!.workflowKey.enum).toEqual(['brain-wf']);
+  });
+
+  test('tool round-trip: effects apply, results return in ONE user message', async () => {
+    stubQueue = toolScript();
+    const turn = await sendTurn('where is my order?', 'tool-1');
+    toolTurnMessageId = turn.messageId;
+    await runWorker(turn.conversationId, turn.messageId);
+
+    // The wire shape the model saw on round 2.
+    const round2 = seen.at(-1)!.body.messages;
+    const last = round2.at(-1) as { role: string; content: Array<{ type: string; tool_use_id: string; is_error?: boolean }> };
+    expect(last.role).toBe('user');
+    expect(last.content.map((b) => b.type)).toEqual(['tool_result', 'tool_result']);
+    expect(last.content.map((b) => b.tool_use_id)).toEqual(['toolu_1', 'toolu_2']);
+    expect(last.content.some((b) => b.is_error)).toBe(false);
+
+    // The effects are real.
+    const event = await app.inject({
+      method: 'GET',
+      url: `/v1/events/conv-${turn.messageId}-brain-wf`,
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(event.statusCode).toBe(200);
+    expect(json(event).workflowKey).toBe('brain-wf');
+
+    const t = await transcript(turn.conversationId);
+    expect(t.conversation.metadata.topic).toBe('missing-order');
+    const system = t.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(system.some((m: { content: string }) => m.content.includes('triggered workflow brain-wf'))).toBe(true);
+    const replies = t.messages.filter((m: { role: string }) => m.role === 'agent');
+    expect(replies.at(-1).content).toBe('Replacement queued — check your inbox!');
+  });
+
+  test('a crash-retry cannot double-send: content-keyed idempotency', async () => {
+    const before = (await transcript(conversationId)).messages.length;
+    // Re-run the SAME turn; the "model" asks for the same tools again.
+    stubQueue = toolScript();
+    await runWorker(conversationId, toolTurnMessageId);
+    // No new rows: reply, breadcrumb, and event all dedupe by content keys.
+    expect((await transcript(conversationId)).messages.length).toBe(before);
+    const round2 = seen.at(-1)!.body.messages;
+    const last = round2.at(-1) as { role: string; content: Array<{ content: string }> };
+    // The model was told the workflow already went out.
+    expect(last.content[0].content).toContain('already sent');
+  });
+
+  test('a bad tool call returns is_error and the model recovers', async () => {
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_3', name: 'trigger_workflow', input: { workflowKey: 'no-such-wf' } },
+      ]),
+      textResponse('Sorry, I could not send that — but your issue is noted.'),
+    ];
+    const turn = await sendTurn('send me the thing', 'tool-2');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const round2 = seen.at(-1)!.body.messages;
+    const last = round2.at(-1) as { role: string; content: Array<{ is_error?: boolean; content: string }> };
+    expect(last.content[0].is_error).toBe(true);
+    expect(last.content[0].content).toContain('unknown workflow');
+
+    const t = await transcript(turn.conversationId);
+    const replies = t.messages.filter((m: { role: string }) => m.role === 'agent');
+    expect(replies.at(-1).content).toContain('your issue is noted');
+  });
+
+  test('resolve_conversation closes the thread', async () => {
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_4', name: 'resolve_conversation', input: { summary: 'order handled' } },
+      ]),
+      textResponse('Anytime! Closing this out.'),
+    ];
+    const turn = await sendTurn('thanks, all good!', 'tool-3');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const t = await transcript(turn.conversationId);
+    expect(t.conversation.status).toBe('resolved');
+    expect(t.conversation.summary).toBe('order handled');
+    const system = t.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(system.some((m: { content: string }) => m.content.includes('conversation resolved: order handled'))).toBe(true);
+  });
+
+  test('the loop cap stops a runaway tool spiral at 5 model calls', async () => {
+    stubQueue = Array.from({ length: 6 }, (_, i) =>
+      toolUseResponse([
+        { id: `toolu_loop_${i}`, name: 'set_metadata', input: { key: 'spin', value: i } },
+      ]),
+    );
+    const callsBefore = seen.length;
+    const turn = await sendTurn('spiral please', 'tool-4');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    expect(seen.length - callsBefore).toBe(5); // hard ceiling
+    stubQueue = []; // discard the unused 6th script
+    const t = await transcript(turn.conversationId);
+    const system = t.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(system.at(-1).content).toContain('tool loop limit reached');
+  });
+
+  test('a tenant with no workflows gets no trigger tool', async () => {
+    // Fresh org: no workflows seeded.
+    const email = `brain2-${Date.now()}@itest.local`;
+    const signup = await app.inject({
+      method: 'POST',
+      url: '/auth/signup',
+      payload: { name: 'B2', email, password: 'integration-pw-1', organizationName: 'B2 Org' },
+    });
+    const dev = json(signup).environments.find((e: { name: string }) => e.name === 'Development');
+    await app.inject({
+      method: 'POST',
+      url: '/v1/agents',
+      headers: { 'x-api-key': dev.apiKey },
+      payload: {
+        identifier: 'bare-brain',
+        name: 'Bare',
+        runtime: 'managed',
+        model: 'glm-4-test',
+        llm: { apiKey: 'zai-test-key-123456', baseUrl: llmBaseUrl },
+      },
+    });
+    const send = await app.inject({
+      method: 'POST',
+      url: '/v1/agents/bare-brain/messages',
+      headers: { 'x-api-key': dev.apiKey },
+      payload: { subscriberId: 'bob', text: 'hi', messageId: 'bare-1' },
+    });
+    const { conversationId: cid, messageId: mid } = json(send);
+    await processConversation({
+      data: { tenantId: dev.id, conversationId: cid, messageId: mid },
+    } as Job<ConversationJobData>);
+
+    const tools = seen.at(-1)!.body.tools!;
+    expect(tools.map((t) => t.name).sort()).toEqual(['resolve_conversation', 'set_metadata']);
   });
 });

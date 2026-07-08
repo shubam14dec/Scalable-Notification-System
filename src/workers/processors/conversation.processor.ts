@@ -95,9 +95,14 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
 
   if (agent.runtime === 'managed') {
     try {
-      const turn = await runManagedTurn(agent, history, message);
+      const turn = await runManagedTurn(agent, conversation, subscriber, history, message);
       reply = turn.reply ?? undefined;
       if (turn.note) await systemNote(conversation, messageId, 0, turn.note);
+      if (turn.resolved && conversation.channel === 'inapp') {
+        await publishConversationEvent(conversation, subscriber.external_id, agent, {
+          type: 'conversation.resolved',
+        });
+      }
     } catch (err) {
       if (err instanceof PermanentError) {
         // Bad key / model / endpoint: retrying can't fix it — make it
