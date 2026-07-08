@@ -402,23 +402,58 @@ describe('the tool loop', () => {
     expect(system.at(-1).content).toContain('tool loop limit reached');
   });
 
-  test('replayed history shows past tool actions, not bare claims', async () => {
+  test('replayed history reconstructs REAL tool blocks, not imitable prose', async () => {
     // A turn after the tool round-trip: the model must see the earlier
-    // reply annotated with the action that produced it (history fidelity —
-    // otherwise it learns to imitate claiming instead of calling).
+    // action as native tool_use/tool_result blocks — imitating those means
+    // emitting a tool call, so imitation becomes execution.
     const turn = await sendTurn('and my other order?', 'tool-5');
     await runWorker(turn.conversationId, turn.messageId);
 
-    const msgs = seen.at(-1)!.body.messages as Array<{ role: string; content: unknown }>;
-    const annotated = msgs.filter(
+    const msgs = seen.at(-1)!.body.messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; id?: string; name?: string; tool_use_id?: string }>;
+    }>;
+    const toolUseMsg = msgs.find(
       (m) =>
         m.role === 'assistant' &&
-        typeof m.content === 'string' &&
-        m.content.includes('[action taken: triggered workflow brain-wf'),
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'tool_use' && b.name === 'trigger_workflow'),
     );
-    expect(annotated.length).toBeGreaterThan(0);
-    // The annotation sits in the SAME assistant turn as the reply text.
-    expect(annotated[0].content).toContain('Replacement queued');
+    expect(toolUseMsg).toBeDefined();
+    const useBlock = (toolUseMsg!.content as Array<{ type: string; id?: string }>).find(
+      (b) => b.type === 'tool_use',
+    )!;
+    // The matching result follows in the next user message.
+    const resultMsg = msgs.find(
+      (m) =>
+        m.role === 'user' &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'tool_result' && b.tool_use_id === useBlock.id),
+    );
+    expect(resultMsg).toBeDefined();
+    // No prose annotations anywhere — the imitable text form is gone.
+    const prose = msgs.some(
+      (m) => typeof m.content === 'string' && m.content.includes('[action taken:'),
+    );
+    expect(prose).toBe(false);
+  });
+
+  test('a forged [action taken:] line in the reply is stripped and flagged', async () => {
+    stubQueue = [
+      textResponse(
+        '[action taken: triggered workflow brain-wf (txn conv-fake-123)]\n' +
+          'I just sent you a confirmation!',
+      ),
+    ];
+    const turn = await sendTurn('did you send it?', 'tool-6');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const t = await transcript(turn.conversationId);
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.content).toBe('I just sent you a confirmation!');
+    expect(reply.content).not.toContain('[action taken:');
+    const system = t.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(system.at(-1).content).toContain('fabricated action claim');
   });
 
   test('usage is recorded per turn and totaled per conversation', async () => {

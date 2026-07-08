@@ -93,7 +93,7 @@ export async function runManagedTurn(
   const tools = buildTools(workflowKeys);
 
   const messages: Anthropic.MessageParam[] = [
-    ...foldHistory(history),
+    ...buildHistory(history),
     { role: 'user' as const, content: inbound.content },
   ];
 
@@ -170,22 +170,26 @@ export async function runManagedTurn(
       continue;
     }
 
-    // Terminal response: deliver the text.
-    const reply = response.content
+    // Terminal response: deliver the text (minus any forged audit lines).
+    const rawReply = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')
       .map((block) => block.text)
       .join('')
       .trim();
+    const { text: reply, forged } = sanitizeReply(rawReply);
+
+    const notes: string[] = [];
+    if (forged) {
+      logger.warn({ agent: agent.identifier }, 'stripped forged action claim from managed reply');
+      notes.push('removed a fabricated action claim from the reply (no such action ran)');
+    }
+    if (response.stop_reason === 'max_tokens') notes.push('reply truncated at the model output limit');
+    if (reply.length === 0) notes.push('the model produced no reply text');
 
     return {
       reply: reply.length > 0 ? reply : null,
       resolved,
-      note:
-        response.stop_reason === 'max_tokens'
-          ? 'reply truncated at the model output limit'
-          : reply.length === 0
-            ? 'the model produced no reply text'
-            : undefined,
+      note: notes.length > 0 ? notes.join(' · ') : undefined,
       usage,
     };
   }
@@ -195,40 +199,106 @@ export async function runManagedTurn(
 }
 
 /**
- * Rebuild honest history. System rows (tool-action breadcrumbs) are folded
- * into the assistant turn they belong to as bracketed action notes — so a
- * past reply that came with a real tool call LOOKS like it did. Without
- * this, replayed history shows bare "I sent it" claims with no visible
- * action, and the model learns to imitate claiming instead of calling
- * (observed live with GLM: first turn called the tool, every later turn
- * copied the apparent pattern).
+ * Rebuild honest history. Past tool actions are replayed as REAL
+ * tool_use/tool_result blocks (reconstructed from the breadcrumbs'
+ * structured `raw.action`), not as prose annotations.
+ *
+ * Why blocks and not text: two live GLM incidents. (1) With text-only
+ * history, tool-backed replies looked like bare claims and the model
+ * imitated claiming without calling. (2) With bracketed text annotations,
+ * the model imitated the ANNOTATION — pasting a forged `[action taken:…]`
+ * line (recycled txn id included) into its reply text. Native blocks close
+ * both: imitating this history means emitting a tool_use block, which IS
+ * a tool call.
  */
-function foldHistory(history: ConversationMessage[]): Anthropic.MessageParam[] {
+function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] {
   const messages: Anthropic.MessageParam[] = [];
   // Breadcrumbs are written DURING tool execution, so they precede the
   // reply row in the transcript — buffer them and attach to the NEXT
   // assistant turn (the reply they belong to).
-  let pendingActions: string[] = [];
+  let pending: Array<{ id: string; action: { tool: string; input: Record<string, unknown>; result: string } }> = [];
   for (const m of history) {
     if (m.role === 'system') {
-      pendingActions.push(m.content);
+      const action =
+        (m.raw as { action?: { tool: string; input: Record<string, unknown>; result: string } } | null)?.action ??
+        parseLegacyBreadcrumb(m.content);
+      if (action) pending.push({ id: m.id, action });
+      // Non-action system rows (error notes etc.) add nothing to replay.
       continue;
     }
-    if (m.role === 'agent' && pendingActions.length > 0) {
+    if (m.role === 'agent' && pending.length > 0) {
+      // The turn's real shape: assistant asks for tools, user returns
+      // results, assistant speaks.
       messages.push({
         role: 'assistant',
-        content:
-          pendingActions.map((a) => `[action taken: ${a}]`).join('\n') + `\n${m.content}`,
+        content: pending.map((p) => ({
+          type: 'tool_use' as const,
+          id: `hist_${p.id}`,
+          name: p.action.tool,
+          input: p.action.input,
+        })),
       });
-      pendingActions = [];
+      messages.push({
+        role: 'user',
+        content: pending.map((p) => ({
+          type: 'tool_result' as const,
+          tool_use_id: `hist_${p.id}`,
+          content: p.action.result,
+        })),
+      });
+      messages.push({ role: 'assistant', content: sanitizeReply(m.content).text });
+      pending = [];
       continue;
     }
     messages.push({
       role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
-      content: m.content,
+      // Assistant rows are sanitized on replay too — a forged marker that
+      // slipped into storage pre-fix must not re-teach the format.
+      content: m.role === 'agent' ? sanitizeReply(m.content).text : m.content,
     });
   }
   return messages;
+}
+
+/**
+ * Breadcrumbs written before `raw.action` existed carry the same facts in
+ * their text — parse them so pre-upgrade threads keep honest tool-block
+ * replay instead of regressing to bare claims.
+ */
+function parseLegacyBreadcrumb(
+  content: string,
+): { tool: string; input: Record<string, unknown>; result: string } | null {
+  const trigger = /^triggered workflow (\S+) \(txn (\S+)\)/.exec(content);
+  if (trigger) {
+    return {
+      tool: 'trigger_workflow',
+      input: { workflowKey: trigger[1] },
+      result: `workflow ${trigger[1]} queued (transactionId ${trigger[2]})`,
+    };
+  }
+  const resolved = /^conversation resolved(?::\s*(.+))?/.exec(content);
+  if (resolved) {
+    return {
+      tool: 'resolve_conversation',
+      input: resolved[1] ? { summary: resolved[1] } : {},
+      result: 'conversation marked resolved',
+    };
+  }
+  return null;
+}
+
+/**
+ * `[action taken: …]` is platform-reserved transcript vocabulary — it only
+ * ever appears in replayed context, never in stored replies. A model that
+ * writes it into reply text is forging an audit receipt (observed live,
+ * with a recycled real txn id). Strip it before the reply is stored.
+ */
+export function sanitizeReply(text: string): { text: string; forged: boolean } {
+  const cleaned = text
+    .replace(/^[ \t]*\[action taken:[^\]]*\][ \t]*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { text: cleaned, forged: cleaned !== text.trim() };
 }
 
 /** The tool menu — descriptions say WHEN to call, not just what it does. */
@@ -328,6 +398,11 @@ async function executeTool(
       conversation,
       `signal-${inbound.id}-resolve`,
       `conversation resolved${summary ? `: ${summary}` : ''}`,
+      {
+        tool: 'resolve_conversation',
+        input: summary ? { summary } : {},
+        result: 'conversation marked resolved',
+      },
     );
     return { message: 'conversation marked resolved' };
   }
@@ -354,26 +429,35 @@ async function executeTool(
     if (!result.ok) {
       return { message: `workflow not sent: ${result.error}`, isError: true };
     }
+    const resultMessage = result.duplicate
+      ? `workflow ${workflowKey} was already sent for this message`
+      : `workflow ${workflowKey} queued (transactionId ${result.transactionId})`;
     await breadcrumb(
       conversation,
       `signal-${inbound.id}-trigger-${workflowKey}`,
       `triggered workflow ${workflowKey} (txn ${result.transactionId})`,
+      {
+        tool: 'trigger_workflow',
+        input: { workflowKey, ...(input.payload ? { payload: input.payload } : {}) },
+        result: resultMessage,
+      },
     );
-    return {
-      message: result.duplicate
-        ? `workflow ${workflowKey} was already sent for this message`
-        : `workflow ${workflowKey} queued (transactionId ${result.transactionId})`,
-    };
+    return { message: resultMessage };
   }
 
   return { message: `unknown tool ${use.name}`, isError: true };
 }
 
-/** Transcript breadcrumb, content-keyed so retries can't repeat it. */
+/**
+ * Transcript breadcrumb, content-keyed so retries can't repeat it. `action`
+ * records the structured tool call so history replay can reconstruct REAL
+ * tool_use blocks instead of imitable prose.
+ */
 async function breadcrumb(
   conversation: Conversation,
   dedupeKey: string,
   content: string,
+  action?: { tool: string; input: Record<string, unknown>; result: string },
 ): Promise<void> {
   await insertConversationMessage({
     conversationId: conversation.id,
@@ -381,5 +465,6 @@ async function breadcrumb(
     role: 'system',
     content,
     dedupeKey,
+    raw: action ? { action } : undefined,
   });
 }
