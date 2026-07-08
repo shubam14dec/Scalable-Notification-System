@@ -241,13 +241,23 @@ create table if not exists agents (
   identifier     text not null,   -- stable id used by SDKs/routes
   name           text not null,
   description    text,
-  bridge_url     text not null,
+  bridge_url     text,            -- required for runtime='bridge' (app layer)
   signing_secret text not null,   -- sealed (AES-256-GCM, see secret-box.ts)
   status         text not null default 'active', -- active | disabled
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now(),
   unique (tenant_id, identifier)
 );
+
+-- Managed LLM brain (runtime='managed'): we run the model loop ourselves —
+-- zero customer code. llm_base_url points at any Anthropic-compatible
+-- endpoint (default api.anthropic.com); the API key is sealed, write-only.
+alter table agents alter column bridge_url drop not null;
+alter table agents add column if not exists runtime text not null default 'bridge'; -- bridge | managed
+alter table agents add column if not exists model text;
+alter table agents add column if not exists system_prompt text;
+alter table agents add column if not exists llm_base_url text;
+alter table agents add column if not exists llm_credentials text; -- sealed {apiKey}
 
 -- Channel connections: an agent's identity on an external messaging
 -- platform (v1: telegram). Credentials (bot token + the webhook secret we

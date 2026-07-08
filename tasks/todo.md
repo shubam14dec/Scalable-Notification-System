@@ -45,7 +45,71 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — between tasks)
+### Conversations / Agents — Phase 3: Managed LLM brain (plan pending user OK)
+
+Goal: zero-code agents. A customer picks runtime = managed in the
+dashboard, pastes an LLM API key + system prompt, and their agent
+answers on ALL channels (widget/telegram/email) with no bridge app.
+The conversation core, reply delivery, and transcripts are untouched —
+only the "brain call" branches.
+
+Design decisions (per the claude-api skill, read 2026-07-08):
+- **Client**: official `@anthropic-ai/sdk` in the main app (house
+  zero-dep rule applies to published packages, not the server, which
+  already carries fastify/bullmq). Per-agent `new Anthropic({ apiKey,
+  baseURL, timeout: 60s, maxRetries: 1 })` — BullMQ owns outer retries.
+- **BYO endpoint**: per-agent optional base URL for Anthropic-compatible
+  APIs. Default api.anthropic.com; the user's z.ai GLM key works by
+  setting their compat endpoint — same mechanism tests use to point at
+  a stub. This is a product feature, not a shortcut.
+- **Model**: per-agent, default `claude-opus-4-8` (skill-mandated
+  default; user types their GLM model id for z.ai).
+- **Request shape v1**: system = agent system prompt, messages =
+  conversation history (already LLM-shaped) + current turn,
+  max_tokens per agent (default 1024 — chat replies), NO `thinking`
+  param (valid on every model incl. compat endpoints), NO sampling
+  params (removed on modern models). Reply = joined text blocks.
+- **Stop-reason discipline**: check before reading content — `refusal`
+  → system breadcrumb (no reply, no retry); `max_tokens` → deliver
+  what came + breadcrumb. SDK typed errors: AuthenticationError /
+  BadRequestError / NotFoundError = permanent → breadcrumb "brain
+  config error", ack (no retry storm); RateLimit/5xx/connection =
+  throw → BullMQ retry → DLQ.
+- **Schema**: agents grows `runtime` ('bridge' default | 'managed'),
+  `model`, `system_prompt`, `llm_base_url` (plain — not secret),
+  `llm_credentials` (sealed {apiKey}, write-only like integrations);
+  `bridge_url` becomes nullable (bridge runtime still requires it at
+  the app layer; managed requires key+model).
+- **No tools in v1** (trigger-as-tool, resolve-as-tool = later slice);
+  managed replies reuse deliverReply verbatim, so channel parity is free.
+
+**Slice 1 — backend (build → verify vs stub Anthropic server → commit)**
+- [ ] Schema + repo: new agent columns, nullable bridge_url
+- [ ] `src/core/managed-brain.ts`: build client per agent, call
+      messages.create, stop-reason handling, typed-error mapping
+- [ ] conversation.processor: runtime branch (managed → brain call;
+      bridge path byte-identical)
+- [ ] Routes: create/PATCH accept runtime + managed config (apiKey
+      write-only sealed; validation per runtime); agentView exposes
+      runtime/model/systemPrompt/baseUrl, never the key
+- [ ] npm i @anthropic-ai/sdk
+- [ ] Tests: stub Anthropic-shaped server as per-agent baseUrl —
+      happy turn (system + history arrive correctly, reply lands via
+      existing delivery), 401 → breadcrumb no-retry, refusal →
+      breadcrumb, 529 → throws (retryable), key never in GET
+**Slice 2 — dashboard + real E2E (user-driven)**
+- [ ] AgentForm: runtime selector (Your code ↔ Managed LLM); managed
+      panel = model, system prompt textarea, API key (password,
+      write-only; blank on edit = keep), base URL (optional, hint for
+      Anthropic-compatible endpoints)
+- [ ] E2E: user creates a managed agent with their z.ai key (pasted in
+      the modal, never chat) + z.ai compat base URL + GLM model id →
+      chats in the widget with ZERO agent code; optionally Telegram
+      (needs tunnel back up)
+
+**Out of scope Phase 3 v1**: LLM tool-use (ctx.trigger as a tool),
+streaming replies, per-conversation model overrides, token-usage
+accounting/quotas (note for later — usage fields are in every response).
 
 ## Recently finished
 

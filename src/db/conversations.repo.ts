@@ -13,8 +13,15 @@ export interface Agent {
   identifier: string;
   name: string;
   description: string | null;
-  bridge_url: string;
+  /** Who answers a turn: customer code at bridge_url, or our LLM loop. */
+  runtime: 'bridge' | 'managed';
+  bridge_url: string | null;
   signing_secret: string; // sealed — open only at dispatch time
+  /** Managed runtime only. */
+  model: string | null;
+  system_prompt: string | null;
+  llm_base_url: string | null;
+  llm_credentials: string | null; // sealed {apiKey} — write-only via the API
   status: 'active' | 'disabled';
   created_at: string;
   updated_at: string;
@@ -53,15 +60,34 @@ export async function createAgent(a: {
   identifier: string;
   name: string;
   description?: string;
-  bridgeUrl: string;
+  runtime: 'bridge' | 'managed';
+  bridgeUrl?: string;
   sealedSecret: string;
+  model?: string;
+  systemPrompt?: string;
+  llmBaseUrl?: string;
+  sealedLlmCredentials?: string;
 }): Promise<Agent | null> {
   const { rows } = await pool.query(
-    `insert into agents (tenant_id, identifier, name, description, bridge_url, signing_secret)
-     values ($1, $2, $3, $4, $5, $6)
+    `insert into agents
+       (tenant_id, identifier, name, description, runtime, bridge_url,
+        signing_secret, model, system_prompt, llm_base_url, llm_credentials)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
-    [a.tenantId, a.identifier, a.name, a.description ?? null, a.bridgeUrl, a.sealedSecret],
+    [
+      a.tenantId,
+      a.identifier,
+      a.name,
+      a.description ?? null,
+      a.runtime,
+      a.bridgeUrl ?? null,
+      a.sealedSecret,
+      a.model ?? null,
+      a.systemPrompt ?? null,
+      a.llmBaseUrl ?? null,
+      a.sealedLlmCredentials ?? null,
+    ],
   );
   return rows[0] ?? null;
 }
@@ -90,15 +116,31 @@ export async function getAgentById(id: string): Promise<Agent | null> {
 export async function updateAgent(
   tenantId: string,
   identifier: string,
-  patch: { name?: string; description?: string; bridgeUrl?: string; status?: string },
+  patch: {
+    name?: string;
+    description?: string;
+    runtime?: 'bridge' | 'managed';
+    bridgeUrl?: string;
+    status?: string;
+    model?: string;
+    systemPrompt?: string;
+    llmBaseUrl?: string | null;
+    sealedLlmCredentials?: string;
+  },
 ): Promise<Agent | null> {
   const { rows } = await pool.query(
     `update agents set
-       name        = coalesce($3, name),
-       description = coalesce($4, description),
-       bridge_url  = coalesce($5, bridge_url),
-       status      = coalesce($6, status),
-       updated_at  = now()
+       name            = coalesce($3, name),
+       description     = coalesce($4, description),
+       runtime         = coalesce($5, runtime),
+       bridge_url      = coalesce($6, bridge_url),
+       status          = coalesce($7, status),
+       model           = coalesce($8, model),
+       system_prompt   = coalesce($9, system_prompt),
+       -- '' sentinel clears the base URL (back to api.anthropic.com)
+       llm_base_url    = case when $10::text = '' then null else coalesce($10, llm_base_url) end,
+       llm_credentials = coalesce($11, llm_credentials),
+       updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
     [
@@ -106,8 +148,13 @@ export async function updateAgent(
       identifier,
       patch.name ?? null,
       patch.description ?? null,
+      patch.runtime ?? null,
       patch.bridgeUrl ?? null,
       patch.status ?? null,
+      patch.model ?? null,
+      patch.systemPrompt ?? null,
+      patch.llmBaseUrl === null ? '' : (patch.llmBaseUrl ?? null),
+      patch.sealedLlmCredentials ?? null,
     ],
   );
   return rows[0] ?? null;

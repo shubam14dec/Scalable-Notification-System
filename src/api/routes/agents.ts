@@ -25,22 +25,46 @@ import {
 import { getQueue, QUEUE } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
 
-const AgentSchema = z.object({
-  identifier: z
-    .string()
-    .min(1)
-    .max(255)
-    .regex(/^[a-z0-9-_]+$/, 'lowercase letters, digits, - _ only'),
-  name: z.string().min(1).max(255),
-  description: z.string().max(2048).optional(),
-  bridgeUrl: z.string().url().max(2048),
+/** Managed-runtime brain config; apiKey is write-only (sealed at rest). */
+const LlmConfigSchema = z.object({
+  apiKey: z.string().min(8).max(512).optional(),
+  /** Anthropic-compatible endpoint; omit for api.anthropic.com. */
+  baseUrl: z.string().url().max(2048).nullable().optional(),
 });
+
+const AgentSchema = z
+  .object({
+    identifier: z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^[a-z0-9-_]+$/, 'lowercase letters, digits, - _ only'),
+    name: z.string().min(1).max(255),
+    description: z.string().max(2048).optional(),
+    runtime: z.enum(['bridge', 'managed']).default('bridge'),
+    bridgeUrl: z.string().url().max(2048).optional(),
+    model: z.string().min(1).max(255).optional(),
+    systemPrompt: z.string().max(100_000).optional(),
+    llm: LlmConfigSchema.optional(),
+  })
+  .refine((a) => a.runtime !== 'bridge' || Boolean(a.bridgeUrl), {
+    message: 'bridgeUrl is required for the bridge runtime',
+    path: ['bridgeUrl'],
+  })
+  .refine((a) => a.runtime !== 'managed' || Boolean(a.llm?.apiKey), {
+    message: 'llm.apiKey is required for the managed runtime',
+    path: ['llm', 'apiKey'],
+  });
 
 const AgentPatchSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().max(2048).optional(),
+  runtime: z.enum(['bridge', 'managed']).optional(),
   bridgeUrl: z.string().url().max(2048).optional(),
   status: z.enum(['active', 'disabled']).optional(),
+  model: z.string().min(1).max(255).optional(),
+  systemPrompt: z.string().max(100_000).optional(),
+  llm: LlmConfigSchema.optional(),
 });
 
 const InboundMessageSchema = z.object({
@@ -50,13 +74,18 @@ const InboundMessageSchema = z.object({
   messageId: z.string().min(1).max(255).optional(),
 });
 
-/** Public shape — the sealed signing secret never leaves the API. */
+/** Public shape — sealed secrets (signing, LLM key) never leave the API. */
 function agentView(agent: Agent) {
   return {
     identifier: agent.identifier,
     name: agent.name,
     description: agent.description,
+    runtime: agent.runtime,
     bridgeUrl: agent.bridge_url,
+    model: agent.model,
+    systemPrompt: agent.system_prompt,
+    llmBaseUrl: agent.llm_base_url,
+    hasLlmKey: Boolean(agent.llm_credentials),
     status: agent.status,
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
@@ -113,8 +142,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
       identifier: parsed.data.identifier,
       name: parsed.data.name,
       description: parsed.data.description,
+      runtime: parsed.data.runtime,
       bridgeUrl: parsed.data.bridgeUrl,
       sealedSecret: sealSecret(secret),
+      model: parsed.data.model,
+      systemPrompt: parsed.data.systemPrompt,
+      llmBaseUrl: parsed.data.llm?.baseUrl ?? undefined,
+      sealedLlmCredentials: parsed.data.llm?.apiKey
+        ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
+        : undefined,
     });
     if (!agent) {
       return reply.code(409).send({ error: `agent "${parsed.data.identifier}" already exists` });
@@ -145,7 +181,34 @@ export function registerAgentRoutes(app: FastifyInstance) {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
       }
-      const agent = await updateAgent(req.tenant.id, req.params.identifier, parsed.data);
+      const existing = await getAgent(req.tenant.id, req.params.identifier);
+      if (!existing) return reply.code(404).send({ error: 'unknown agent' });
+
+      // Switching runtimes must not leave a broken agent behind.
+      const nextRuntime = parsed.data.runtime ?? existing.runtime;
+      if (nextRuntime === 'bridge' && !(parsed.data.bridgeUrl ?? existing.bridge_url)) {
+        return reply.code(400).send({ error: 'bridge runtime requires a bridgeUrl' });
+      }
+      if (
+        nextRuntime === 'managed' &&
+        !(parsed.data.llm?.apiKey || existing.llm_credentials)
+      ) {
+        return reply.code(400).send({ error: 'managed runtime requires llm.apiKey' });
+      }
+
+      const agent = await updateAgent(req.tenant.id, req.params.identifier, {
+        name: parsed.data.name,
+        description: parsed.data.description,
+        runtime: parsed.data.runtime,
+        bridgeUrl: parsed.data.bridgeUrl,
+        status: parsed.data.status,
+        model: parsed.data.model,
+        systemPrompt: parsed.data.systemPrompt,
+        llmBaseUrl: parsed.data.llm === undefined ? undefined : parsed.data.llm.baseUrl,
+        sealedLlmCredentials: parsed.data.llm?.apiKey
+          ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
+          : undefined,
+      });
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };
     },

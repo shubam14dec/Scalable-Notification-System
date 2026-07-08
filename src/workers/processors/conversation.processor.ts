@@ -11,6 +11,8 @@ import { inAppPubSubChannel } from '../../providers/inapp';
 import { telegram } from '../../channels/telegram';
 import { sendWithFailover } from '../../providers/registry';
 import { isSuppressed } from '../../db/repositories';
+import { runManagedTurn } from '../../core/managed-brain';
+import { PermanentError } from '../../shared/errors';
 import {
   conversationHistoryBefore,
   getAgentById,
@@ -85,6 +87,80 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   }
 
   const history = await conversationHistoryBefore(conversationId, messageId);
+
+  // The brain branch: who answers this turn. Everything after (reply row,
+  // channel delivery, signals, breadcrumbs) is identical for both runtimes.
+  let reply: string | undefined;
+  let signals: BridgeSignal[] = [];
+
+  if (agent.runtime === 'managed') {
+    try {
+      const turn = await runManagedTurn(agent, history, message);
+      reply = turn.reply ?? undefined;
+      if (turn.note) await systemNote(conversation, messageId, 0, turn.note);
+    } catch (err) {
+      if (err instanceof PermanentError) {
+        // Bad key / model / endpoint: retrying can't fix it — make it
+        // visible in the transcript and stop, instead of DLQ-ing blind.
+        await systemNote(conversation, messageId, 0, err.message);
+        logExec({
+          tenantId,
+          transactionId: `conv-${conversationId}`,
+          level: 'error',
+          detail: `managed brain permanent failure: ${err.message}`,
+        });
+        return;
+      }
+      throw err;
+    }
+  } else {
+    const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
+    reply = dispatched.reply;
+    signals = dispatched.signals;
+  }
+
+  if (reply !== undefined && reply.length > 0) {
+    // Retry-safe in two layers: the dedupe key stops a duplicate ROW, and
+    // deliverReply's send-once guard stops a duplicate SEND when a prior
+    // attempt crashed between inserting the row and delivering it.
+    const replyRow =
+      (await insertConversationMessage({
+        conversationId,
+        tenantId,
+        role: 'agent',
+        content: reply,
+        dedupeKey: `reply-${messageId}`,
+      })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
+    if (replyRow) {
+      await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
+    }
+  }
+  await applySignals(conversation, messageId, signals, subscriber, agent);
+
+  logExec({
+    tenantId,
+    transactionId: `conv-${conversationId}`,
+    level: 'info',
+    detail:
+      `agent ${agent.identifier} (${agent.runtime}) handled turn: ` +
+      `reply=${reply !== undefined && reply.length > 0} ` +
+      `signals=${signals.map((s) => s.type).join(',') || 'none'}`,
+  });
+}
+
+type BridgeSignal = z.infer<typeof BridgeResponseSchema>['signals'][number];
+
+/** The customer-code runtime: signed POST to the bridge URL. */
+async function dispatchToBridge(
+  agent: Agent,
+  conversation: Conversation,
+  subscriber: NonNullable<Awaited<ReturnType<typeof getSubscriberById>>>,
+  message: ConversationMessage,
+  history: ConversationMessage[],
+): Promise<{ reply?: string; signals: BridgeSignal[] }> {
+  if (!agent.bridge_url) {
+    throw new PermanentError(`bridge agent ${agent.identifier} has no bridge URL`);
+  }
   const rawBody = JSON.stringify({
     type: 'message',
     agent: { identifier: agent.identifier, name: agent.name },
@@ -135,25 +211,17 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   if (!parsed.success) {
     throw new Error(`bridge returned an invalid response for agent ${agent.identifier}`);
   }
-  const { reply, signals } = parsed.data;
+  return parsed.data;
+}
 
-  if (reply !== undefined && reply.length > 0) {
-    // Retry-safe in two layers: the dedupe key stops a duplicate ROW, and
-    // deliverReply's send-once guard stops a duplicate SEND when a prior
-    // attempt crashed between inserting the row and delivering it.
-    const replyRow =
-      (await insertConversationMessage({
-        conversationId,
-        tenantId,
-        role: 'agent',
-        content: reply,
-        dedupeKey: `reply-${messageId}`,
-      })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
-    if (replyRow) {
-      await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
-    }
-  }
-
+/** Bridge signals, applied in order — deduped so retries can't re-apply. */
+async function applySignals(
+  conversation: Conversation,
+  messageId: string,
+  signals: BridgeSignal[],
+  subscriber: NonNullable<Awaited<ReturnType<typeof getSubscriberById>>>,
+  agent: Agent,
+): Promise<void> {
   let signalIndex = 0;
   for (const signal of signals) {
     signalIndex += 1;
@@ -164,10 +232,10 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
         continue;
       }
       conversation.metadata = merged;
-      await updateConversationMetadata(conversationId, merged);
+      await updateConversationMetadata(conversation.id, merged);
     } else if (signal.type === 'trigger') {
       const result = await internalTrigger({
-        tenantId,
+        tenantId: conversation.tenant_id,
         workflowKey: signal.workflowKey,
         to: [
           {
@@ -192,7 +260,7 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
           : `trigger of ${signal.workflowKey} failed: ${result.error}`,
       );
     } else if (signal.type === 'resolve') {
-      await resolveConversation(conversationId, signal.summary);
+      await resolveConversation(conversation.id, signal.summary);
       await systemNote(conversation, messageId, signalIndex, `conversation resolved${signal.summary ? `: ${signal.summary}` : ''}`);
       if (conversation.channel === 'inapp') {
         await publishConversationEvent(conversation, subscriber.external_id, agent, {
@@ -201,15 +269,6 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
       }
     }
   }
-
-  logExec({
-    tenantId,
-    transactionId: `conv-${conversationId}`,
-    level: 'info',
-    detail:
-      `agent ${agent.identifier} handled turn: reply=${reply !== undefined && reply.length > 0} ` +
-      `signals=${signals.map((s) => s.type).join(',') || 'none'}`,
-  });
 }
 
 /**
