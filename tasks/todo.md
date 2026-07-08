@@ -10,15 +10,13 @@ plans get a short review section, then move to Done.
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
 
-- [ ] Managed LLM brain (Phase 3): a customer pastes an Anthropic key +
-      a system prompt in the dashboard and we run the Claude loop
-      ourselves instead of POSTing a bridge URL — zero customer code,
-      reuses all three channels + the whole conversation core. v1 scope:
-      agent gains a `runtime` mode + sealed Anthropic key + system
-      prompt; conversation.processor branches to an LLM call (system +
-      `ctx.history` → reply) instead of the bridge POST. Tools
-      (exposing `trigger` as an LLM tool, built-ins) are a later slice.
-      READ the claude-api skill before writing the Anthropic call.
+- [ ] LLM tool-use for managed agents (Phase 3b): expose the signals to
+      the model as Anthropic tool-use — `set_metadata`,
+      `trigger_workflow` (against the tenant's real workflow list),
+      `resolve_conversation` — so a zero-code agent can send a
+      replacement-shipped email mid-chat and close on "thanks", like
+      the SDK brain does. Also parked from v1: streaming replies,
+      token-usage accounting (usage fields already in every response).
 - [ ] Interactive cards + `onAction`: buttons in the `<AgentChat />`
       widget + Telegram inline keyboards, an `onAction({actionId,value})`
       handler in `@asyncify-hq/agent`, card components in the reply
@@ -45,7 +43,19 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Conversations / Agents — Phase 3: Managed LLM brain (plan pending user OK)
+(nothing — between tasks)
+
+## Recently finished
+
+### Conversations / Agents — Phase 3: Managed LLM brain — COMPLETE
+(user-verified 2026-07-08 with a real z.ai GLM-4.7 agent through the
+Anthropic-compatible base URL: persona followed, conversation memory
+across turns, live replies in the widget, transcript on Conversations.
+Metadata/resolve correctly empty — v1 brain has no signals by design;
+LLM tool-use is the follow-up backlog item. Commits 9e05980 / 84a97d9 /
+fa2dc9f. Diagnosis note: user's key carries z.ai Coding-Plan quota on
+/api/anthropic but no paas balance — paas 1113 error is irrelevant to
+our path.)
 
 Goal: zero-code agents. A customer picks runtime = managed in the
 dashboard, pastes an LLM API key + system prompt, and their agent
@@ -84,25 +94,25 @@ Design decisions (per the claude-api skill, read 2026-07-08):
   managed replies reuse deliverReply verbatim, so channel parity is free.
 
 **Slice 1 — backend (build → verify vs stub Anthropic server → commit)**
-- [ ] Schema + repo: new agent columns, nullable bridge_url
-- [ ] `src/core/managed-brain.ts`: build client per agent, call
+- [x] Schema + repo: new agent columns, nullable bridge_url
+- [x] `src/core/managed-brain.ts`: build client per agent, call
       messages.create, stop-reason handling, typed-error mapping
-- [ ] conversation.processor: runtime branch (managed → brain call;
+- [x] conversation.processor: runtime branch (managed → brain call;
       bridge path byte-identical)
-- [ ] Routes: create/PATCH accept runtime + managed config (apiKey
+- [x] Routes: create/PATCH accept runtime + managed config (apiKey
       write-only sealed; validation per runtime); agentView exposes
       runtime/model/systemPrompt/baseUrl, never the key
-- [ ] npm i @anthropic-ai/sdk
-- [ ] Tests: stub Anthropic-shaped server as per-agent baseUrl —
+- [x] npm i @anthropic-ai/sdk
+- [x] Tests: stub Anthropic-shaped server as per-agent baseUrl —
       happy turn (system + history arrive correctly, reply lands via
       existing delivery), 401 → breadcrumb no-retry, refusal →
       breadcrumb, 529 → throws (retryable), key never in GET
 **Slice 2 — dashboard + real E2E (user-driven)**
-- [ ] AgentForm: runtime selector (Your code ↔ Managed LLM); managed
+- [x] AgentForm: runtime selector (Your code ↔ Managed LLM); managed
       panel = model, system prompt textarea, API key (password,
       write-only; blank on edit = keep), base URL (optional, hint for
       Anthropic-compatible endpoints)
-- [ ] E2E: user creates a managed agent with their z.ai key (pasted in
+- [x] E2E: user creates a managed agent with their z.ai key (pasted in
       the modal, never chat) + z.ai compat base URL + GLM model id →
       chats in the widget with ZERO agent code; optionally Telegram
       (needs tunnel back up)
@@ -110,8 +120,6 @@ Design decisions (per the claude-api skill, read 2026-07-08):
 **Out of scope Phase 3 v1**: LLM tool-use (ctx.trigger as a tool),
 streaming replies, per-conversation model overrides, token-usage
 accounting/quotas (note for later — usage fields are in every response).
-
-## Recently finished
 
 ### Conversations / Agents — Phase 2b: Email channel — COMPLETE
 (user-verified 2026-07-08: real Postmark inbound through the tunnel,
