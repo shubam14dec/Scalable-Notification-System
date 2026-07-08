@@ -160,18 +160,20 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh]"
       style={{ background: 'var(--overlay)' }}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
         role="dialog"
         aria-label={title}
-        className="w-full max-w-md rounded-lg border border-bd bg-surface p-5"
+        // Tall content (e.g. the managed-LLM agent form) scrolls inside the
+        // dialog instead of overflowing the viewport.
+        className="flex max-h-[84vh] w-full max-w-md flex-col rounded-lg border border-bd bg-surface"
         style={{ animation: 'modal-in 150ms ease' }}
       >
-        <h2 className="mb-4 text-[15px] font-semibold text-t1">{title}</h2>
-        {children}
+        <h2 className="shrink-0 px-5 pb-4 pt-5 text-[15px] font-semibold text-t1">{title}</h2>
+        <div className="min-h-0 overflow-y-auto px-5 pb-5">{children}</div>
       </div>
     </div>
   );
