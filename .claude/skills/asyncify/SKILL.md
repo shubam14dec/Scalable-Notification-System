@@ -246,23 +246,27 @@ so test jobs are invisible to the fleet and vice versa. If a test's
 behavior changes when `npm run worker` is running, suspect shared state
 first. Postgres stays shared (fresh random org per suite covers it).
 
-## 13. Replayed LLM history must show tool actions, or the model
-## learns to fake them
+## 13. Replay LLM history as REAL tool blocks — text is imitable,
+## structure is not
 
-Live-caught with GLM-4.7 (2026-07-08): the managed brain replayed only
-text turns, so a past reply produced by a real trigger_workflow call
-looked like a bare "I sent it" claim. The model called the tool on the
-first turn, then imitated the apparent claim-without-calling pattern on
-every later turn — inventing sends for orders that never existed. The
-breadcrumb audit trail exposed it (claims with no breadcrumb). Fix:
-fold system breadcrumbs into replayed assistant turns as
-`[action taken: ...]` (foldHistory in managed-brain.ts) so tool-backed
-replies visibly differ from claims. Bounded residual: threads poisoned
-BEFORE the fix (several bare claims in-context) stay broken for
-weak-instruction-following models — post-fix threads cannot enter that
-state. General rule: when reconstructing history for any LLM, fidelity
-about WHAT ACTUALLY HAPPENED beats brevity; hardened tool descriptions
-alone do not defeat in-context imitation.
+Two live GLM-4.7 fabrications taught this in stages (2026-07-08/09):
+(1) With text-only replay, tool-backed replies looked like bare "I sent
+it" claims — the model imitated claiming without calling, inventing
+sends for orders that never existed. (2) The first fix — folding
+breadcrumbs into replay as `[action taken: ...]` prose — got imitated
+TOO: the model pasted a forged action line (recycled real txn id from
+the prior turn) into its reply text. Any text convention becomes
+training data for forgery. The durable fix (buildHistory in
+managed-brain.ts): reconstruct past actions as native
+tool_use/tool_result blocks from the breadcrumbs' structured
+raw.action — imitating THAT means emitting a tool call, so imitation
+becomes execution. Plus namespace defense: `[action taken:` is
+platform-reserved; sanitizeReply strips model-authored occurrences
+before storage (visible breadcrumb) and on replay. General rules: the
+breadcrumb audit trail is what catches models lying (claims with no
+breadcrumb); hardened tool descriptions alone do not defeat in-context
+imitation; never introduce a prose marker an LLM sees but must not
+write.
 
 ## 14. Email domain knowledge lives in its own skill
 
