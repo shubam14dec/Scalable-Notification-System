@@ -246,7 +246,25 @@ so test jobs are invisible to the fleet and vice versa. If a test's
 behavior changes when `npm run worker` is running, suspect shared state
 first. Postgres stays shared (fresh random org per suite covers it).
 
-## 13. Email domain knowledge lives in its own skill
+## 13. Replayed LLM history must show tool actions, or the model
+## learns to fake them
+
+Live-caught with GLM-4.7 (2026-07-08): the managed brain replayed only
+text turns, so a past reply produced by a real trigger_workflow call
+looked like a bare "I sent it" claim. The model called the tool on the
+first turn, then imitated the apparent claim-without-calling pattern on
+every later turn — inventing sends for orders that never existed. The
+breadcrumb audit trail exposed it (claims with no breadcrumb). Fix:
+fold system breadcrumbs into replayed assistant turns as
+`[action taken: ...]` (foldHistory in managed-brain.ts) so tool-backed
+replies visibly differ from claims. Bounded residual: threads poisoned
+BEFORE the fix (several bare claims in-context) stay broken for
+weak-instruction-following models — post-fix threads cannot enter that
+state. General rule: when reconstructing history for any LLM, fidelity
+about WHAT ACTUALLY HAPPENED beats brevity; hardened tool descriptions
+alone do not defeat in-context imitation.
+
+## 14. Email domain knowledge lives in its own skill
 
 Deliverability (SPF/DKIM/DMARC, warming, reputation thresholds),
 compliance (CAN-SPAM/GDPR/CASL, unsubscribe rules), provider error
@@ -254,7 +272,7 @@ classification for new providers, and the known compliance gaps are in
 `.claude/skills/email-delivery/SKILL.md`. Consult it before email
 features, new providers, or template work.
 
-## 14. Dashboard design system — "Quiet Infrastructure" (condensed)
+## 15. Dashboard design system — "Quiet Infrastructure" (condensed)
 
 Tokens live in `dashboard/src/styles.css` — the single source of truth; no
 hardcoded hex in components. Geist Sans for UI, **Geist Mono for every

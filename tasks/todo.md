@@ -10,13 +10,9 @@ plans get a short review section, then move to Done.
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
 
-- [ ] LLM tool-use for managed agents (Phase 3b): expose the signals to
-      the model as Anthropic tool-use — `set_metadata`,
-      `trigger_workflow` (against the tenant's real workflow list),
-      `resolve_conversation` — so a zero-code agent can send a
-      replacement-shipped email mid-chat and close on "thanks", like
-      the SDK brain does. Also parked from v1: streaming replies,
-      token-usage accounting (usage fields already in every response).
+- [ ] Managed-brain polish (parked from Phase 3/3b): streaming replies,
+      token-usage accounting (usage fields already in every response),
+      per-agent max_tokens / loop-cap config
 - [ ] Interactive cards + `onAction`: buttons in the `<AgentChat />`
       widget + Telegram inline keyboards, an `onAction({actionId,value})`
       handler in `@asyncify-hq/agent`, card components in the reply
@@ -43,7 +39,27 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Conversations / Agents — Phase 3b: LLM tool-use (plan pending user OK)
+(nothing — between tasks)
+
+## Recently finished
+
+### Conversations / Agents — Phase 3b: LLM tool-use — COMPLETE
+(user-verified 2026-07-08. Clean-thread E2E with real GLM-4.7: all
+three tools live — trigger_workflow fired a real order-shipped email
+into Gmail, set_metadata populated the Details panel (order_number +
+topic), resolve_conversation closed with a model-written summary.
+Commits d877158 / adc5b33 / 59ae493.
+
+The fabrication saga, fully characterized by experiment: GLM claimed
+sends it never made once its own history contained a similar exchange.
+Root cause = replayed history showed only text, so tool-backed replies
+looked like bare claims — we were teaching the model to imitate
+claiming. Fixes: anti-fabrication clause in the tool description
+(adc5b33) + honest history folding breadcrumbs into replayed assistant
+turns (59ae493, skill §13). Bounded residual: threads poisoned BEFORE
+the fix stay broken for weak-instruction-following models (Test B);
+post-fix threads cannot enter that state (Test A perfect). The
+breadcrumb audit trail is what caught the model lying.)
 
 Goal: the zero-code agent gets hands. The managed brain can now
 `trigger_workflow` (real notifications mid-chat), `set_metadata`, and
@@ -83,15 +99,15 @@ Design decisions:
   it actually did.
 
 **Slice 1 — backend (build → verify vs scripted stub → commit)**
-- [ ] managed-brain.ts: tool definitions (enum from tenant workflows),
+- [x] managed-brain.ts: tool definitions (enum from tenant workflows),
       bounded loop, content-keyed effect execution + breadcrumbs
-- [ ] Tests (stub scripts multi-turn tool_use): trigger creates a real
+- [x] Tests (stub scripts multi-turn tool_use): trigger creates a real
       event w/ deterministic txn + breadcrumb, metadata lands, resolve
       closes + reopen works, tool error → is_error → model recovers,
       re-run job → NO duplicate trigger, loop cap stops runaway,
       no-tools tenant → trigger tool absent
 **Slice 2 — real E2E (user-driven, zero setup)**
-- [ ] User tightens the GLM agent's system prompt (e.g. "when a user
+- [x] User tightens the GLM agent's system prompt (e.g. "when a user
       reports a missing order, trigger the order-shipped workflow and
       tell them; when the issue is settled, resolve") → asks about an
       order in the widget → real email lands + breadcrumb in transcript
@@ -101,8 +117,6 @@ Design decisions:
 **Out of scope**: streaming, cards/onAction (separate backlog item),
 letting the LLM read subscriber PII beyond what v1 already sends,
 token-usage accounting.
-
-## Recently finished
 
 ### Conversations / Agents — Phase 3: Managed LLM brain — COMPLETE
 (user-verified 2026-07-08 with a real z.ai GLM-4.7 agent through the
