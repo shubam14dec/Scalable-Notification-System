@@ -218,8 +218,11 @@ function buildTools(workflowKeys: string[]): Anthropic.Tool[] {
       description:
         'Send the user a real notification (email/SMS/push/in-app) by running one of ' +
         'the listed workflows. Call it when the situation calls for a notification — ' +
-        'e.g. a replacement confirmation for a lost order. After it succeeds, tell ' +
-        'the user what you sent.',
+        'e.g. a replacement confirmation for a lost order. The user receives NOTHING ' +
+        'unless you call this tool: never tell the user a notification was sent or ' +
+        'queued unless you called this tool in the CURRENT turn and received a ' +
+        'success result. Each new order or issue needs its own fresh call — a send ' +
+        'from an earlier turn does not cover this one.',
       input_schema: {
         type: 'object',
         properties: {
