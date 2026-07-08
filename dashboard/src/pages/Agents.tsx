@@ -23,9 +23,25 @@ interface Agent {
   identifier: string;
   name: string;
   description: string | null;
-  bridgeUrl: string;
+  runtime: 'bridge' | 'managed';
+  bridgeUrl: string | null;
+  model: string | null;
+  systemPrompt: string | null;
+  llmBaseUrl: string | null;
+  hasLlmKey: boolean;
   status: 'active' | 'disabled';
   createdAt: string;
+}
+
+interface AgentBody {
+  identifier: string;
+  name: string;
+  description?: string;
+  runtime: 'bridge' | 'managed';
+  bridgeUrl?: string;
+  model?: string;
+  systemPrompt?: string;
+  llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
 interface ChannelInfo {
@@ -311,24 +327,44 @@ function AgentForm({
   pending: boolean;
   error: string;
   submitLabel: string;
-  onSubmit: (body: { identifier: string; name: string; description?: string; bridgeUrl: string }) => void;
+  onSubmit: (body: AgentBody) => void;
   onCancel: () => void;
 }) {
+  const [runtime, setRuntime] = useState<'bridge' | 'managed'>(initial?.runtime ?? 'bridge');
+  const editing = Boolean(initial?.identifier);
+
   return (
     <form
       className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault();
         const form = new FormData(e.currentTarget);
-        onSubmit({
-          identifier: String(form.get('identifier') ?? initial?.identifier ?? ''),
-          name: String(form.get('name')),
-          description: String(form.get('description') ?? '') || undefined,
-          bridgeUrl: String(form.get('bridgeUrl')),
-        });
+        const str = (key: string) => String(form.get(key) ?? '').trim();
+        const body: AgentBody = {
+          identifier: str('identifier') || initial?.identifier || '',
+          name: str('name'),
+          description: str('description') || undefined,
+          runtime,
+        };
+        if (runtime === 'bridge') {
+          body.bridgeUrl = str('bridgeUrl');
+        } else {
+          body.model = str('model') || undefined;
+          body.systemPrompt = str('systemPrompt') || undefined;
+          const apiKey = str('llmApiKey');
+          const baseUrl = str('llmBaseUrl');
+          // On edit, a blank key means "keep the stored one".
+          if (apiKey || baseUrl || !editing) {
+            body.llm = {
+              ...(apiKey ? { apiKey } : {}),
+              ...(baseUrl ? { baseUrl } : {}),
+            };
+          }
+        }
+        onSubmit(body);
       }}
     >
-      {!initial?.identifier && (
+      {!editing && (
         <Field label="Identifier" hint="Stable id used by the widget and SDK — cannot change later">
           <Input name="identifier" required autoFocus placeholder="support" className="font-mono" pattern="[a-z0-9-_]+" />
         </Field>
@@ -336,16 +372,76 @@ function AgentForm({
       <Field label="Name">
         <Input name="name" required placeholder="Support agent" defaultValue={initial?.name} />
       </Field>
-      <Field label="Bridge URL" hint="Where your handler listens — we POST every conversation turn here, signed">
-        <Input
-          name="bridgeUrl"
-          required
-          type="url"
-          placeholder="https://app.example.com/asyncify-agent"
-          defaultValue={initial?.bridgeUrl}
-          className="font-mono"
-        />
+
+      <Field label="Runtime" hint="Who answers each message">
+        <select
+          aria-label="Runtime"
+          className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 hover:border-bd-strong"
+          value={runtime}
+          onChange={(e) => setRuntime(e.target.value as 'bridge' | 'managed')}
+        >
+          <option value="bridge" className="bg-surface">Your code — we POST turns to your bridge URL</option>
+          <option value="managed" className="bg-surface">Managed LLM — we run the model, zero code</option>
+        </select>
       </Field>
+
+      {runtime === 'bridge' ? (
+        <Field label="Bridge URL" hint="Where your handler listens — we POST every conversation turn here, signed">
+          <Input
+            name="bridgeUrl"
+            required
+            type="url"
+            placeholder="https://app.example.com/asyncify-agent"
+            defaultValue={initial?.bridgeUrl ?? ''}
+            className="font-mono"
+          />
+        </Field>
+      ) : (
+        <>
+          <Field label="System prompt" hint="The agent's role, tone, and boundaries — runs on every turn">
+            <textarea
+              name="systemPrompt"
+              rows={5}
+              placeholder="You are the Acme support agent. Be brief and friendly…"
+              defaultValue={initial?.systemPrompt ?? ''}
+              className="w-full rounded-md border border-bd bg-transparent px-2.5 py-2 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
+            />
+          </Field>
+          <Field label="Model" hint="Defaults to claude-opus-4-8; use your endpoint's model id if you set a base URL">
+            <Input name="model" placeholder="claude-opus-4-8" defaultValue={initial?.model ?? ''} className="font-mono" />
+          </Field>
+          <Field
+            label="API key"
+            hint={
+              initial?.hasLlmKey
+                ? 'A key is stored — leave blank to keep it, paste to replace'
+                : 'Stored encrypted, never shown again'
+            }
+          >
+            <Input
+              name="llmApiKey"
+              type="password"
+              autoComplete="off"
+              required={runtime === 'managed' && !initial?.hasLlmKey}
+              placeholder={initial?.hasLlmKey ? '••••••••  (kept)' : 'sk-ant-… or your provider key'}
+              className="font-mono"
+            />
+          </Field>
+          <Field
+            label="Base URL"
+            hint="Optional — any Anthropic-compatible endpoint (e.g. z.ai). Blank = api.anthropic.com"
+          >
+            <Input
+              name="llmBaseUrl"
+              type="url"
+              placeholder="https://api.z.ai/api/anthropic"
+              defaultValue={initial?.llmBaseUrl ?? ''}
+              className="font-mono"
+            />
+          </Field>
+        </>
+      )}
+
       <Field label="Description">
         <Input name="description" placeholder="What this agent handles (optional)" defaultValue={initial?.description ?? ''} />
       </Field>
@@ -379,7 +475,7 @@ export default function AgentsPage() {
   });
 
   const create = useMutation({
-    mutationFn: (body: { identifier: string; name: string; description?: string; bridgeUrl: string }) =>
+    mutationFn: (body: AgentBody) =>
       api<{ signingSecret: string }>('/v1/agents', { method: 'POST', body }),
     onSuccess: (res) => {
       setCreateOpen(false);
@@ -391,7 +487,7 @@ export default function AgentsPage() {
   });
 
   const update = useMutation({
-    mutationFn: ({ identifier, ...body }: { identifier: string; name?: string; description?: string; bridgeUrl?: string; status?: string }) =>
+    mutationFn: ({ identifier, ...body }: Partial<AgentBody> & { identifier: string; status?: string }) =>
       api(`/v1/agents/${identifier}`, { method: 'PATCH', body }),
     onSuccess: () => {
       setEditing(null);
@@ -437,7 +533,7 @@ export default function AgentsPage() {
               <tr>
                 <th className={th}>Identifier</th>
                 <th className={th}>Name</th>
-                <th className={th}>Bridge URL</th>
+                <th className={th}>Brain</th>
                 <th className={th}>Status</th>
                 <th className={`${th} text-right`}>Created</th>
                 <th className={`${th} text-right`} />
@@ -457,7 +553,11 @@ export default function AgentsPage() {
                   </td>
                   <td className={td}>{a.name}</td>
                   <td className={td}>
-                    <Mono className="text-t2">{a.bridgeUrl}</Mono>
+                    <Mono className="text-t2">
+                      {a.runtime === 'managed'
+                        ? `managed · ${a.model ?? 'claude-opus-4-8'}`
+                        : a.bridgeUrl}
+                    </Mono>
                   </td>
                   <td className={td}>
                     <StatusBadge status={a.status} />
@@ -540,7 +640,11 @@ http.createServer(createHandler(support, {
                 identifier: editing.identifier,
                 name: body.name,
                 description: body.description,
+                runtime: body.runtime,
                 bridgeUrl: body.bridgeUrl,
+                model: body.model,
+                systemPrompt: body.systemPrompt,
+                llm: body.llm,
               })
             }
             onCancel={() => setEditing(null)}
