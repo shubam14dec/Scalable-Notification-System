@@ -84,10 +84,7 @@ export async function runManagedTurn(
   const tools = buildTools(workflowKeys);
 
   const messages: Anthropic.MessageParam[] = [
-    ...history.map((m) => ({
-      role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
-      content: m.content,
-    })),
+    ...foldHistory(history),
     { role: 'user' as const, content: inbound.content },
   ];
 
@@ -175,6 +172,43 @@ export async function runManagedTurn(
 
   // Unreachable (the cap returns inside the loop), but keep TS satisfied.
   return { reply: null, resolved, note: 'tool loop limit reached before a final reply' };
+}
+
+/**
+ * Rebuild honest history. System rows (tool-action breadcrumbs) are folded
+ * into the assistant turn they belong to as bracketed action notes — so a
+ * past reply that came with a real tool call LOOKS like it did. Without
+ * this, replayed history shows bare "I sent it" claims with no visible
+ * action, and the model learns to imitate claiming instead of calling
+ * (observed live with GLM: first turn called the tool, every later turn
+ * copied the apparent pattern).
+ */
+function foldHistory(history: ConversationMessage[]): Anthropic.MessageParam[] {
+  const messages: Anthropic.MessageParam[] = [];
+  // Breadcrumbs are written DURING tool execution, so they precede the
+  // reply row in the transcript — buffer them and attach to the NEXT
+  // assistant turn (the reply they belong to).
+  let pendingActions: string[] = [];
+  for (const m of history) {
+    if (m.role === 'system') {
+      pendingActions.push(m.content);
+      continue;
+    }
+    if (m.role === 'agent' && pendingActions.length > 0) {
+      messages.push({
+        role: 'assistant',
+        content:
+          pendingActions.map((a) => `[action taken: ${a}]`).join('\n') + `\n${m.content}`,
+      });
+      pendingActions = [];
+      continue;
+    }
+    messages.push({
+      role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
+      content: m.content,
+    });
+  }
+  return messages;
 }
 
 /** The tool menu — descriptions say WHEN to call, not just what it does. */

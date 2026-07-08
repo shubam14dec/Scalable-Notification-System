@@ -459,3 +459,26 @@ export async function conversationHistoryBefore(
   );
   return rows;
 }
+
+/**
+ * Like conversationHistoryBefore but INCLUDING system rows (tool-action
+ * breadcrumbs). The managed brain folds these back into the history it
+ * replays to the model — without them, past tool-backed replies look like
+ * bare claims, and the model learns to imitate claiming instead of calling.
+ */
+export async function conversationTranscriptBefore(
+  conversationId: string,
+  beforeMessageId: string,
+  limit = 40,
+): Promise<ConversationMessage[]> {
+  const { rows } = await pool.query(
+    `select * from (
+       select m.* from conversation_messages m
+       where m.conversation_id = $1
+         and m.created_at < (select created_at from conversation_messages where id = $2)
+       order by m.created_at desc limit $3
+     ) t order by created_at asc`,
+    [conversationId, beforeMessageId, limit],
+  );
+  return rows;
+}

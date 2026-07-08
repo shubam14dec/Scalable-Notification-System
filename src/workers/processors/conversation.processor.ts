@@ -15,6 +15,7 @@ import { runManagedTurn } from '../../core/managed-brain';
 import { PermanentError } from '../../shared/errors';
 import {
   conversationHistoryBefore,
+  conversationTranscriptBefore,
   getAgentById,
   getConnectionForAgent,
   getConversation,
@@ -95,7 +96,10 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
 
   if (agent.runtime === 'managed') {
     try {
-      const turn = await runManagedTurn(agent, conversation, subscriber, history, message);
+      // Richer history (incl. tool-action breadcrumbs) — the brain folds
+      // them in so past tool-backed replies don't look like bare claims.
+      const fullHistory = await conversationTranscriptBefore(conversationId, messageId);
+      const turn = await runManagedTurn(agent, conversation, subscriber, fullHistory, message);
       reply = turn.reply ?? undefined;
       if (turn.note) await systemNote(conversation, messageId, 0, turn.note);
       if (turn.resolved && conversation.channel === 'inapp') {

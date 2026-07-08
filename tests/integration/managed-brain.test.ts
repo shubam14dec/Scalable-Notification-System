@@ -402,6 +402,25 @@ describe('the tool loop', () => {
     expect(system.at(-1).content).toContain('tool loop limit reached');
   });
 
+  test('replayed history shows past tool actions, not bare claims', async () => {
+    // A turn after the tool round-trip: the model must see the earlier
+    // reply annotated with the action that produced it (history fidelity —
+    // otherwise it learns to imitate claiming instead of calling).
+    const turn = await sendTurn('and my other order?', 'tool-5');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const msgs = seen.at(-1)!.body.messages as Array<{ role: string; content: unknown }>;
+    const annotated = msgs.filter(
+      (m) =>
+        m.role === 'assistant' &&
+        typeof m.content === 'string' &&
+        m.content.includes('[action taken: triggered workflow brain-wf'),
+    );
+    expect(annotated.length).toBeGreaterThan(0);
+    // The annotation sits in the SAME assistant turn as the reply text.
+    expect(annotated[0].content).toContain('Replacement queued');
+  });
+
   test('a tenant with no workflows gets no trigger tool', async () => {
     // Fresh org: no workflows seeded.
     const email = `brain2-${Date.now()}@itest.local`;
