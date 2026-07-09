@@ -12,10 +12,11 @@ notes. Order within this cluster is rough — reorder freely.)
 
 - [ ] Streaming managed replies (parked from 3c: WS protocol + gateway +
       widget surface for 1–2s chat replies — revisit if replies grow)
-- [ ] Interactive cards + `onAction`: buttons in the `<AgentChat />`
-      widget + Telegram inline keyboards, an `onAction({actionId,value})`
-      handler in `@asyncify-hq/agent`, card components in the reply
-      shape. Unlocks the human-in-the-loop approval pattern later.
+- [ ] `present_buttons` tool for the managed LLM brain: strict-schema
+      tool (ids/labels, max 6) so GLM/Claude agents can offer buttons
+      like bridge agents do (Phase 4 shipped the whole pipeline;
+      this is just the LLM's send-side entry point). Needs the usual
+      GLM battle-testing per skill §13.
 - [ ] Subscriber linking (`tg-<id>` / email sender → real app
       subscriber): deep-link `/start <token>` for Telegram (+ an email
       equivalent) so a channel identity merges into an existing
@@ -38,7 +39,28 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Conversations / Agents — Phase 4: Buttons + onAction (plan pending user OK)
+(nothing — pick the next phase from the backlog)
+
+## Recently finished
+
+### Conversations / Agents — Phase 4: Buttons + onAction — COMPLETE
+(user-verified 2026-07-09 on widget AND telegram: buttons rendered,
+click → "· clicked" row + onAction → real welcome email through
+Resend to Gmail; telegram inline keyboard tap cleared its spinner and
+answered after a webhook Re-register. Commits 8c31ed6 / bec50ee /
+13cacdb. Review: the action pipeline reused the conversation core
+wholesale — clicks are just user rows with raw.action, so dedupe,
+transcripts, and both brains got clicks for free. Two operational
+gotchas earned: existing telegram registrations must Re-register to
+receive callback_query, and agent:demo must run with the USER'S api
+key (dev-api-key-123 is the seed tenant — registered a parallel
+agent there and silently touched nothing visible). Decision: support-2
+stays the GLM managed agent, support-demo stays the bridge/button
+demo permanently — no more runtime flipping. Follow-up parked in
+backlog: present_buttons tool so managed LLM agents can offer
+buttons too.)
+
+### (original Phase 4 plan)
 
 Goal: agent replies can carry BUTTONS; a user click flows back as a
 first-class action event that the brain (code or LLM) handles. Widget
@@ -104,14 +126,12 @@ Design decisions:
 - [x] Demo: agent-demo order flow now offers [Resend the order /
       Talk to a human]; onAction triggers the workflow (resend) or
       sets escalated metadata (human)
-- [ ] E2E: widget click round-trip; telegram inline keyboard click
+- [x] E2E: widget click round-trip; telegram inline keyboard click
       from the phone (RE-REGISTER the telegram webhook first —
       old registrations never receive callback_query)
 
 **Out of scope**: LLM-generated buttons (needs a present_buttons tool
 + schema — follow-up), email click-tracking links, multi-select/forms.
-
-## Recently finished
 
 ### Conversations / Agents — Phase 3c: Managed-brain polish — COMPLETE
 (2026-07-09: usage accounting + per-agent max_tokens. 116 tests;
