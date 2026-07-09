@@ -51,7 +51,11 @@ answered after a webhook Re-register. Commits 8c31ed6 / bec50ee /
 13cacdb, + 65924ca keyboard-retire polish (user-verified: on tap the
 telegram message rewrites itself — keyboard dropped, choice appended
 as a check line — matching the widget's dim-after-click; first
-accepted tap only, best-effort). Review: the action pipeline reused the conversation core
+accepted tap only, best-effort). Email degradation also user-verified
+live 2026-07-09: real Postmark→Resend round trip delivered the
+numbered Options block to Gmail. ALL THREE CHANNELS driven E2E.
+Known v1 boundary: email replies are plain text — "1" is onMessage,
+not an action (numbered-reply parsing = possible later nicety). Review: the action pipeline reused the conversation core
 wholesale — clicks are just user rows with raw.action, so dedupe,
 transcripts, and both brains got clicks for free. Two operational
 gotchas earned: existing telegram registrations must Re-register to
