@@ -40,7 +40,26 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Phase 8: Release automation — workspaces + Changesets + token-less publishing (plan pending user OK)
+(nothing — pick the next phase from the backlog)
+
+## Recently finished
+
+### Phase 8: Release automation — COMPLETE
+(user-verified 2026-07-10 with a REAL release: changeset → bot's
+Version Packages PR → user merge → @asyncify-hq/agent@0.2.1 on npm
+in 33s with the SLSA provenance attestation, zero tokens. Commits
+e78afb8 / e1c8d19 / 9a8f27a. Also cleared the parked npm-workspaces
+backlog item. Review: the 3-month-token problem is abolished, not
+worked around — npm package settings now DISALLOW token publishing
+entirely; the only publish paths are 2FA humans or this repo's
+release.yml via OIDC. Releasing = merge a PR; changelogs write
+themselves. Gotcha earned twice and leddered (skill §11): this
+Windows machine's real npm install writes non-portable lockfiles
+(drops @emnapi cross-platform entries) — always clean-room the lock
+after the last install; CI caught it both times, same-day proof of
+the CI investment.)
+
+### (original Phase 8 plan)
 
 Goal: publishing stops being a manual chore with a pasted, expiring
 token. A release becomes: merge the bot's "Version Packages" PR →
@@ -106,10 +125,14 @@ Design decisions:
 - [x] RELEASING.md: the habit (npx changeset per package change),
       release = merge the bot PR, OIDC troubleshooting + fallback
 **Slice 3 — user setup + the real release (user-driven)**
-- [ ] User: npmjs.com Trusted Publisher on all 3 packages +
-      repo setting allowing Actions to create PRs
-- [ ] E2E: seed changeset → bot PR appears → user merges →
-      @asyncify-hq/agent@0.2.1 on npm with provenance badge
+- [x] User: npmjs.com Trusted Publisher on all 3 packages (allow npm
+      publish; "require 2FA and disallow tokens" — token publishing
+      is now IMPOSSIBLE, not just avoided) + repo setting allowing
+      Actions to create PRs
+- [x] E2E user-verified 2026-07-10: seed changeset pushed → bot
+      opened Version Packages PR within seconds → user merged →
+      @asyncify-hq/agent@0.2.1 live on npm 33s later WITH the SLSA
+      provenance attestation — no token anywhere in the chain
 
 **Out of scope**: publishing the dashboard (not a package), GitHub
 Releases/tags automation (changesets can add later), migrating old
