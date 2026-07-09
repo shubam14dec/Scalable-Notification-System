@@ -39,7 +39,27 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Conversations / Agents — Phase 6: Auto-resolve on inactivity (plan pending user OK)
+(nothing — pick the next phase from the backlog)
+
+## Recently finished
+
+### Conversations / Agents — Phase 6: Auto-resolve on inactivity — COMPLETE
+(user-verified 2026-07-09 TWICE: first the backdated-clock drive
+(1h knob, widget flipped live via WS, breadcrumb + summary, reopen
+worked), then — after the minutes upgrade — a pure E2E with zero
+clock-faking: 1-minute knob, one real minute of silence, the widget
+auto-resolved on its own. Commits 78228a1 / c6f9231 / fb530b2 /
+c05774b. Review: first feature planned under the 10-20M rule — the
+original 200-rows-per-tick sweep would have drained 5M stale rows in
+~87 days; shipped as set-based batches (single CTE statement: SKIP
+LOCKED lock → resolve → crumb) in a 55s-budgeted drain loop, O(matches)
+partial index. Deviation from plan: settleCompletedEvents interval
+pattern instead of a BullMQ repeatable (precedent, simpler, same
+shape). Post-verification user request folded in: minutes granularity
+(DO-block column migration ×60, verified live), twin hours+min form
+inputs, 60s tick, humanized summaries.)
+
+### (original Phase 6 plan)
 
 Goal: the platform backstop for threads that trail off. An active
 conversation with no messages for N hours gets resolved by a sweep —
