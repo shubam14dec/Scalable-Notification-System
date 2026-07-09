@@ -39,7 +39,26 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Conversations / Agents — Phase 7: Subscriber linking (plan pending user OK)
+(nothing — pick the next phase from the backlog)
+
+## Recently finished
+
+### Conversations / Agents — Phase 7: Subscriber linking — COMPLETE
+(user-verified 2026-07-10 on a real phone: Subscribers-page Link →
+t.me deep link → tap → "Linked! …(maya)" in the bot chat → order
+message → button tap → trigger_workflow → confirmation email in the
+REAL Gmail, from a telegram conversation — the Phase 5 phantom-email
+failure replayed as a passing scenario, zero faked state. Commits
+36000f1 / 3232563. Review: the mapping-table design (no row merges)
+kept every hot path at one unique-index lookup and made unlink
+trivial; the /start token consume-UPDATE doubles as the idempotency
+lock; history repointing means the person keeps their transcript
+across the identity change. One semantics decision surfaced by
+testing: an existing chat thread keeps its owner after unlink (one
+conversation per chat) — only fresh identity resolution falls back.
+Learned: bridge signal txns index from 1, 0 is the turn note.)
+
+### (original Phase 7 plan)
 
 Goal: one human = ONE subscriber across widget/telegram/email. Today a
 person is up to three strangers (`maya`, `tg-8123991`, sender-email row)
@@ -127,9 +146,12 @@ Design decisions:
       shows linked identities (+ unlink) and generates the one-tap
       telegram deep link (agent picker when several bots exist,
       CopyField, 24h note). Dashboard tsc + vite build clean
-- [ ] E2E from the phone: mint link for a real subscriber (with your
-      email) → tap → bot confirms → "where is my order?" → click →
-      trigger → email lands in the REAL inbox from a telegram chat
+- [x] E2E from the phone (user-verified 2026-07-10): minted maya's
+      link on the Subscribers page → tapped on the phone → bot
+      confirmed "Linked!" → order message → button tap → trigger →
+      the confirmation email LANDED IN THE REAL GMAIL from a
+      telegram chat — the Phase 5 phantom email, exorcised.
+      "all the things were same in the result step by step"
 
 **Out of scope v1**: signed-link email verification, WhatsApp/Slack
 identities, cross-tenant identity, merging two REAL subscribers,
