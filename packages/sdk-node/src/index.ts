@@ -55,6 +55,52 @@ export interface WorkflowStep {
   skipIfStep?: { stepIndex: number; statusIn: string[] };
 }
 
+/** An agent as the API returns it — secrets (signing, LLM key) never included. */
+export interface Agent {
+  identifier: string;
+  name: string;
+  description: string | null;
+  runtime: 'bridge' | 'managed';
+  bridgeUrl: string | null;
+  model: string | null;
+  systemPrompt: string | null;
+  llmBaseUrl: string | null;
+  maxTokens: number | null;
+  autoResolveMinutes: number | null;
+  hasLlmKey: boolean;
+  status: 'active' | 'disabled';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateAgentOptions {
+  identifier: string;
+  name: string;
+  description?: string;
+  /** 'bridge' (default): we POST turns to your bridgeUrl. 'managed': we run the LLM. */
+  runtime?: 'bridge' | 'managed';
+  bridgeUrl?: string;
+  model?: string;
+  systemPrompt?: string;
+  /** Managed reply cap, 256–8192 (default 1024). */
+  maxTokens?: number;
+  /** Auto-resolve conversations idle this many minutes, 1–43200 (default: never). */
+  autoResolveMinutes?: number;
+  /** Managed runtime: the LLM key (stored encrypted, write-only) + optional compat base URL. */
+  llm?: { apiKey?: string; baseUrl?: string };
+}
+
+export interface ConversationSummary {
+  id: string;
+  agent: { identifier: string; name: string };
+  subscriberId: string;
+  channel: string;
+  status: 'active' | 'resolved';
+  messageCount: number;
+  lastMessagePreview: string | null;
+  lastMessageAt: string;
+}
+
 export class AsyncifyError extends Error {
   constructor(
     readonly status: number,
@@ -116,6 +162,105 @@ export class AsyncifyClient {
   readonly subscribers = {
     upsert: (subscriber: Recipient) =>
       this.request<{ id: string; subscriberId: string }>('PUT', '/v1/subscribers', subscriber),
+    /** Channel identities linked to this subscriber (telegram, email). */
+    identities: (subscriberId: string) =>
+      this.request<{
+        identities: Array<{ channel: string; externalKey: string; linkedAt: string }>;
+      }>('GET', `/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`),
+    /** Drop a linked identity — future messages fall back to a channel-local one. */
+    unlink: (subscriberId: string, identity: { channel: 'telegram' | 'email'; externalKey: string }) =>
+      this.request<{ deleted: boolean }>(
+        'DELETE',
+        `/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`,
+        identity,
+      ),
+  };
+
+  readonly agents = {
+    /** Create an agent. The signing secret is returned EXACTLY ONCE — store it. */
+    create: (options: CreateAgentOptions) =>
+      this.request<{ agent: Agent; signingSecret: string }>('POST', '/v1/agents', options),
+    list: () => this.request<{ agents: Agent[] }>('GET', '/v1/agents'),
+    get: (identifier: string) =>
+      this.request<{ agent: Agent }>('GET', `/v1/agents/${encodeURIComponent(identifier)}`),
+    /** Patch any subset; `autoResolveMinutes: null` switches the backstop off. */
+    update: (
+      identifier: string,
+      patch: Partial<Omit<CreateAgentOptions, 'identifier' | 'autoResolveMinutes'>> & {
+        status?: 'active' | 'disabled';
+        autoResolveMinutes?: number | null;
+      },
+    ) =>
+      this.request<{ agent: Agent }>(
+        'PATCH',
+        `/v1/agents/${encodeURIComponent(identifier)}`,
+        patch,
+      ),
+    /** New signing secret, shown once; the old one stops working immediately. */
+    rotateSecret: (identifier: string) =>
+      this.request<{ signingSecret: string }>(
+        'POST',
+        `/v1/agents/${encodeURIComponent(identifier)}/rotate-secret`,
+      ),
+    delete: (identifier: string) =>
+      this.request<{ deleted: boolean }>(
+        'DELETE',
+        `/v1/agents/${encodeURIComponent(identifier)}`,
+      ),
+    /**
+     * Mint the single-use deep link (24h TTL) that merges a user's Telegram
+     * into this subscriber: generate it server-side for your LOGGED-IN user
+     * and hand them the returned t.me link. When they tap Start, their
+     * Telegram identity, history, and notifications unify with the
+     * subscriber — agent replies and triggers reach the real person.
+     */
+    linkToken: (agentIdentifier: string, subscriberId: string) =>
+      this.request<{ token: string; deepLink: string; expiresAt: string }>(
+        'POST',
+        `/v1/agents/${encodeURIComponent(agentIdentifier)}/subscribers/${encodeURIComponent(subscriberId)}/link-token`,
+      ),
+  };
+
+  readonly conversations = {
+    /** Conversations across your agents, newest first. */
+    list: (filters: { agent?: string; status?: 'active' | 'resolved' } = {}) => {
+      const qs = new URLSearchParams();
+      if (filters.agent) qs.set('agent', filters.agent);
+      if (filters.status) qs.set('status', filters.status);
+      const suffix = qs.toString();
+      return this.request<{ conversations: ConversationSummary[] }>(
+        'GET',
+        `/v1/conversations${suffix ? `?${suffix}` : ''}`,
+      );
+    },
+    /** Full transcript + metadata + LLM usage totals for one conversation. */
+    get: (id: string) =>
+      this.request<{
+        conversation: {
+          id: string;
+          channel: string;
+          status: 'active' | 'resolved';
+          metadata: Record<string, unknown>;
+          summary: string | null;
+          messageCount: number;
+          createdAt: string;
+        };
+        messages: Array<{
+          id: string;
+          role: 'user' | 'agent' | 'system';
+          content: string;
+          createdAt: string;
+          buttons?: Array<{ id: string; label: string }>;
+          clicked?: boolean;
+        }>;
+        usage: { inputTokens: number; outputTokens: number; modelCalls: number };
+      }>('GET', `/v1/conversations/${encodeURIComponent(id)}`),
+    /** Close a conversation (a new message from the user reopens it). */
+    resolve: (id: string) =>
+      this.request<{ status: string }>(
+        'POST',
+        `/v1/conversations/${encodeURIComponent(id)}/resolve`,
+      ),
   };
 
   readonly templates = {
