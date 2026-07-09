@@ -176,6 +176,39 @@ Channel setup and the local-tunnel → production migration (PUBLIC_URL,
 Telegram re-register, Postmark inbound, custom MX domain when DNS is
 available): **[docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md)**.
 
+### Managed agents (zero-code): writing the system prompt
+
+Prefer no code at all? Set an agent's runtime to **managed**, paste an
+LLM API key (any Anthropic-compatible endpoint works via the per-agent
+base URL), and the platform runs the model loop itself. Managed agents
+get four tools automatically: `trigger_workflow`, `set_metadata`,
+`resolve_conversation`, and `present_buttons` (tappable choices —
+rendered natively in the widget, as Telegram inline keyboards, and as
+a numbered options list in email).
+
+**The house rule for managed-agent prompts — explicit instruction beats
+implied judgment.** Especially on smaller/compat models, a behavior you
+merely imply will be applied inconsistently; a behavior you name is
+followed. Write every desired behavior as a concrete *when → do*
+instruction that names the tool, and cover the short/ambiguous message
+forms:
+
+```
+When a user reports a missing order: first call set_metadata to save
+the order number, then use present_buttons to offer exactly two
+choices — id "resend_order" label "Resend the order", id
+"talk_to_human" label "Talk to a human".
+When they click Resend the order: use trigger_workflow with the
+order-shipped workflow and confirm you sent it.
+If the user thanks you or says goodbye and nothing is pending, call
+resolve_conversation — even for a short message like "thank you".
+```
+
+Both halves of that rule were proven live: "resolve when the issue is
+settled" (judgment) let a bare "thank you" slip through; the explicit
+last line above fixed it immediately. The other lever is the per-agent
+`model` field — stronger models need less prescriptive prompts.
+
 ## Quickstart
 
 Requires Node 20+, Docker.
