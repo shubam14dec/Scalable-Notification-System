@@ -103,8 +103,9 @@ Design decisions:
       re-run no-op; manually-resolved not re-touched; reopen works;
       knob create/PATCH/null + bounds (0, 721, -5, 1.5 → 400)
 **Slice 2 — dashboard + verification (user-driven)**
-- [ ] Agent form: "Auto-resolve after N hours of inactivity (leave
-      blank to never)" numeric field
+- [x] Agent form: "Auto-resolve after (hours)" numeric field, both
+      runtimes, blank = never (clearing it on edit sends null =
+      backstop off); dashboard tsc + vite build clean
 - [ ] Live drive in dev: set the knob on a test agent, backdate one
       conversation's last_message_at in the dev DB (same sweep code
       path production runs — only the clock is faked), watch the

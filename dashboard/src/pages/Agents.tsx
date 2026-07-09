@@ -29,6 +29,7 @@ interface Agent {
   systemPrompt: string | null;
   llmBaseUrl: string | null;
   maxTokens: number | null;
+  autoResolveHours: number | null;
   hasLlmKey: boolean;
   status: 'active' | 'disabled';
   createdAt: string;
@@ -43,6 +44,7 @@ interface AgentBody {
   model?: string;
   systemPrompt?: string;
   maxTokens?: number;
+  autoResolveHours?: number | null;
   llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
@@ -365,6 +367,12 @@ function AgentForm({
             };
           }
         }
+        const autoResolveHours = Number.parseInt(str('autoResolveHours'), 10);
+        if (Number.isFinite(autoResolveHours)) {
+          body.autoResolveHours = autoResolveHours;
+        } else if (editing && initial?.autoResolveHours) {
+          body.autoResolveHours = null; // field cleared = backstop off
+        }
         onSubmit(body);
       }}
     >
@@ -457,6 +465,20 @@ function AgentForm({
         </>
       )}
 
+      <Field
+        label="Auto-resolve after (hours)"
+        hint="Conversations idle this long resolve automatically, 1–720. Blank = never — a new message always reopens"
+      >
+        <Input
+          name="autoResolveHours"
+          type="number"
+          min={1}
+          max={720}
+          placeholder="never"
+          defaultValue={initial?.autoResolveHours ?? ''}
+          className="font-mono"
+        />
+      </Field>
       <Field label="Description">
         <Input name="description" placeholder="What this agent handles (optional)" defaultValue={initial?.description ?? ''} />
       </Field>
@@ -660,6 +682,7 @@ http.createServer(createHandler(support, {
                 model: body.model,
                 systemPrompt: body.systemPrompt,
                 maxTokens: body.maxTokens,
+                autoResolveHours: body.autoResolveHours,
                 llm: body.llm,
               })
             }
