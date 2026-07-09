@@ -58,7 +58,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Matches the dev machine (and firebase-admin's node>=22 floor);
+          # npm 10 also parses the npm-11-generated lockfiles differently.
+          node-version: 24
           cache: npm
           cache-dependency-path: |
             package-lock.json
