@@ -39,7 +39,86 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — pick the next phase from the backlog)
+### Conversations / Agents — Phase 7: Subscriber linking (plan pending user OK)
+
+Goal: one human = ONE subscriber across widget/telegram/email. Today a
+person is up to three strangers (`maya`, `tg-8123991`, sender-email row)
+— which broke the Phase-5 telegram trigger (no email on file → phantom
+"email incoming") and gives the agent amnesia across channels.
+
+Design decisions:
+- **No destructive row merges.** New table `channel_identities`
+  (tenant_id, channel, external_key → subscriber_id, unique on the
+  first three). Inbound resolution order becomes: mapping hit → real
+  subscriber; miss → today's auto-created `tg-<id>`/email row
+  (unchanged fallback). One extra O(1) indexed lookup per inbound
+  message — nothing else in the hot path changes.
+- **Telegram link = deep link** (the production pattern):
+  `POST /v1/agents/:identifier/subscribers/:subscriberId/link-token`
+  (api-key auth, server-side only) → single-use token (random,
+  stored HASHED, 24h TTL) + ready `https://t.me/<bot>?start=<token>`
+  URL. User taps → bot chat opens → Telegram sends `/start <token>`
+  → webhook intercepts (only when the payload matches the token
+  shape; bare /start still goes to the brain) → validates hash,
+  tenant, expiry, unused → writes the mapping → repoints that chat's
+  EXISTING conversations + threads to the real subscriber (history
+  rides along — conversations keep their rows) → marks token used →
+  bot confirms in-chat ("Linked — you're now checking in as <id>").
+- **Email link = auto-match** (industry standard): inbound sender
+  address exactly matching an existing subscriber's email → mapping
+  written automatically on first inbound. CAVEAT documented: From
+  headers are spoofable; consequences bounded (replies go to the
+  real mailbox owner, not the spoofer). Signed-link email flow =
+  later hardening, out of v1.
+- **What it fixes downstream, for free**: trigger_workflow from a
+  telegram thread reaches the REAL subscriber (the phantom-email
+  fix); managed brain sees real email/phone; dashboard shows the
+  real subscriberId; preferences/suppression unify.
+- **Unlink**: DELETE the mapping (api + dashboard action). Future
+  messages fall back to a fresh channel-local identity; past
+  conversations stay where they were repointed (history is the
+  subscriber's).
+- **Parameter space (house rule)**: token TTL 24h fixed v1 (rides
+  inside emails/QRs, so minutes is too short); single-use; a
+  subscriber may link MULTIPLE telegram accounts (mapping is per
+  external_key); auto email match always-on v1.
+- **Scale (10-20M rule)**: mapping lookup is one unique-index hit
+  per inbound message — O(1), no fan-out. Linking repoints only that
+  chat's conversations (a few rows). Token table self-cleans: delete
+  where expired/used older than 7d, folded into the EXISTING
+  inactivity-sweep tick (one indexed statement — no new timer).
+- **E2E through the real surface (house rule)**: dashboard →
+  Conversations/Agents surface generates the deep link; user taps it
+  on the phone; bot confirms; next telegram turn triggers a workflow
+  whose EMAIL ARRIVES in the real inbox — the exact scenario that
+  failed in Phase 5, now passing, zero faked state.
+
+**Slice 1 — backend (build → verify vs tests → commit)**
+- [ ] Schema: channel_identities + subscriber_link_tokens (+ indexes)
+- [ ] Token mint route (hash at rest, 24h TTL, single-use) returning
+      the t.me deep link (404 if agent has no telegram connection)
+- [ ] Telegram webhook: /start <token> interception → validate →
+      mapping + conversation/thread repoint + used_at + confirmation
+      message (bare /start unchanged → brain)
+- [ ] Inbound resolution: mapping lookup in telegram + email paths;
+      email auto-match writes the mapping on first hit
+- [ ] Sweep tick: purge dead link tokens (one indexed delete)
+- [ ] Tests: mint+link happy path (mapping, repointed history,
+      confirmation, token single-use), expired/reused/foreign-tenant
+      token rejected, bare /start → brain, email auto-match links,
+      linked telegram turn's trigger reaches the real subscriber's
+      email (the phantom-email regression test), unlink falls back
+- [ ] Unlink route
+**Slice 2 — dashboard + real E2E (user-driven)**
+- [ ] Surface: subscriber link action (generate + copy deep link,
+      show linked identities, unlink)
+- [ ] E2E from the phone: mint link for a real subscriber (with your
+      email) → tap → bot confirms → "where is my order?" → click →
+      trigger → email lands in the REAL inbox from a telegram chat
+
+**Out of scope v1**: signed-link email verification, WhatsApp/Slack
+identities, cross-tenant identity, merging two REAL subscribers,
+widget-side linking (widget users are already real subscribers).
 
 ## Recently finished
 
