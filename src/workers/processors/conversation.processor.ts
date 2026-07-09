@@ -335,7 +335,10 @@ async function deliverReply(
   }
 
   if (conversation.channel === 'telegram') {
-    const raw = (replyRow.raw ?? {}) as { telegramMessageId?: number };
+    const raw = (replyRow.raw ?? {}) as {
+      telegramMessageId?: number;
+      buttons?: Array<{ id: string; label: string }>;
+    };
     if (raw.telegramMessageId) return; // already delivered on a prior attempt
     const connection = await getConnectionForAgent(agent.id, 'telegram');
     if (!connection || connection.status !== 'active') {
@@ -343,7 +346,14 @@ async function deliverReply(
       return;
     }
     const { botToken } = JSON.parse(openSecret(connection.credentials)) as { botToken: string };
-    const sent = await telegram.sendMessage(botToken, conversation.thread_key, replyRow.content);
+    // Buttons render as an inline keyboard; presses come back as
+    // callback_query updates on the webhook.
+    const sent = await telegram.sendMessage(
+      botToken,
+      conversation.thread_key,
+      replyRow.content,
+      raw.buttons,
+    );
     await updateConversationMessageRaw(replyRow.id, { ...raw, telegramMessageId: sent.message_id });
     return;
   }

@@ -74,20 +74,25 @@ Design decisions:
   telegram callbacks dedupe on callback_query id.
 
 **Slice 1 — core + SDK (build → verify vs tests → commit)**
-- [ ] Reply pipeline: buttons through bridge response schema →
+- [x] Reply pipeline: buttons through bridge response schema →
       reply row raw.buttons → WS event + widget REST transcript
-- [ ] Action inbound: POST /v1/agents/:identifier/actions
+- [x] Action inbound: POST /v1/agents/:identifier/actions
       (subscriber-token or api-key; {actionId, label, messageId
       client-dedupe}) → user row + queue → bridge event type 'action'
       / managed textual rendering
-- [ ] SDK: ctx.reply options.buttons + onAction handler + types
-- [ ] Tests: buttons round-trip, action event reaches bridge with
+- [x] SDK: ctx.reply options.buttons + onAction handler + types
+- [x] Tests: buttons round-trip, action event reaches bridge with
       matching id, managed fallback text, dedupe on double-click
 **Slice 2 — telegram inline keyboards (build → verify → commit)**
-- [ ] deliverReply telegram: reply_markup from raw.buttons
-- [ ] Webhook: handle callback_query (secret check as today, dedupe,
-      answerCallbackQuery, route as action)
-- [ ] Tests: keyboard on the wire, callback → action event, dedupe
+- [x] deliverReply telegram: reply_markup from raw.buttons
+- [x] Webhook: handle callback_query (secret check as today, dedupe on
+      callback id, answerCallbackQuery, label recovered from the reply
+      row's raw.buttons, route as action). setWebhook now sends
+      allowed_updates ['message','callback_query'] — existing
+      connections must RE-REGISTER to start receiving clicks.
+- [x] Tests: keyboard on the wire, callback → action event (label +
+      onAction + spinner ack), dedupe, malformed callback skipped,
+      allowed_updates asserted (126 tests green)
 **Slice 3 — widget + dashboard + E2E (user-driven)**
 - [ ] `<AgentChat />`: render buttons, click → action POST, disable
       after click; bump @asyncify-hq/react

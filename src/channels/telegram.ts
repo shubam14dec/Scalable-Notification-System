@@ -18,7 +18,7 @@ export interface TelegramWebhookInfo {
   last_error_date?: number;
 }
 
-/** The subset of a Telegram Update the platform handles (private text). */
+/** The subset of a Telegram Update the platform handles. */
 export interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -27,6 +27,15 @@ export interface TelegramUpdate {
     text?: string;
     from?: { id: number; is_bot: boolean; first_name?: string; username?: string };
     chat: { id: number; type: string };
+  };
+  /** An inline-keyboard button press. */
+  callback_query?: {
+    id: string;
+    from: { id: number; is_bot: boolean; first_name?: string; username?: string };
+    /** The message the keyboard was attached to. */
+    message?: { message_id: number; chat: { id: number; type: string } };
+    /** Our button id (we set callback_data = button.id). */
+    data?: string;
   };
 }
 
@@ -68,13 +77,34 @@ export const telegram = {
     call<boolean>(token, 'setWebhook', {
       url,
       secret_token: secretToken,
-      allowed_updates: ['message'],
+      // callback_query = inline-keyboard clicks. Connections registered
+      // before buttons existed must re-register to start receiving them.
+      allowed_updates: ['message', 'callback_query'],
     }),
 
   deleteWebhook: (token: string) => call<boolean>(token, 'deleteWebhook'),
 
   getWebhookInfo: (token: string) => call<TelegramWebhookInfo>(token, 'getWebhookInfo'),
 
-  sendMessage: (token: string, chatId: string | number, text: string) =>
-    call<{ message_id: number }>(token, 'sendMessage', { chat_id: chatId, text }),
+  sendMessage: (
+    token: string,
+    chatId: string | number,
+    text: string,
+    buttons?: Array<{ id: string; label: string }>,
+  ) =>
+    call<{ message_id: number }>(token, 'sendMessage', {
+      chat_id: chatId,
+      text,
+      ...(buttons?.length
+        ? {
+            reply_markup: {
+              inline_keyboard: buttons.map((b) => [{ text: b.label, callback_data: b.id }]),
+            },
+          }
+        : {}),
+    }),
+
+  /** Acks a button press so the client stops showing its spinner. */
+  answerCallbackQuery: (token: string, callbackQueryId: string) =>
+    call<boolean>(token, 'answerCallbackQuery', { callback_query_id: callbackQueryId }),
 };

@@ -12,6 +12,7 @@ import { emailWebhookUrl } from './email-channel';
 import { upsertSubscriber } from '../../db/repositories';
 import {
   deleteConnection,
+  findMessageByTelegramId,
   getAgent,
   getAgentById,
   getConnectionById,
@@ -200,6 +201,12 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       }
 
       const update = req.body as TelegramUpdate;
+
+      // Inline-keyboard clicks arrive as callback_query, not message.
+      if (update?.callback_query) {
+        return handleCallback(connection, update.callback_query);
+      }
+
       const message = update?.message;
       // Ack everything we don't handle — a 200 is how Telegram stops
       // re-delivering; non-text/bot/group updates are simply not for us (v1).
@@ -254,4 +261,73 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       return { ok: true };
     },
   );
+}
+
+/**
+ * A button press from a Telegram inline keyboard → the same action pipeline
+ * widget clicks use. Dedupe key = Telegram's callback id (redeliveries and
+ * double-taps collapse); the label is recovered from the reply row the
+ * keyboard was attached to (callback_data carries only our button id).
+ */
+async function handleCallback(
+  connection: AgentConnection,
+  callback: NonNullable<TelegramUpdate['callback_query']>,
+): Promise<unknown> {
+  if (
+    !callback.data ||
+    !callback.message ||
+    callback.from.is_bot ||
+    connection.status !== 'active'
+  ) {
+    return { ok: true, skipped: true };
+  }
+  const agent = await getAgentById(connection.agent_id);
+  if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
+
+  // Clear the client-side spinner regardless of what happens next.
+  await telegram
+    .answerCallbackQuery(credentials(connection).botToken, callback.id)
+    .catch((err) => logger.warn({ err: (err as Error).message }, 'answerCallbackQuery failed'));
+
+  const subscriber = await upsertSubscriber(connection.tenant_id, {
+    subscriberId: `tg-${callback.from.id}`,
+  });
+  const conversation = await openConversation({
+    tenantId: connection.tenant_id,
+    agentId: agent.id,
+    subscriberId: subscriber.id,
+    channel: 'telegram',
+    threadKey: String(callback.message.chat.id),
+  });
+
+  // Recover the human-readable label from the buttons we sent.
+  const sourceRow = await findMessageByTelegramId(conversation.id, callback.message.message_id);
+  const buttons = (sourceRow?.raw as { buttons?: Array<{ id: string; label: string }> } | null)
+    ?.buttons;
+  const label = buttons?.find((b) => b.id === callback.data)?.label ?? callback.data;
+
+  const row = await insertConversationMessage({
+    conversationId: conversation.id,
+    tenantId: connection.tenant_id,
+    role: 'user',
+    content: label,
+    dedupeKey: `tgcb-${callback.id}`,
+    raw: { action: { id: callback.data } },
+  });
+  if (!row) return { ok: true, duplicate: true };
+
+  await getQueue(QUEUE.CONVERSATION).add(
+    row.id,
+    { tenantId: connection.tenant_id, conversationId: conversation.id, messageId: row.id },
+    { jobId: `conv-${row.id}`, attempts: 5 },
+  );
+
+  logExec({
+    tenantId: connection.tenant_id,
+    transactionId: `conv-${conversation.id}`,
+    level: 'info',
+    detail: `telegram action accepted: agent=${agent.identifier} action=${callback.data}`,
+  });
+
+  return { ok: true };
 }

@@ -424,6 +424,20 @@ export async function getConversationMessageByDedupe(
   return rows[0] ?? null;
 }
 
+/** The reply row a telegram inline-keyboard click was attached to. */
+export async function findMessageByTelegramId(
+  conversationId: string,
+  telegramMessageId: number,
+): Promise<ConversationMessage | null> {
+  const { rows } = await pool.query(
+    `select * from conversation_messages
+     where conversation_id = $1 and raw->>'telegramMessageId' = $2
+     limit 1`,
+    [conversationId, String(telegramMessageId)],
+  );
+  return rows[0] ?? null;
+}
+
 /** Send-once bookkeeping (e.g. the telegram message id once delivered). */
 export async function updateConversationMessageRaw(id: string, raw: unknown): Promise<void> {
   await pool.query('update conversation_messages set raw = $2 where id = $1', [

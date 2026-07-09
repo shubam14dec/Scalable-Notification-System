@@ -35,8 +35,11 @@ let bridgeUrl = '';
 
 // ---- stub Telegram API: records every call, answers like the real one ----
 let tgStub: Server;
-const tgCalls: Array<{ method: string; body: Record<string, unknown> }> = [];
+const tgCalls: Array<{ method: string; body: Record<string, unknown>; result: unknown }> = [];
 let webhookSecretSeen = '';
+// Unique per send, like the real API — label recovery for button clicks
+// looks replies up by telegramMessageId, so a constant would be ambiguous.
+let messageIdSeq = 4242;
 
 function startTelegramStub(): Promise<void> {
   tgStub = createServer((req, res) => {
@@ -45,14 +48,15 @@ function startTelegramStub(): Promise<void> {
     req.on('end', () => {
       const method = String(req.url).split('/').pop() ?? '';
       const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-      tgCalls.push({ method, body });
       const results: Record<string, unknown> = {
         getMe: { id: 7000001, is_bot: true, username: 'itest_bot' },
         setWebhook: true,
         deleteWebhook: true,
         getWebhookInfo: { url: 'https://example.test/hook', pending_update_count: 0 },
-        sendMessage: { message_id: 4242 },
+        sendMessage: { message_id: method === 'sendMessage' ? ++messageIdSeq : 0 },
+        answerCallbackQuery: true,
       };
+      tgCalls.push({ method, body, result: results[method] });
       if (method === 'setWebhook') webhookSecretSeen = String(body.secret_token ?? '');
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ ok: method in results, result: results[method], description: method in results ? undefined : 'unknown method' }));
@@ -69,7 +73,19 @@ const brain = defineAgent({
       ctx.metadata.set('topic', 'orders');
       return 'Replacement on the way!';
     }
+    if (ctx.message.text.includes('options')) {
+      ctx.reply('Pick one:', {
+        buttons: [
+          { id: 'resend', label: 'Resend email' },
+          { id: 'human', label: 'Talk to human' },
+        ],
+      });
+      return;
+    }
     return `heard on ${ctx.conversation.channel}: ${ctx.message.text}`;
+  },
+  onAction(ctx) {
+    return `clicked:${ctx.action?.id}:${ctx.message.text}`;
   },
 });
 
@@ -150,6 +166,8 @@ describe('connect flow', () => {
 
     const setWebhook = tgCalls.find((c) => c.method === 'setWebhook');
     expect(setWebhook?.body.url).toBe(`http://localhost:3000/webhooks/telegram/${connectionId}`);
+    // Without callback_query here, inline-keyboard clicks are never delivered.
+    expect(setWebhook?.body.allowed_updates).toEqual(['message', 'callback_query']);
     expect(webhookSecretSeen).toMatch(/^[0-9a-f]{48}$/);
   });
 
@@ -259,6 +277,84 @@ describe('reply delivery', () => {
       headers: { 'x-api-key': apiKey },
     });
     expect(json(after).conversation.metadata.topic).toBe('orders');
+  });
+});
+
+describe('inline keyboards', () => {
+  let keyboardMessageId = 0;
+  let conversationId = '';
+
+  async function processLastUserTurn(convId: string) {
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${convId}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const turn = json(detail).messages.findLast((m: { role: string }) => m.role === 'user');
+    const data: ConversationJobData = { tenantId, conversationId: convId, messageId: turn.id };
+    await processConversation({ data } as Job<ConversationJobData>);
+    return turn;
+  }
+
+  test('reply buttons go out as an inline keyboard', async () => {
+    await postUpdate(tgUpdate(400, 'show me my options'));
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    conversationId = json(list).conversations[0].id;
+    await processLastUserTurn(conversationId);
+
+    const kb = sends().findLast((c) => c.body.reply_markup);
+    expect(kb).toBeDefined();
+    expect(kb?.body.text).toBe('Pick one:');
+    expect((kb?.body.reply_markup as { inline_keyboard: unknown[][] }).inline_keyboard).toEqual([
+      [{ text: 'Resend email', callback_data: 'resend' }],
+      [{ text: 'Talk to human', callback_data: 'human' }],
+    ]);
+    keyboardMessageId = (kb?.result as { message_id: number }).message_id;
+  });
+
+  test('a button press becomes an action event: label recovered, onAction runs, spinner acked', async () => {
+    const res = await postUpdate({
+      update_id: 401,
+      callback_query: {
+        id: 'cbq-1',
+        from: { id: 555001, is_bot: false, first_name: 'Ana' },
+        message: { message_id: keyboardMessageId, chat: { id: 555001, type: 'private' } },
+        data: 'resend',
+      },
+    });
+    expect(json(res).ok).toBe(true);
+    expect(tgCalls.some((c) => c.method === 'answerCallbackQuery' && c.body.callback_query_id === 'cbq-1')).toBe(true);
+
+    const turn = await processLastUserTurn(conversationId);
+    // The click was stored as a user row carrying the recovered label.
+    expect(turn.content).toBe('Resend email');
+
+    expect(sends().at(-1)?.body.text).toBe('clicked:resend:Resend email');
+  });
+
+  test('a redelivered callback is acked as duplicate, not re-ingested', async () => {
+    const res = await postUpdate({
+      update_id: 402,
+      callback_query: {
+        id: 'cbq-1',
+        from: { id: 555001, is_bot: false },
+        message: { message_id: keyboardMessageId, chat: { id: 555001, type: 'private' } },
+        data: 'resend',
+      },
+    });
+    expect(json(res).duplicate).toBe(true);
+  });
+
+  test('a callback without data or message is acked but skipped', async () => {
+    const res = await postUpdate({
+      update_id: 403,
+      callback_query: { id: 'cbq-2', from: { id: 555001, is_bot: false } },
+    });
+    expect(json(res).skipped).toBe(true);
   });
 });
 
