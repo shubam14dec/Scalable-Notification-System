@@ -12,11 +12,11 @@ notes. Order within this cluster is rough — reorder freely.)
 
 - [ ] Streaming managed replies (parked from 3c: WS protocol + gateway +
       widget surface for 1–2s chat replies — revisit if replies grow)
-- [ ] `present_buttons` tool for the managed LLM brain: strict-schema
-      tool (ids/labels, max 6) so GLM/Claude agents can offer buttons
-      like bridge agents do (Phase 4 shipped the whole pipeline;
-      this is just the LLM's send-side entry point). Needs the usual
-      GLM battle-testing per skill §13.
+- [ ] Auto-resolve on inactivity: scheduled sweep closes active
+      conversations idle for N hours (per-agent setting, default
+      24h?) with a system breadcrumb — the platform backstop for
+      threads that trail off, regardless of brain quality (the
+      "Thank you" judgment case from Phase 5's battle-test).
 - [ ] Subscriber linking (`tg-<id>` / email sender → real app
       subscriber): deep-link `/start <token>` for Telegram (+ an email
       equivalent) so a channel identity merges into an existing
@@ -39,7 +39,28 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Conversations / Agents — Phase 5: present_buttons tool (plan pending user OK)
+(nothing — pick the next phase from the backlog)
+
+## Recently finished
+
+### Conversations / Agents — Phase 5: present_buttons tool — COMPLETE
+(user-verified 2026-07-09 on widget AND telegram with real GLM-4.7:
+the model authored buttons via the tool on both surfaces — inline
+keyboard + retire-on-tap on the phone — clicks routed back, trigger
+fired with content-keyed txn, set_metadata + resolve_conversation all
+exercised, zero fabrication. Commit 2fcfee9. Battle-test findings:
+(a) GLM imitated the demo brain's exact reply phrasing from bridge-era
+history in the same telegram thread — harmless mimicry over a real
+trigger; (b) it promised "a confirmation email is incoming" to a tg-
+subscriber with no email — the subscriber-linking gap surfacing in
+model behavior; (c) a bare "Thank you" after two off-topic meta-
+questions did NOT resolve (defensible judgment; explicit "thanks,
+everything is sorted now!" resolved instantly) — the ambiguous-thanks
+case is a PROMPT policy ("if the user thanks you and nothing is
+pending, resolve") or model-tier question, not a platform rule;
+auto-resolve-on-inactivity added to backlog as the platform backstop.)
+
+### (original Phase 5 plan)
 
 Goal: managed LLM agents (GLM/Claude) can offer buttons like bridge
 agents do. Phase 4 shipped the entire pipeline (raw.buttons on the
@@ -87,7 +108,7 @@ Design decisions:
       replay shows a real present_buttons tool_use block; re-run →
       no duplicate row; reminder + both tool menus name the tool
 **Slice 2 — real GLM E2E (user-driven, the battle-test)**
-- [ ] User tightens support-2's system prompt (e.g. "when a user
+- [x] User tightens support-2's system prompt (e.g. "when a user
       reports an order issue, use present_buttons to offer
       [Resend the order / Talk to a human], then act on their click")
       → widget chat → GLM offers real buttons → click → GLM handles
