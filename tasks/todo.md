@@ -40,7 +40,74 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — pick the next phase from the backlog)
+### Phase 8: Release automation — workspaces + Changesets + token-less publishing (plan pending user OK)
+
+Goal: publishing stops being a manual chore with a pasted, expiring
+token. A release becomes: merge the bot's "Version Packages" PR →
+CI publishes the changed packages to npm via OIDC trusted publishing
+— NO npm token anywhere (user constraint: tokens cap at 3 months).
+
+Design decisions:
+- **Step 0 — npm workspaces** (unblocks Changesets, clears the parked
+  backlog item): root package.json gains `"workspaces":
+  ["packages/*"]` (sdk-node, agent, react; the dashboard app stays
+  outside — it's not published). The four lockfiles collapse into
+  the root one; package devDeps (tsup/typescript/react types) hoist.
+  Risk watched: the lockfile regenerates — validated the same way
+  the CI lockfile fix was (npm ci --dry-run + the CI run itself).
+- **Changesets, independent versioning** (packages evolve at their
+  own pace — agent/react/node have never moved in lockstep):
+  `npx changeset` per user-visible package change → tiny .md file
+  rides the commit → changesets/action on pushes to main maintains
+  ONE aggregating "Version Packages" PR (bumps + CHANGELOGs) →
+  merging it publishes exactly the changed packages.
+- **Token-less publish (OIDC trusted publishing)**: each package on
+  npmjs.com gets a Trusted Publisher binding (this GitHub repo +
+  release.yml). The workflow requests `id-token: write`; npm ≥11.5
+  (node 24, already CI's runtime) exchanges the OIDC token at
+  publish time — no long-lived secret to expire or leak, and npm
+  shows a provenance badge on every release. Fallback documented:
+  NPM_TOKEN secret if OIDC misbehaves, removable after.
+- **CI updates**: root `npm ci` now installs workspaces (drop the
+  three per-package installs); builds become `npm run build -w`;
+  cache path = root lockfile only.
+- **User-side one-time setup (flagging early)**: (a) on npmjs.com,
+  add the Trusted Publisher (repo shubam14dec/Scalable-Notification-
+  System, workflow release.yml) on each of the 3 packages; (b) repo
+  Settings → Actions → General → allow Actions to create PRs.
+- **Parameter space**: independent versions (not fixed/linked);
+  access public (already in publishConfig); baseBranch main;
+  changelog = the default changeset-generated per-package
+  CHANGELOG.md.
+- **Scale note (10-20M rule)**: n/a — repo tooling; the only "scale"
+  is developer count, which this improves (any contributor can ship
+  a release via PR review instead of holding a token).
+- **E2E through the real surface (house rule)**: the acceptance test
+  is a REAL release: one changeset (a patch-level README tweak to
+  @asyncify-hq/agent) → bot opens Version Packages PR → user merges
+  → CI publishes 0.2.1 → npm shows the new version WITH the
+  provenance badge. No dry-runs pretending to be releases.
+
+**Slice 1 — workspaces (build → verify → commit)**
+- [ ] Root workspaces field; delete per-package lockfiles; clean-room
+      lockfile regeneration; npm ci --dry-run green
+- [ ] CI: single root install, -w builds, root cache path
+- [ ] Full suite + all builds green locally AND on CI
+**Slice 2 — changesets + release workflow (build → verify → commit)**
+- [ ] @changesets/cli + init; config (independent, public, main)
+- [ ] .github/workflows/release.yml: changesets/action, id-token:
+      write, publish = npx changeset publish
+- [ ] docs: RELEASING.md (the new habit: npx changeset with each
+      package change; release = merge the bot PR)
+**Slice 3 — user setup + the real release (user-driven)**
+- [ ] User: npmjs.com Trusted Publisher on all 3 packages +
+      repo setting allowing Actions to create PRs
+- [ ] E2E: seed changeset → bot PR appears → user merges →
+      @asyncify-hq/agent@0.2.1 on npm with provenance badge
+
+**Out of scope**: publishing the dashboard (not a package), GitHub
+Releases/tags automation (changesets can add later), migrating old
+release notes.
 
 ## Recently finished
 
