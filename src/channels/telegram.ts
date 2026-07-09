@@ -33,7 +33,7 @@ export interface TelegramUpdate {
     id: string;
     from: { id: number; is_bot: boolean; first_name?: string; username?: string };
     /** The message the keyboard was attached to. */
-    message?: { message_id: number; chat: { id: number; type: string } };
+    message?: { message_id: number; chat: { id: number; type: string }; text?: string };
     /** Our button id (we set callback_data = button.id). */
     data?: string;
   };
@@ -107,4 +107,16 @@ export const telegram = {
   /** Acks a button press so the client stops showing its spinner. */
   answerCallbackQuery: (token: string, callbackQueryId: string) =>
     call<boolean>(token, 'answerCallbackQuery', { callback_query_id: callbackQueryId }),
+
+  /**
+   * Rewrites a sent message. Telegram has no disabled-button state, so
+   * "buttons retire after a click" is: edit the message to show the choice
+   * — omitting reply_markup here is what removes the keyboard.
+   */
+  editMessageText: (token: string, chatId: string | number, messageId: number, text: string) =>
+    call<unknown>(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+    }),
 };

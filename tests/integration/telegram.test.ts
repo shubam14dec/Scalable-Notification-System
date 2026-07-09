@@ -55,6 +55,7 @@ function startTelegramStub(): Promise<void> {
         getWebhookInfo: { url: 'https://example.test/hook', pending_update_count: 0 },
         sendMessage: { message_id: method === 'sendMessage' ? ++messageIdSeq : 0 },
         answerCallbackQuery: true,
+        editMessageText: true,
       };
       tgCalls.push({ method, body, result: results[method] });
       if (method === 'setWebhook') webhookSecretSeen = String(body.secret_token ?? '');
@@ -329,6 +330,12 @@ describe('inline keyboards', () => {
     expect(json(res).ok).toBe(true);
     expect(tgCalls.some((c) => c.method === 'answerCallbackQuery' && c.body.callback_query_id === 'cbq-1')).toBe(true);
 
+    // The keyboard retires: message rewritten with the choice, buttons gone.
+    const edit = tgCalls.find((c) => c.method === 'editMessageText');
+    expect(edit?.body.message_id).toBe(keyboardMessageId);
+    expect(edit?.body.text).toBe('Pick one:\n\n✓ Resend email');
+    expect(edit?.body.reply_markup).toBeUndefined();
+
     const turn = await processLastUserTurn(conversationId);
     // The click was stored as a user row carrying the recovered label.
     expect(turn.content).toBe('Resend email');
@@ -347,6 +354,8 @@ describe('inline keyboards', () => {
       },
     });
     expect(json(res).duplicate).toBe(true);
+    // Duplicate short-circuits before the keyboard-retire edit.
+    expect(tgCalls.filter((c) => c.method === 'editMessageText').length).toBe(1);
   });
 
   test('a callback without data or message is acked but skipped', async () => {

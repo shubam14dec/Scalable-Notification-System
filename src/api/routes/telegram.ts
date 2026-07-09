@@ -316,6 +316,22 @@ async function handleCallback(
   });
   if (!row) return { ok: true, duplicate: true };
 
+  // Retire the keyboard, telegram-style: no disabled-button state exists,
+  // so rewrite the message with the choice appended — editMessageText
+  // without reply_markup is what drops the buttons. First ingest only
+  // (dedupe returned above), best-effort (48h-old messages reject edits).
+  const originalText = callback.message.text ?? sourceRow?.content;
+  if (originalText) {
+    await telegram
+      .editMessageText(
+        credentials(connection).botToken,
+        callback.message.chat.id,
+        callback.message.message_id,
+        `${originalText}\n\n✓ ${label}`,
+      )
+      .catch((err) => logger.warn({ err: (err as Error).message }, 'telegram keyboard retire failed'));
+  }
+
   await getQueue(QUEUE.CONVERSATION).add(
     row.id,
     { tenantId: connection.tenant_id, conversationId: conversation.id, messageId: row.id },
