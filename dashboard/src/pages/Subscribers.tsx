@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import {
   Button,
   Card,
+  CopyField,
   EmptyState,
   Field,
   Input,
@@ -24,10 +25,131 @@ interface SubscriberRow {
   created_at: string;
 }
 
+/**
+ * Channel linking: mint the deep link that merges a telegram identity into
+ * this subscriber, and inspect/undo existing mappings. Email links itself
+ * (auto-match on the sender address) — shown here once it happens.
+ */
+function LinkChannelsModal({ subscriberId, onClose }: { subscriberId: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [agent, setAgent] = useState('');
+  const [deepLink, setDeepLink] = useState('');
+  const [error, setError] = useState('');
+
+  const { data: identities } = useQuery({
+    queryKey: ['identities', subscriberId],
+    queryFn: () =>
+      api<{ identities: Array<{ channel: string; externalKey: string; linkedAt: string }> }>(
+        `/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`,
+      ),
+  });
+  const { data: agents } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api<{ agents: Array<{ identifier: string; status: string }> }>('/v1/agents'),
+  });
+  const active = agents?.agents.filter((a) => a.status === 'active') ?? [];
+  const chosen = agent || active[0]?.identifier;
+
+  const mint = useMutation({
+    mutationFn: () =>
+      api<{ deepLink: string }>(
+        `/v1/agents/${encodeURIComponent(chosen!)}/subscribers/${encodeURIComponent(subscriberId)}/link-token`,
+        { method: 'POST' },
+      ),
+    onSuccess: (res) => {
+      setDeepLink(res.deepLink);
+      setError('');
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const unlink = useMutation({
+    mutationFn: (i: { channel: string; externalKey: string }) =>
+      api(`/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`, {
+        method: 'DELETE',
+        body: i,
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['identities', subscriberId] }),
+  });
+
+  return (
+    <Modal open onClose={onClose} title={`Linked channels — ${subscriberId}`}>
+      <div className="space-y-4">
+        <div>
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-t3">
+            Linked identities
+          </p>
+          {identities && identities.identities.length > 0 ? (
+            <ul className="space-y-1.5">
+              {identities.identities.map((i) => (
+                <li key={`${i.channel}:${i.externalKey}`} className="flex items-center justify-between gap-2">
+                  <span className="text-[12px] text-t1">
+                    <Mono className="text-t3">{i.channel}</Mono>{' '}
+                    <Mono>{i.externalKey}</Mono>
+                    <span className="ml-2 text-[11px] text-t3">{timeAgo(i.linkedAt)}</span>
+                  </span>
+                  <Button onClick={() => unlink.mutate(i)} disabled={unlink.isPending}>
+                    Unlink
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[12px] text-t3">
+              None yet — this subscriber is only known by their app identity.
+            </p>
+          )}
+        </div>
+
+        <div className="border-t border-bd pt-4">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-t3">
+            Link Telegram
+          </p>
+          <p className="mb-3 text-[12px] text-t3">
+            Generate a single-use link (valid 24h). When this user opens it and taps
+            Start, their Telegram merges into this subscriber — history, triggers, and
+            notifications included.
+          </p>
+          <div className="flex items-center gap-2">
+            {active.length > 1 && (
+              <select
+                aria-label="Agent bot"
+                className="h-8 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1"
+                value={chosen ?? ''}
+                onChange={(e) => setAgent(e.target.value)}
+              >
+                {active.map((a) => (
+                  <option key={a.identifier} value={a.identifier} className="bg-surface">
+                    {a.identifier}
+                  </option>
+                ))}
+              </select>
+            )}
+            <Button variant="primary" onClick={() => mint.mutate()} disabled={!chosen || mint.isPending}>
+              {mint.isPending ? 'Generating…' : 'Generate link'}
+            </Button>
+          </div>
+          {deepLink && (
+            <div className="mt-3">
+              <CopyField value={deepLink} />
+            </div>
+          )}
+          {error && <p className="mt-2 text-[12px] text-err">{error}</p>}
+        </div>
+
+        <div className="flex justify-end">
+          <Button onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export default function SubscribersPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [addOpen, setAddOpen] = useState(false);
+  const [linkFor, setLinkFor] = useState<string | null>(null);
   const [error, setError] = useState('');
   const { data, isLoading } = useQuery({
     queryKey: ['subscribers', search],
@@ -111,6 +233,8 @@ export default function SubscribersPage() {
           </div>
         </form>
       </Modal>
+      {linkFor && <LinkChannelsModal subscriberId={linkFor} onClose={() => setLinkFor(null)} />}
+
       {isLoading ? (
         <Skeleton className="h-40 w-full" />
       ) : data && data.subscribers.length > 0 ? (
@@ -122,7 +246,8 @@ export default function SubscribersPage() {
                 <th className={th}>Email</th>
                 <th className={th}>Phone</th>
                 <th className={th}>Push</th>
-                <th className={`${th} text-right`}>Added</th>
+                <th className={th}>Added</th>
+                <th className={`${th} text-right`}>Channels</th>
               </tr>
             </thead>
             <tbody>
@@ -140,8 +265,11 @@ export default function SubscribersPage() {
                   <td className={td}>
                     <span className="text-[12px] text-t3">{s.has_push ? 'yes' : '—'}</span>
                   </td>
-                  <td className={`${td} text-right`}>
+                  <td className={td}>
                     <Mono className="text-t3">{timeAgo(s.created_at)}</Mono>
+                  </td>
+                  <td className={`${td} text-right`}>
+                    <Button onClick={() => setLinkFor(s.external_id)}>Link</Button>
                   </td>
                 </tr>
               ))}

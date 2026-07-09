@@ -123,8 +123,10 @@ Design decisions:
       auto-match links + strangers stay channel-local.
       Learned: bridge signal txn indexes start at 1 (0 = turn note)
 **Slice 2 — dashboard + real E2E (user-driven)**
-- [ ] Surface: subscriber link action (generate + copy deep link,
-      show linked identities, unlink)
+- [x] Surface: Subscribers page grew a per-row Link action → modal
+      shows linked identities (+ unlink) and generates the one-tap
+      telegram deep link (agent picker when several bots exist,
+      CopyField, 24h note). Dashboard tsc + vite build clean
 - [ ] E2E from the phone: mint link for a real subscriber (with your
       email) → tap → bot confirms → "where is my order?" → click →
       trigger → email lands in the REAL inbox from a telegram chat
