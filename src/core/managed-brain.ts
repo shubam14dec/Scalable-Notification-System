@@ -112,7 +112,7 @@ export async function runManagedTurn(
 
   const messages: Anthropic.MessageParam[] = [
     ...buildHistory(history),
-    { role: 'user' as const, content: inbound.content + reminder },
+    { role: 'user' as const, content: userText(inbound) + reminder },
   ];
 
   let resolved = false;
@@ -272,10 +272,16 @@ function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] 
       role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
       // Assistant rows are sanitized on replay too — a forged marker that
       // slipped into storage pre-fix must not re-teach the format.
-      content: m.role === 'agent' ? sanitizeReply(m.content).text : m.content,
+      content: m.role === 'agent' ? sanitizeReply(m.content).text : userText(m),
     });
   }
   return messages;
+}
+
+/** Button clicks (user rows with raw.action) read naturally to an LLM. */
+function userText(m: ConversationMessage): string {
+  const action = (m.raw as { action?: { id: string } } | null)?.action;
+  return action ? `[user clicked: ${m.content}]` : m.content;
 }
 
 /**

@@ -41,11 +41,23 @@ const brain = defineAgent({
       ctx.trigger('itest-workflow', { payload: { name: 'Ana' } });
       return 'Replacement on the way!';
     }
+    if (text.includes('options')) {
+      ctx.reply('Pick one:', {
+        buttons: [
+          { id: 'resend', label: 'Resend email' },
+          { id: 'human', label: 'Talk to human' },
+        ],
+      });
+      return;
+    }
     if (text.includes('thanks')) {
       ctx.resolve('handled');
       return 'Anytime!';
     }
     return `heard: ${ctx.message.text} (history ${ctx.history.length})`;
+  },
+  onAction(ctx) {
+    return `clicked:${ctx.action?.id}:${ctx.message.text}`;
   },
 });
 
@@ -205,6 +217,54 @@ describe('the two-way loop', () => {
     expect(again.body.status).toBe('active');
     t = await transcript(conversationId);
     expect(t.conversation.status).toBe('active');
+  });
+});
+
+describe('buttons + onAction', () => {
+  let conversationId = '';
+
+  test('a bridge reply carries buttons end to end', async () => {
+    const turn = await sendTurn('show me options', 'btn-1');
+    conversationId = turn.body.conversationId;
+    await runWorkerFor(turn.body);
+
+    const t = await transcript(conversationId);
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.content).toBe('Pick one:');
+    expect(reply.buttons).toEqual([
+      { id: 'resend', label: 'Resend email' },
+      { id: 'human', label: 'Talk to human' },
+    ]);
+  });
+
+  test('a click flows back as an onAction event with the right id', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents/itest-support/actions',
+      headers: { 'x-api-key': apiKey },
+      payload: { subscriberId: 'ana', actionId: 'resend', label: 'Resend email', actionEventId: 'act-1' },
+    });
+    expect(res.statusCode).toBe(202);
+    const { messageId } = json(res);
+    await runWorkerFor({ conversationId, messageId });
+
+    const t = await transcript(conversationId);
+    // The click reads naturally in the transcript...
+    const clickRow = t.messages.find((m: { id: string }) => m.id === messageId);
+    expect(clickRow.content).toBe('Resend email');
+    // ...and the bridge's onAction saw the structured action.
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.content).toBe('clicked:resend:Resend email');
+  });
+
+  test('a double-click is one action', async () => {
+    const again = await app.inject({
+      method: 'POST',
+      url: '/v1/agents/itest-support/actions',
+      headers: { 'x-api-key': apiKey },
+      payload: { subscriberId: 'ana', actionId: 'resend', label: 'Resend email', actionEventId: 'act-1' },
+    });
+    expect(json(again).duplicate).toBe(true);
   });
 });
 

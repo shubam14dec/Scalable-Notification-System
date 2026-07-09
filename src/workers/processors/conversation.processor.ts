@@ -44,6 +44,11 @@ const METADATA_MAX_BYTES = 64 * 1024;
 /** What a bridge may send back — one reply plus batched signals. */
 const BridgeResponseSchema = z.object({
   reply: z.string().max(64 * 1024).optional(),
+  /** Buttons under the reply; clicks come back as 'action' events. */
+  buttons: z
+    .array(z.object({ id: z.string().min(1).max(64), label: z.string().min(1).max(48) }))
+    .max(6)
+    .optional(),
   signals: z
     .array(
       z.discriminatedUnion('type', [
@@ -92,6 +97,7 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   // The brain branch: who answers this turn. Everything after (reply row,
   // channel delivery, signals, breadcrumbs) is identical for both runtimes.
   let reply: string | undefined;
+  let buttons: Array<{ id: string; label: string }> | undefined;
   let signals: BridgeSignal[] = [];
   let turnUsage: TurnUsage | undefined;
 
@@ -130,6 +136,7 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   } else {
     const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
     reply = dispatched.reply;
+    buttons = dispatched.buttons;
     signals = dispatched.signals;
   }
 
@@ -144,8 +151,11 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
         role: 'agent',
         content: reply,
         dedupeKey: `reply-${messageId}`,
-        // Managed turns record what they cost on the customer's key.
-        raw: turnUsage ? { usage: turnUsage } : undefined,
+        // Managed turns record their cost; bridge replies their buttons.
+        raw:
+          turnUsage || buttons
+            ? { ...(turnUsage ? { usage: turnUsage } : {}), ...(buttons ? { buttons } : {}) }
+            : undefined,
       })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
     if (replyRow) {
       await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
@@ -173,12 +183,20 @@ async function dispatchToBridge(
   subscriber: NonNullable<Awaited<ReturnType<typeof getSubscriberById>>>,
   message: ConversationMessage,
   history: ConversationMessage[],
-): Promise<{ reply?: string; signals: BridgeSignal[] }> {
+): Promise<{
+  reply?: string;
+  buttons?: Array<{ id: string; label: string }>;
+  signals: BridgeSignal[];
+}> {
   if (!agent.bridge_url) {
     throw new PermanentError(`bridge agent ${agent.identifier} has no bridge URL`);
   }
+  // Button clicks arrive as user rows carrying raw.action — the bridge
+  // sees them as first-class 'action' events (label rides message.text).
+  const clicked = (message.raw as { action?: { id: string } } | null)?.action;
   const rawBody = JSON.stringify({
-    type: 'message',
+    type: clicked ? 'action' : 'message',
+    ...(clicked ? { action: { id: clicked.id, label: message.content } } : {}),
     agent: { identifier: agent.identifier, name: agent.name },
     conversation: {
       id: conversation.id,
@@ -301,6 +319,8 @@ async function deliverReply(
   inboundRow: ConversationMessage,
 ): Promise<void> {
   if (conversation.channel === 'inapp') {
+    const buttons = (replyRow.raw as { buttons?: Array<{ id: string; label: string }> } | null)
+      ?.buttons;
     await publishConversationEvent(conversation, subscriberExternalId, agent, {
       type: 'conversation.message',
       message: {
@@ -308,6 +328,7 @@ async function deliverReply(
         role: 'agent',
         text: replyRow.content,
         createdAt: replyRow.created_at,
+        ...(buttons ? { buttons } : {}),
       },
     });
     return;
@@ -349,13 +370,21 @@ async function deliverReply(
     const subject = inboundRaw.subject
       ? inboundRaw.subject.replace(/^(re:\s*)+/i, '')
       : `Message from ${agent.name}`;
+    // Email has no buttons — degrade to a numbered options list the user
+    // can answer in a plain reply.
+    const emailButtons = (replyRow.raw as { buttons?: Array<{ label: string }> } | null)?.buttons;
+    const body = emailButtons?.length
+      ? `${replyRow.content}\n\nOptions (just reply with your choice):\n` +
+        emailButtons.map((b, i) => `${i + 1}) ${b.label}`).join('\n')
+      : replyRow.content;
+
     // The tenant's normal integration chain: breakers + failover included.
     const sent = await sendWithFailover('email', {
       messageId: replyRow.id,
       tenantId: conversation.tenant_id,
       to: { email: toEmail },
       subject: `Re: ${subject}`,
-      body: replyRow.content,
+      body,
       replyTo: address,
       headers: inboundRaw.rfcMessageId
         ? { 'In-Reply-To': inboundRaw.rfcMessageId, References: inboundRaw.rfcMessageId }

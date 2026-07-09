@@ -53,12 +53,22 @@ export interface HistoryEntry {
   content: string;
 }
 
+/** A button the user clicked (events of type 'action'). */
+export interface AgentAction {
+  id: string;
+  label: string;
+}
+
 export interface AgentEvent {
-  type: 'message';
+  /** 'message' = the user typed; 'action' = the user clicked a button. */
+  type: 'message' | 'action';
   agent: { identifier: string; name: string };
   conversation: AgentEventConversation;
   subscriber: AgentEventSubscriber;
+  /** For actions, `text` is the clicked button's label. */
   message: AgentEventMessage;
+  /** Present when type === 'action'. */
+  action?: AgentAction;
   history: HistoryEntry[];
 }
 
@@ -71,8 +81,16 @@ export type Signal =
   | { type: 'trigger'; workflowKey: string; payload?: Record<string, unknown>; priority?: Priority }
   | { type: 'resolve'; summary?: string };
 
+/** A button offered under the reply (max 6; label ≤ 48 chars). */
+export interface ReplyButton {
+  id: string;
+  label: string;
+}
+
 export interface BridgeResponse {
   reply?: string;
+  /** Buttons rendered under the reply; clicks come back as onAction. */
+  buttons?: ReplyButton[];
   signals: Signal[];
 }
 
@@ -85,8 +103,14 @@ export interface AgentContext {
   subscriber: AgentEventSubscriber;
   /** Prior user/assistant turns, oldest first. */
   history: HistoryEntry[];
-  /** Send a reply to the user (last call wins; returning a string does the same). */
-  reply(text: string): void;
+  /** For onAction handlers: the button the user clicked. */
+  action?: AgentAction;
+  /**
+   * Send a reply to the user (last call wins; returning a string does the
+   * same). `options.buttons` renders clickable buttons under the reply —
+   * clicks come back as onAction events.
+   */
+  reply(text: string, options?: { buttons?: ReplyButton[] }): void;
   metadata: {
     /** Persist a key on the conversation (survives across turns, 64KB total). */
     set(key: string, value: unknown): void;
@@ -107,6 +131,11 @@ export type MessageHandler = (
 
 export interface AgentDefinition {
   onMessage: MessageHandler;
+  /**
+   * Handles button clicks. Optional — without it, actions fall back to
+   * onMessage with the button label as the message text.
+   */
+  onAction?: MessageHandler;
   /** Reserved for platform-dispatched resolve events (not sent yet). */
   onResolve?: (ctx: AgentContext) => void | Promise<void>;
 }
@@ -148,6 +177,7 @@ export async function handleEvent(
 ): Promise<BridgeResponse> {
   const signals: Signal[] = [];
   let reply: string | undefined;
+  let buttons: ReplyButton[] | undefined;
   const metadata = { ...event.conversation.metadata };
 
   const ctx: AgentContext = {
@@ -155,8 +185,10 @@ export async function handleEvent(
     conversation: event.conversation,
     subscriber: event.subscriber,
     history: event.history,
-    reply(text) {
+    action: event.action,
+    reply(text, options) {
       reply = text;
+      buttons = options?.buttons;
     },
     metadata: {
       set(key, value) {
@@ -180,10 +212,13 @@ export async function handleEvent(
     },
   };
 
-  const returned = await agent.onMessage(ctx);
+  // Actions route to onAction when defined; otherwise they degrade to a
+  // plain message (the button label is the text) so old agents keep working.
+  const handler = event.type === 'action' && agent.onAction ? agent.onAction : agent.onMessage;
+  const returned = await handler(ctx);
   if (typeof returned === 'string') reply = returned;
 
-  return { reply, signals };
+  return { reply, buttons, signals };
 }
 
 // ---- plain Node HTTP handler (works in Express/Fastify/Next route shims) ----
@@ -241,7 +276,9 @@ export function createHandler(
         } catch {
           return respond(res, 400, { error: 'invalid JSON' });
         }
-        if (event.type !== 'message') return respond(res, 200, { signals: [] });
+        if (event.type !== 'message' && event.type !== 'action') {
+          return respond(res, 200, { signals: [] });
+        }
 
         try {
           respond(res, 200, await handleEvent(agent, event));

@@ -38,7 +38,68 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — between tasks)
+### Conversations / Agents — Phase 4: Buttons + onAction (plan pending user OK)
+
+Goal: agent replies can carry BUTTONS; a user click flows back as a
+first-class action event that the brain (code or LLM) handles. Widget
+renders buttons natively, Telegram uses inline keyboards, email
+degrades gracefully. This is the human-in-the-loop building block.
+
+Design decisions:
+- **Reply shape**: a reply may carry `buttons: [{id, label}]` (max 6,
+  label ≤48 chars). Stored on the reply row as `raw.buttons`; content
+  stays plain text (transcript stays readable everywhere).
+- **SDK**: `ctx.reply(text, { buttons })` + new `onAction({ action,
+  ctx })` handler (`action = {id, label}`); bridge event type
+  'action'. Non-breaking: agents without onAction get the action as a
+  plain message fallback.
+- **Action inbound**: clicks arrive as a user-role row (content =
+  the button label, so transcripts read naturally) with
+  `raw.action {id}`; rides the same conversation queue; processor
+  passes type 'action' to the bridge / renders "[user clicked:
+  <label>]" for the managed brain (LLMs handle text best).
+- **Channels**:
+  · widget: buttons under the agent bubble; click POSTs the action
+    (subscriber-token auth), buttons disable after use
+  · telegram: `reply_markup.inline_keyboard`; `callback_query` updates
+    handled in the webhook (dedupe on callback id, answerCallbackQuery
+    to clear the spinner)
+  · email: buttons degrade to a numbered text list ("reply 1 for …");
+    no click path v1 — replies are already text
+- **Managed brain**: gains a `present_buttons` tool? NO — v1 keeps the
+  LLM text-only on output; buttons are a BRIDGE (code-agent) feature
+  first. LLM button output = later phase (needs a tool + strict
+  schema). Keeps this phase bounded.
+- Idempotency: click rows dedupe on client-generated actionEventId;
+  telegram callbacks dedupe on callback_query id.
+
+**Slice 1 — core + SDK (build → verify vs tests → commit)**
+- [ ] Reply pipeline: buttons through bridge response schema →
+      reply row raw.buttons → WS event + widget REST transcript
+- [ ] Action inbound: POST /v1/agents/:identifier/actions
+      (subscriber-token or api-key; {actionId, label, messageId
+      client-dedupe}) → user row + queue → bridge event type 'action'
+      / managed textual rendering
+- [ ] SDK: ctx.reply options.buttons + onAction handler + types
+- [ ] Tests: buttons round-trip, action event reaches bridge with
+      matching id, managed fallback text, dedupe on double-click
+**Slice 2 — telegram inline keyboards (build → verify → commit)**
+- [ ] deliverReply telegram: reply_markup from raw.buttons
+- [ ] Webhook: handle callback_query (secret check as today, dedupe,
+      answerCallbackQuery, route as action)
+- [ ] Tests: keyboard on the wire, callback → action event, dedupe
+**Slice 3 — widget + dashboard + E2E (user-driven)**
+- [ ] `<AgentChat />`: render buttons, click → action POST, disable
+      after click; bump @asyncify-hq/react
+- [ ] Dashboard transcript: show buttons on agent rows + "[clicked]"
+      marker on action rows
+- [ ] Demo: scripts/agent-demo.ts gains a button flow (order issue →
+      buttons [Resend email / Talk to human]) for the E2E
+- [ ] E2E: widget click round-trip; telegram inline keyboard click
+      from the phone
+
+**Out of scope**: LLM-generated buttons (needs a present_buttons tool
++ schema — follow-up), email click-tracking links, multi-select/forms.
 
 ## Recently finished
 

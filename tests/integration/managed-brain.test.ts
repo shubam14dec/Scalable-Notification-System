@@ -517,6 +517,21 @@ describe('the tool loop', () => {
     expect(seen.at(-1)!.body.max_tokens).toBe(512);
   });
 
+  test('a button click reaches the LLM as readable click text', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents/glm-support/actions',
+      headers: { 'x-api-key': apiKey },
+      payload: { subscriberId: 'ana', actionId: 'resend', label: 'Resend email', actionEventId: 'act-glm-1' },
+    });
+    expect(res.statusCode).toBe(202);
+    const { conversationId: cid, messageId: mid } = json(res);
+    await runWorker(cid, mid);
+
+    const wire = String(seen.at(-1)!.body.messages.at(-1)?.content);
+    expect(wire).toContain('[user clicked: Resend email]');
+  });
+
   test('a tenant with no workflows gets no trigger tool', async () => {
     // Fresh org: no workflows seeded.
     const email = `brain2-${Date.now()}@itest.local`;

@@ -76,6 +76,15 @@ const InboundMessageSchema = z.object({
   messageId: z.string().min(1).max(255).optional(),
 });
 
+const InboundActionSchema = z.object({
+  subscriberId: z.string().min(1).max(255),
+  /** The clicked button, as offered on the agent reply. */
+  actionId: z.string().min(1).max(64),
+  label: z.string().min(1).max(48),
+  /** Client-supplied id: a double-click can never become two actions. */
+  actionEventId: z.string().min(1).max(255).optional(),
+});
+
 /** Public shape — sealed secrets (signing, LLM key) never leave the API. */
 function agentView(agent: Agent) {
   return {
@@ -297,6 +306,64 @@ export function registerAgentRoutes(app: FastifyInstance) {
     },
   );
 
+  /** A button click — same pipeline as a message, structured as an action. */
+  app.post<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/actions',
+    async (req, reply) => {
+      const parsed = InboundActionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+      }
+      if (!(await authenticateSender(req, reply, parsed.data.subscriberId))) return;
+
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      if (agent.status !== 'active') {
+        return reply.code(409).send({ error: 'agent is disabled' });
+      }
+
+      const subscriber = await upsertSubscriber(req.tenant.id, {
+        subscriberId: parsed.data.subscriberId,
+      });
+      const conversation = await openConversation({
+        tenantId: req.tenant.id,
+        agentId: agent.id,
+        subscriberId: subscriber.id,
+        channel: 'inapp',
+        threadKey: parsed.data.subscriberId,
+      });
+
+      // Stored as a user row whose text is the label — transcripts read
+      // naturally everywhere; raw.action marks it as a click for the brain.
+      const row = await insertConversationMessage({
+        conversationId: conversation.id,
+        tenantId: req.tenant.id,
+        role: 'user',
+        content: parsed.data.label,
+        dedupeKey: parsed.data.actionEventId ?? `action-${crypto.randomUUID()}`,
+        raw: { action: { id: parsed.data.actionId } },
+      });
+      if (!row) {
+        return reply.code(200).send({ conversationId: conversation.id, duplicate: true });
+      }
+
+      await getQueue(QUEUE.CONVERSATION).add(
+        row.id,
+        { tenantId: req.tenant.id, conversationId: conversation.id, messageId: row.id },
+        { jobId: `conv-${row.id}`, attempts: 5 },
+      );
+
+      logExec({
+        tenantId: req.tenant.id,
+        transactionId: `conv-${conversation.id}`,
+        level: 'info',
+        detail: `action accepted: agent=${agent.identifier} action=${parsed.data.actionId}`,
+      });
+
+      return reply.code(202).send({ conversationId: conversation.id, messageId: row.id });
+    },
+  );
+
   /**
    * The widget's own thread (subscriber-token friendly). System rows are
    * internal breadcrumbs — end users only see user/agent turns.
@@ -318,7 +385,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
         conversation: { id: conversation.id, status: conversation.status },
         messages: messages
           .filter((m) => m.role !== 'system')
-          .map((m) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.created_at })),
+          .map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            createdAt: m.created_at,
+            buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
+          })),
       };
     },
   );
@@ -391,6 +464,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
           content: m.content,
           createdAt: m.created_at,
           usage: usageOf(m),
+          buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
+          clicked: Boolean((m.raw as { action?: unknown } | null)?.action),
         })),
         usage: totals,
       };
