@@ -106,10 +106,18 @@ Design decisions:
 - [x] Agent form: "Auto-resolve after (hours)" numeric field, both
       runtimes, blank = never (clearing it on edit sends null =
       backstop off); dashboard tsc + vite build clean
-- [ ] Live drive in dev: set the knob on a test agent, backdate one
-      conversation's last_message_at in the dev DB (same sweep code
-      path production runs — only the clock is faked), watch the
-      sweep resolve it in the dashboard + widget within 5 min
+- [x] Live drive in dev (user-verified 2026-07-09): 1h knob on
+      support-2, conversation backdated 2h, sweep resolved it —
+      widget flipped live via WS, breadcrumb + summary in dashboard,
+      new message reopened. "all the things worked"
+- [x] Post-verification upgrade (user request): unit changed
+      hours → MINUTES (1–43200; DO-block migration backfills ×60 and
+      drops the old column — verified live: support-2's 1h became
+      60m). Dashboard = hours + minutes twin inputs; sweep tick
+      tightened 5min → 60s so a 1-minute knob behaves like one
+      (idle tick = one partial-index query, cheaper than the 30s
+      settle sweep). Summary humanizes: 1 minute / 45 minutes /
+      24 hours / 1h 30m (formatting test added; 140 green)
 
 **Out of scope**: per-conversation overrides, warning message before
 closing ("are you still there?"), tenant-level default, sweeping

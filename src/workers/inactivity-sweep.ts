@@ -17,7 +17,10 @@ import { sweepInactiveConversations } from '../db/conversations.repo';
  * the worker past its tick.
  */
 
-export const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+// 60s tick so a 1-minute knob behaves like one; an idle tick is a single
+// indexed query (partial index, zero matches), cheaper than the 30s
+// settle sweep next door.
+export const SWEEP_INTERVAL_MS = 60 * 1000;
 const BATCH_SIZE = 5000;
 const TICK_BUDGET_MS = 55_000;
 
@@ -39,7 +42,7 @@ export async function runInactivitySweep(): Promise<number> {
         tenantId: row.tenant_id,
         transactionId: `conv-${row.id}`,
         level: 'info',
-        detail: `auto-resolved after ${row.auto_resolve_hours}h of inactivity (agent=${row.agent_identifier})`,
+        detail: `auto-resolved after ${row.auto_resolve_minutes}m of inactivity (agent=${row.agent_identifier})`,
       });
       if (row.channel !== 'inapp') continue;
       pipe.publish(

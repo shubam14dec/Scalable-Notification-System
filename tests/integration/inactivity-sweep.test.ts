@@ -18,7 +18,7 @@ let apiKey = '';
 
 const json = (res: { body: string }) => JSON.parse(res.body);
 
-async function createAgent(identifier: string, autoResolveHours?: number) {
+async function createAgent(identifier: string, autoResolveMinutes?: number) {
   const res = await app.inject({
     method: 'POST',
     url: '/v1/agents',
@@ -27,7 +27,7 @@ async function createAgent(identifier: string, autoResolveHours?: number) {
       identifier,
       name: identifier,
       bridgeUrl: 'http://localhost:59999/', // never called — the sweep has no brain
-      ...(autoResolveHours ? { autoResolveHours } : {}),
+      ...(autoResolveMinutes ? { autoResolveMinutes } : {}),
     },
   });
   expect(res.statusCode).toBe(201);
@@ -84,41 +84,41 @@ afterAll(async () => {
 
 describe('the agent knob', () => {
   test('accepted on create, exposed in the view, PATCHable, nullable to disable', async () => {
-    const agent = await createAgent('sweep-agent', 24);
-    expect(agent.autoResolveHours).toBe(24);
+    const agent = await createAgent('sweep-agent', 24 * 60);
+    expect(agent.autoResolveMinutes).toBe(1440);
 
     const patched = await app.inject({
       method: 'PATCH',
       url: '/v1/agents/sweep-agent',
       headers: { 'x-api-key': apiKey },
-      payload: { autoResolveHours: 48 },
+      payload: { autoResolveMinutes: 2880 },
     });
-    expect(json(patched).agent.autoResolveHours).toBe(48);
+    expect(json(patched).agent.autoResolveMinutes).toBe(2880);
 
     const cleared = await app.inject({
       method: 'PATCH',
       url: '/v1/agents/sweep-agent',
       headers: { 'x-api-key': apiKey },
-      payload: { autoResolveHours: null },
+      payload: { autoResolveMinutes: null },
     });
-    expect(json(cleared).agent.autoResolveHours).toBeNull();
+    expect(json(cleared).agent.autoResolveMinutes).toBeNull();
 
     // Back on for the sweep tests below.
     await app.inject({
       method: 'PATCH',
       url: '/v1/agents/sweep-agent',
       headers: { 'x-api-key': apiKey },
-      payload: { autoResolveHours: 24 },
+      payload: { autoResolveMinutes: 24 * 60 },
     });
   });
 
   test('bounds are enforced', async () => {
-    for (const bad of [0, 721, -5, 1.5]) {
+    for (const bad of [0, 43_201, -5, 1.5]) {
       const res = await app.inject({
         method: 'PATCH',
         url: '/v1/agents/sweep-agent',
         headers: { 'x-api-key': apiKey },
-        payload: { autoResolveHours: bad },
+        payload: { autoResolveMinutes: bad },
       });
       expect(res.statusCode).toBe(400);
     }
@@ -173,6 +173,22 @@ describe('the sweep', () => {
     expect(res.statusCode).toBe(202);
     expect(json(res).conversationId).toBe(staleId); // same thread
     expect((await conversationDetail(staleId)).conversation.status).toBe('active');
+  });
+
+  test('the summary humanizes minutes, hours, and mixed durations', async () => {
+    const cases: Array<[string, number, string]> = [
+      ['sweep-1m', 1, '1 minute'],
+      ['sweep-90m', 90, '1h 30m'],
+      ['sweep-1h', 60, '1 hour'],
+    ];
+    for (const [agent, minutes, label] of cases) {
+      await createAgent(agent, minutes);
+      const id = await openConversation(agent, `fmt-${agent}`, `fmt-${agent}`);
+      await backdate(id, 3); // 3h idle beats every knob above
+      await runInactivitySweep();
+      const detail = await conversationDetail(id);
+      expect(detail.conversation.summary).toBe(`auto-resolved after ${label} of inactivity`);
+    }
   });
 
   test('manually resolved conversations are not re-touched by the sweep', async () => {

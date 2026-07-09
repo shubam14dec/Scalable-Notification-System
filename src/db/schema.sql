@@ -259,8 +259,19 @@ alter table agents add column if not exists system_prompt text;
 alter table agents add column if not exists llm_base_url text;
 alter table agents add column if not exists llm_credentials text; -- sealed {apiKey}
 alter table agents add column if not exists max_tokens int; -- managed reply cap (null = default)
--- Platform backstop: resolve conversations idle for N hours (null = off).
-alter table agents add column if not exists auto_resolve_hours int;
+-- Platform backstop: resolve conversations idle for N MINUTES (null = off).
+-- Was auto_resolve_hours for one release; the DO block migrates ×60.
+do $$ begin
+  if exists (select from information_schema.columns
+             where table_name = 'agents' and column_name = 'auto_resolve_hours') then
+    alter table agents add column if not exists auto_resolve_minutes int;
+    update agents set auto_resolve_minutes = auto_resolve_hours * 60
+     where auto_resolve_minutes is null and auto_resolve_hours is not null;
+    alter table agents drop column auto_resolve_hours;
+  else
+    alter table agents add column if not exists auto_resolve_minutes int;
+  end if;
+end $$;
 
 -- Channel connections: an agent's identity on an external messaging
 -- platform (v1: telegram). Credentials (bot token + the webhook secret we
