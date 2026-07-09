@@ -41,7 +41,12 @@ async function registerAgent(): Promise<string> {
     return (created.json as { signingSecret: string }).signingSecret;
   }
   if (created.status === 409) {
-    await api('PATCH', `/v1/agents/${IDENTIFIER}`, { bridgeUrl: `http://localhost:${PORT}/` });
+    // Reclaim fully: the agent may have been flipped to runtime=managed
+    // in the dashboard since the last demo run.
+    await api('PATCH', `/v1/agents/${IDENTIFIER}`, {
+      runtime: 'bridge',
+      bridgeUrl: `http://localhost:${PORT}/`,
+    });
     const rotated = await api('POST', `/v1/agents/${IDENTIFIER}/rotate-secret`);
     if (rotated.status === 200) {
       return (rotated.json as { signingSecret: string }).signingSecret;
