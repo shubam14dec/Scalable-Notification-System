@@ -233,8 +233,14 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   changes are not instant across processes.
 - **The public repo must not name the reference systems** (the OSS platform
   or the payments company) — scrubbed once already; keep it that way.
-- **Publishing**: account has 2FA-on-publish; `prepublishOnly` rebuilds;
-  scoped packages need `publishConfig.access: public` (already set).
+- **Publishing is AUTOMATED — never run npm publish manually** (Phase 8,
+  2026-07-10): token publishing is disallowed by npm package settings;
+  the only path is release.yml via OIDC trusted publishing. The habit:
+  any slice touching `packages/*` (sdk-node, agent, react) includes a
+  changeset IN THE SAME COMMIT — run `npx changeset` (interactive) or
+  write `.changeset/<name>.md` directly (frontmatter `'@asyncify-hq/x':
+  patch|minor|major`, body = the CHANGELOG sentence). Releasing = the
+  user merges the bot's Version Packages PR. Full doc: RELEASING.md.
 - **Lockfile poisoning on this Windows machine** (proven twice 2026-07-10):
   any real `npm install` here writes a package-lock that DROPS the
   cross-platform wasm-fallback entries (`@emnapi/core`/`runtime` under
