@@ -417,19 +417,19 @@ export async function sweepInactiveConversations(limit: number): Promise<SweptCo
      resolved as (
        update conversations c
           set status = 'resolved',
-              summary = 'auto-resolved after ' || s.auto_resolve_hours ||
-                        ' hours of inactivity',
+              summary = 'auto-resolved after ' || s.auto_resolve_hours || ' hour' ||
+                        case when s.auto_resolve_hours = 1 then '' else 's' end ||
+                        ' of inactivity',
               message_count = c.message_count + 1
          from stale s
         where c.id = s.id
         returning c.id, c.tenant_id, c.channel, c.subscriber_id, c.last_message_at,
-                  s.auto_resolve_hours, s.agent_identifier, s.agent_name
+                  c.summary, s.auto_resolve_hours, s.agent_identifier, s.agent_name
      ),
      crumbs as (
        insert into conversation_messages
          (conversation_id, tenant_id, role, content, dedupe_key)
-       select r.id, r.tenant_id, 'system',
-              'auto-resolved after ' || r.auto_resolve_hours || ' hours of inactivity',
+       select r.id, r.tenant_id, 'system', r.summary,
               'autoresolve-' || r.id || '-' ||
                 extract(epoch from r.last_message_at)::bigint
          from resolved r
