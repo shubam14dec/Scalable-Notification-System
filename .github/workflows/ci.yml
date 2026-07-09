@@ -80,6 +80,12 @@ jobs:
       - name: Tests
         run: npx vitest run
 
+      - name: Build @asyncify-hq/node
+        working-directory: packages/sdk-node
+        run: |
+          npm ci
+          npm run build
+
       - name: Build @asyncify-hq/agent
         working-directory: packages/agent
         run: |
