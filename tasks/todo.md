@@ -94,21 +94,34 @@ Design decisions:
   failed in Phase 5, now passing, zero faked state.
 
 **Slice 1 — backend (build → verify vs tests → commit)**
-- [ ] Schema: channel_identities + subscriber_link_tokens (+ indexes)
-- [ ] Token mint route (hash at rest, 24h TTL, single-use) returning
-      the t.me deep link (404 if agent has no telegram connection)
-- [ ] Telegram webhook: /start <token> interception → validate →
-      mapping + conversation/thread repoint + used_at + confirmation
-      message (bare /start unchanged → brain)
-- [ ] Inbound resolution: mapping lookup in telegram + email paths;
-      email auto-match writes the mapping on first hit
-- [ ] Sweep tick: purge dead link tokens (one indexed delete)
-- [ ] Tests: mint+link happy path (mapping, repointed history,
-      confirmation, token single-use), expired/reused/foreign-tenant
-      token rejected, bare /start → brain, email auto-match links,
-      linked telegram turn's trigger reaches the real subscriber's
-      email (the phantom-email regression test), unlink falls back
-- [ ] Unlink route
+- [x] Schema: channel_identities + subscriber_link_tokens (+ expiry
+      index + subscribers (tenant, email) partial index) — migrated
+- [x] Token mint route (sha256 at rest, 24h TTL, single-use, 48-hex
+      inside telegram's 64-char start-payload limit) returning the
+      t.me deep link (404 without an active telegram connection)
+- [x] Telegram webhook: /start <token> interception (shape-matched;
+      bare /start still → brain) → atomic consume (the UPDATE is the
+      lock) → mapping + tenant-wide thread repoint + in-chat
+      confirmation; invalid/expired → polite notice, silent when
+      already linked (redelivery-safe)
+- [x] Inbound resolution: resolveTelegramSubscriber (messages AND
+      button callbacks) + resolveEmailSubscriber (mapping → auto-
+      match → channel-local fallback); auto-match writes the mapping
+      + repoints on first hit
+- [x] Sweep tick: purgeDeadLinkTokens piggybacked (one indexed
+      delete, 7-day grace, no new timer)
+- [x] Unlink route + GET identities listing
+- [x] Tests (12 new, 152 total green): mint + 404s, pre-link
+      baseline (trigger recipients carry NO email — the phantom-
+      email BEFORE), handshake (mapping + repointed history +
+      confirmation), single-use (second user gets invalid notice,
+      no mapping), expired rejected, bare /start → brain, post-link
+      turns land under the real subscriber, THE REGRESSION (linked
+      telegram trigger's recipients carry ana + her real email),
+      unlink drops mapping + relink works (existing thread keeps
+      its owner — one conversation per chat, by design), email
+      auto-match links + strangers stay channel-local.
+      Learned: bridge signal txn indexes start at 1 (0 = turn note)
 **Slice 2 — dashboard + real E2E (user-driven)**
 - [ ] Surface: subscriber link action (generate + copy deep link,
       show linked identities, unlink)

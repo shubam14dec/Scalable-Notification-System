@@ -3,6 +3,7 @@ import { logger } from '../shared/logger';
 import { logExec } from '../core/execution-log';
 import { inAppPubSubChannel } from '../providers/inapp';
 import { sweepInactiveConversations } from '../db/conversations.repo';
+import { purgeDeadLinkTokens } from '../db/identities.repo';
 
 /**
  * The inactivity backstop: conversations idle past their agent's
@@ -67,5 +68,12 @@ export async function runInactivitySweep(): Promise<number> {
   }
 
   if (total > 0) logger.info({ resolved: total }, 'inactivity sweep resolved stale conversations');
+
+  // Piggybacked hygiene: expired link tokens (7-day grace) — one indexed
+  // delete, no new timer.
+  await purgeDeadLinkTokens().catch((err) =>
+    logger.warn({ err: (err as Error).message }, 'link token purge failed'),
+  );
+
   return total;
 }

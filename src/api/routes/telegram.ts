@@ -10,6 +10,13 @@ import { sealSecret, openSecret } from '../../auth/secret-box';
 import { telegram, type TelegramUpdate } from '../../channels/telegram';
 import { emailWebhookUrl } from './email-channel';
 import { upsertSubscriber } from '../../db/repositories';
+import { hashLinkToken } from './identities';
+import {
+  consumeLinkToken,
+  repointConversations,
+  resolveChannelIdentity,
+  upsertChannelIdentity,
+} from '../../db/identities.repo';
 import {
   deleteConnection,
   findMessageByTelegramId,
@@ -17,6 +24,7 @@ import {
   getAgentById,
   getConnectionById,
   getConnectionForAgent,
+  getSubscriberById,
   insertConversationMessage,
   listConnectionsForAgent,
   openConversation,
@@ -223,9 +231,15 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       const agent = await getAgentById(connection.agent_id);
       if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
 
-      const subscriber = await upsertSubscriber(connection.tenant_id, {
-        subscriberId: `tg-${message.from.id}`,
-      });
+      // A deep-link tap arrives as `/start <token>` — the linking handshake,
+      // not a conversation turn. Bare /start (or non-token payloads) falls
+      // through to the brain like any other text.
+      const startMatch = /^\/start\s+([A-Za-z0-9_-]{20,64})$/.exec(message.text.trim());
+      if (startMatch) {
+        return handleLinkStart(connection, message.chat.id, message.from.id, startMatch[1]);
+      }
+
+      const subscriber = await resolveTelegramSubscriber(connection.tenant_id, message.from.id);
       const conversation = await openConversation({
         tenantId: connection.tenant_id,
         agentId: agent.id,
@@ -264,6 +278,78 @@ export function registerTelegramRoutes(app: FastifyInstance) {
 }
 
 /**
+ * Who is this telegram user? Mapping hit → the customer's REAL subscriber
+ * (linked via deep link); miss → the channel-local `tg-<id>` row, exactly
+ * as before linking existed. One unique-index lookup on the hot path.
+ */
+async function resolveTelegramSubscriber(tenantId: string, telegramUserId: number) {
+  const linked = await resolveChannelIdentity(tenantId, 'telegram', String(telegramUserId));
+  if (linked) return linked;
+  return upsertSubscriber(tenantId, { subscriberId: `tg-${telegramUserId}` });
+}
+
+/**
+ * The `/start <token>` handshake: consume the single-use token, write the
+ * identity mapping, and repoint this chat's existing conversations so the
+ * history follows the person. Idempotency IS the token — a redelivered
+ * update or re-tapped link consumes nothing and (if already linked) stays
+ * silent instead of spamming the chat.
+ */
+async function handleLinkStart(
+  connection: AgentConnection,
+  chatId: number,
+  fromId: number,
+  token: string,
+): Promise<unknown> {
+  const botToken = credentials(connection).botToken;
+  const externalKey = String(fromId);
+  const consumed = await consumeLinkToken(hashLinkToken(token), connection.tenant_id);
+
+  if (!consumed) {
+    const already = await resolveChannelIdentity(connection.tenant_id, 'telegram', externalKey);
+    if (!already) {
+      await telegram
+        .sendMessage(botToken, chatId, 'That link is invalid or has expired — please generate a fresh one and try again.')
+        .catch((err) => logger.warn({ err: (err as Error).message }, 'link-failure notice failed'));
+    }
+    return { ok: true, linked: false };
+  }
+
+  const subscriber = await getSubscriberById(consumed.subscriber_id);
+  if (!subscriber) return { ok: true, linked: false }; // deleted since minting
+
+  await upsertChannelIdentity({
+    tenantId: connection.tenant_id,
+    channel: 'telegram',
+    externalKey,
+    subscriberId: subscriber.id,
+  });
+  const repointed = await repointConversations(
+    connection.tenant_id,
+    'telegram',
+    String(chatId),
+    subscriber.id,
+  );
+
+  await telegram
+    .sendMessage(
+      botToken,
+      chatId,
+      `Linked! This chat is now connected to your account (${subscriber.external_id}).`,
+    )
+    .catch((err) => logger.warn({ err: (err as Error).message }, 'link confirmation failed'));
+
+  logExec({
+    tenantId: connection.tenant_id,
+    transactionId: `link-${consumed.id}`,
+    level: 'info',
+    detail: `telegram identity ${externalKey} linked to subscriber ${subscriber.external_id} (${repointed} conversations repointed)`,
+  });
+
+  return { ok: true, linked: true };
+}
+
+/**
  * A button press from a Telegram inline keyboard → the same action pipeline
  * widget clicks use. Dedupe key = Telegram's callback id (redeliveries and
  * double-taps collapse); the label is recovered from the reply row the
@@ -289,9 +375,7 @@ async function handleCallback(
     .answerCallbackQuery(credentials(connection).botToken, callback.id)
     .catch((err) => logger.warn({ err: (err as Error).message }, 'answerCallbackQuery failed'));
 
-  const subscriber = await upsertSubscriber(connection.tenant_id, {
-    subscriberId: `tg-${callback.from.id}`,
-  });
+  const subscriber = await resolveTelegramSubscriber(connection.tenant_id, callback.from.id);
   const conversation = await openConversation({
     tenantId: connection.tenant_id,
     agentId: agent.id,

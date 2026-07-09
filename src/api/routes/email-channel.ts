@@ -7,7 +7,13 @@ import { logExec } from '../../core/execution-log';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { sealSecret, openSecret } from '../../auth/secret-box';
 import { parsePostmarkInbound, type PostmarkInbound } from '../../channels/email-inbound';
-import { upsertSubscriber } from '../../db/repositories';
+import { upsertSubscriber, type Subscriber } from '../../db/repositories';
+import {
+  findSubscriberByEmail,
+  repointConversations,
+  resolveChannelIdentity,
+  upsertChannelIdentity,
+} from '../../db/identities.repo';
 import {
   deleteConnection,
   getAgent,
@@ -109,10 +115,7 @@ export function registerEmailChannelRoutes(app: FastifyInstance) {
       const agent = await getAgentById(connection.agent_id);
       if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
 
-      const subscriber = await upsertSubscriber(connection.tenant_id, {
-        subscriberId: inbound.fromEmail,
-        email: inbound.fromEmail,
-      });
+      const subscriber = await resolveEmailSubscriber(connection.tenant_id, inbound.fromEmail);
       const conversation = await openConversation({
         tenantId: connection.tenant_id,
         agentId: agent.id,
@@ -149,6 +152,40 @@ export function registerEmailChannelRoutes(app: FastifyInstance) {
       return { ok: true };
     },
   );
+}
+
+/**
+ * Who is this sender? Resolution order:
+ *  1. explicit mapping (linked before) → the real subscriber
+ *  2. AUTO-MATCH: the address equals an existing real subscriber's email →
+ *     write the mapping now and repoint this thread's history. Industry-
+ *     standard (From is spoofable, but consequences are bounded: replies
+ *     go to the real mailbox owner, never the spoofer).
+ *  3. fallback: today's channel-local row keyed by the address itself.
+ */
+async function resolveEmailSubscriber(tenantId: string, fromEmail: string): Promise<Subscriber> {
+  const linked = await resolveChannelIdentity(tenantId, 'email', fromEmail);
+  if (linked) return linked;
+
+  const match = await findSubscriberByEmail(tenantId, fromEmail);
+  if (match) {
+    await upsertChannelIdentity({
+      tenantId,
+      channel: 'email',
+      externalKey: fromEmail,
+      subscriberId: match.id,
+    });
+    const repointed = await repointConversations(tenantId, 'email', fromEmail, match.id);
+    logExec({
+      tenantId,
+      transactionId: `link-email-${match.id}`,
+      level: 'info',
+      detail: `email ${fromEmail} auto-linked to subscriber ${match.external_id} (${repointed} conversations repointed)`,
+    });
+    return match;
+  }
+
+  return upsertSubscriber(tenantId, { subscriberId: fromEmail, email: fromEmail });
 }
 
 /** Rebuild the webhook URL (used by connect and the channels listing). */

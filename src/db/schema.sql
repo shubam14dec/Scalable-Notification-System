@@ -315,6 +315,40 @@ create index if not exists conversations_tenant_recent_idx
 create index if not exists conversations_active_stale_idx
   on conversations (last_message_at) where status = 'active';
 
+-- One human, many channel identities. Inbound resolution consults this
+-- mapping FIRST (one unique-index hit per message); a miss falls back to
+-- the auto-created channel-local subscriber (tg-<id> / sender-email row).
+-- Linking writes a row here — subscriber rows are never merged/deleted.
+create table if not exists channel_identities (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants(id),
+  channel       text not null,           -- telegram | email
+  external_key  text not null,           -- telegram user id / normalized email
+  subscriber_id uuid not null references subscribers(id) on delete cascade,
+  created_at    timestamptz not null default now(),
+  unique (tenant_id, channel, external_key)
+);
+
+-- Single-use deep-link tokens (t.me/<bot>?start=<token>). Stored hashed;
+-- consumed atomically; dead rows purged by the inactivity-sweep tick.
+create table if not exists subscriber_link_tokens (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants(id),
+  subscriber_id uuid not null references subscribers(id) on delete cascade,
+  channel       text not null,
+  token_hash    text not null unique,
+  expires_at    timestamptz not null,
+  used_at       timestamptz,
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists link_tokens_expiry_idx
+  on subscriber_link_tokens (expires_at);
+
+-- Email auto-match's hot path: sender address -> existing real subscriber.
+create index if not exists subscribers_tenant_email_idx
+  on subscribers (tenant_id, email) where email is not null;
+
 create table if not exists conversation_messages (
   id              uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references conversations(id) on delete cascade,
