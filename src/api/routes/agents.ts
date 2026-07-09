@@ -46,6 +46,7 @@ const AgentSchema = z
     model: z.string().min(1).max(255).optional(),
     systemPrompt: z.string().max(100_000).optional(),
     maxTokens: z.number().int().min(256).max(8192).optional(),
+    autoResolveHours: z.number().int().min(1).max(720).optional(),
     llm: LlmConfigSchema.optional(),
   })
   .refine((a) => a.runtime !== 'bridge' || Boolean(a.bridgeUrl), {
@@ -66,6 +67,8 @@ const AgentPatchSchema = z.object({
   model: z.string().min(1).max(255).optional(),
   systemPrompt: z.string().max(100_000).optional(),
   maxTokens: z.number().int().min(256).max(8192).optional(),
+  /** null switches the idle-timeout backstop off. */
+  autoResolveHours: z.number().int().min(1).max(720).nullable().optional(),
   llm: LlmConfigSchema.optional(),
 });
 
@@ -97,6 +100,7 @@ function agentView(agent: Agent) {
     systemPrompt: agent.system_prompt,
     llmBaseUrl: agent.llm_base_url,
     maxTokens: agent.max_tokens,
+    autoResolveHours: agent.auto_resolve_hours,
     hasLlmKey: Boolean(agent.llm_credentials),
     status: agent.status,
     createdAt: agent.created_at,
@@ -160,6 +164,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       model: parsed.data.model,
       systemPrompt: parsed.data.systemPrompt,
       maxTokens: parsed.data.maxTokens,
+      autoResolveHours: parsed.data.autoResolveHours,
       llmBaseUrl: parsed.data.llm?.baseUrl ?? undefined,
       sealedLlmCredentials: parsed.data.llm?.apiKey
         ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
@@ -218,6 +223,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
         model: parsed.data.model,
         systemPrompt: parsed.data.systemPrompt,
         maxTokens: parsed.data.maxTokens,
+        autoResolveHours: parsed.data.autoResolveHours,
         llmBaseUrl: parsed.data.llm === undefined ? undefined : parsed.data.llm.baseUrl,
         sealedLlmCredentials: parsed.data.llm?.apiKey
           ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))

@@ -23,6 +23,7 @@ export interface Agent {
   llm_base_url: string | null;
   llm_credentials: string | null; // sealed {apiKey} — write-only via the API
   max_tokens: number | null; // per-reply output cap (null = brain default)
+  auto_resolve_hours: number | null; // idle-timeout backstop (null = off)
   status: 'active' | 'disabled';
   created_at: string;
   updated_at: string;
@@ -69,12 +70,14 @@ export async function createAgent(a: {
   llmBaseUrl?: string;
   sealedLlmCredentials?: string;
   maxTokens?: number;
+  autoResolveHours?: number;
 }): Promise<Agent | null> {
   const { rows } = await pool.query(
     `insert into agents
        (tenant_id, identifier, name, description, runtime, bridge_url,
-        signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
+        auto_resolve_hours)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
     [
@@ -90,6 +93,7 @@ export async function createAgent(a: {
       a.llmBaseUrl ?? null,
       a.sealedLlmCredentials ?? null,
       a.maxTokens ?? null,
+      a.autoResolveHours ?? null,
     ],
   );
   return rows[0] ?? null;
@@ -130,6 +134,8 @@ export async function updateAgent(
     llmBaseUrl?: string | null;
     sealedLlmCredentials?: string;
     maxTokens?: number;
+    /** null switches the backstop OFF (0 is the wire sentinel for null). */
+    autoResolveHours?: number | null;
   },
 ): Promise<Agent | null> {
   const { rows } = await pool.query(
@@ -145,6 +151,9 @@ export async function updateAgent(
        llm_base_url    = case when $10::text = '' then null else coalesce($10, llm_base_url) end,
        llm_credentials = coalesce($11, llm_credentials),
        max_tokens      = coalesce($12, max_tokens),
+       -- 0 sentinel clears the idle timeout (bounds are 1-720)
+       auto_resolve_hours = case when $13::int = 0 then null
+                                 else coalesce($13, auto_resolve_hours) end,
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -161,6 +170,7 @@ export async function updateAgent(
       patch.llmBaseUrl === null ? '' : (patch.llmBaseUrl ?? null),
       patch.sealedLlmCredentials ?? null,
       patch.maxTokens ?? null,
+      patch.autoResolveHours === null ? 0 : (patch.autoResolveHours ?? null),
     ],
   );
   return rows[0] ?? null;
@@ -368,6 +378,71 @@ export async function resolveConversation(
      where id = $1`,
     [conversationId, summary ?? null],
   );
+}
+
+export interface SweptConversation {
+  id: string;
+  tenant_id: string;
+  channel: string;
+  auto_resolve_hours: number;
+  agent_identifier: string;
+  agent_name: string;
+  subscriber_external_id: string;
+}
+
+/**
+ * One batch of the inactivity sweep, as a SINGLE statement: find stale
+ * active conversations (agents with the backstop enabled), flip them to
+ * resolved, and write the breadcrumb — Postgres does all the work, the
+ * caller only loops. Scale shape (the 10-20M rule): the partial index on
+ * active conversations makes the scan O(matches); FOR UPDATE SKIP LOCKED
+ * lets concurrent worker replicas split batches instead of colliding; the
+ * status guard makes re-runs no-ops. The breadcrumb bumps message_count
+ * but NOT last_message_at — the row keeps its honest idle timestamp.
+ */
+export async function sweepInactiveConversations(limit: number): Promise<SweptConversation[]> {
+  const { rows } = await pool.query(
+    `with stale as (
+       select c.id, a.auto_resolve_hours, a.identifier as agent_identifier,
+              a.name as agent_name
+         from conversations c
+         join agents a on a.id = c.agent_id
+        where c.status = 'active'
+          and a.auto_resolve_hours is not null
+          and c.last_message_at < now() - make_interval(hours => a.auto_resolve_hours)
+        order by c.last_message_at
+        limit $1
+        for update of c skip locked
+     ),
+     resolved as (
+       update conversations c
+          set status = 'resolved',
+              summary = 'auto-resolved after ' || s.auto_resolve_hours ||
+                        ' hours of inactivity',
+              message_count = c.message_count + 1
+         from stale s
+        where c.id = s.id
+        returning c.id, c.tenant_id, c.channel, c.subscriber_id, c.last_message_at,
+                  s.auto_resolve_hours, s.agent_identifier, s.agent_name
+     ),
+     crumbs as (
+       insert into conversation_messages
+         (conversation_id, tenant_id, role, content, dedupe_key)
+       select r.id, r.tenant_id, 'system',
+              'auto-resolved after ' || r.auto_resolve_hours || ' hours of inactivity',
+              'autoresolve-' || r.id || '-' ||
+                extract(epoch from r.last_message_at)::bigint
+         from resolved r
+       on conflict (conversation_id, dedupe_key) do nothing
+     )
+     select r.id, r.tenant_id, r.channel, r.auto_resolve_hours,
+            r.agent_identifier, r.agent_name,
+            sub.external_id as subscriber_external_id
+       from resolved r
+       join subscribers sub on sub.id = r.subscriber_id`,
+    [limit],
+  );
+  return rows;
 }
 
 // ---- messages ----

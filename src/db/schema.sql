@@ -259,6 +259,8 @@ alter table agents add column if not exists system_prompt text;
 alter table agents add column if not exists llm_base_url text;
 alter table agents add column if not exists llm_credentials text; -- sealed {apiKey}
 alter table agents add column if not exists max_tokens int; -- managed reply cap (null = default)
+-- Platform backstop: resolve conversations idle for N hours (null = off).
+alter table agents add column if not exists auto_resolve_hours int;
 
 -- Channel connections: an agent's identity on an external messaging
 -- platform (v1: telegram). Credentials (bot token + the webhook secret we
@@ -296,6 +298,11 @@ create table if not exists conversations (
 
 create index if not exists conversations_tenant_recent_idx
   on conversations (tenant_id, last_message_at desc);
+
+-- The inactivity sweep's hot path: cost scales with the number of ACTIVE
+-- conversations (the matches), never with total table size.
+create index if not exists conversations_active_stale_idx
+  on conversations (last_message_at) where status = 'active';
 
 create table if not exists conversation_messages (
   id              uuid primary key default gen_random_uuid(),

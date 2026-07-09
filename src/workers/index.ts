@@ -23,6 +23,7 @@ import { processDelivery } from './processors/delivery.processor';
 import { processStatus } from './processors/status.processor';
 import { processOverflow } from './processors/overflow.processor';
 import { processConversation, onConversationDead } from './processors/conversation.processor';
+import { runInactivitySweep, SWEEP_INTERVAL_MS } from './inactivity-sweep';
 
 const workers: Worker[] = [];
 
@@ -113,6 +114,13 @@ function main() {
       .catch((err) => logger.warn({ err }, 'event settle sweep failed'));
   }, 30_000);
 
+  // Conversation inactivity backstop, same pattern: idle threads resolve
+  // after their agent's auto_resolve_hours. SKIP LOCKED + the status guard
+  // make concurrent replicas split batches, not duplicate them.
+  const inactivityTimer = setInterval(() => {
+    runInactivitySweep().catch((err) => logger.warn({ err }, 'inactivity sweep failed'));
+  }, SWEEP_INTERVAL_MS);
+
   // Per-process Prometheus endpoint (each worker replica exports its own).
   const metricsServer = createServer((req, res) => {
     if (req.url === '/metrics') {
@@ -154,6 +162,7 @@ function main() {
     shuttingDown = true;
     logger.info({ signal }, 'workers shutting down (finishing in-flight jobs)');
     clearInterval(settleTimer);
+    clearInterval(inactivityTimer);
     metricsServer.close();
     await Promise.all(workers.map((w) => w.close()));
     await stopLogWriter(); // final flush of buffered execution logs

@@ -39,7 +39,80 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — pick the next phase from the backlog)
+### Conversations / Agents — Phase 6: Auto-resolve on inactivity (plan pending user OK)
+
+Goal: the platform backstop for threads that trail off. An active
+conversation with no messages for N hours gets resolved by a sweep —
+no model judgment involved, works identically for both runtimes and
+all channels. (Born from the Phase 5 "Thank you" case.)
+
+Design decisions:
+- **Per-agent knob**: `agents.auto_resolve_hours` int NULLABLE —
+  NULL = feature off (default; resolution stays brain/manual only).
+  Bounds 1–720 (30 days). Accepted on create/PATCH as
+  `autoResolveHours`, exposed in agentView, numeric field in the
+  agent form (both runtimes — it's channel- and brain-agnostic).
+- **Mechanism: one global repeatable sweep** (first repeatable job in
+  the codebase): BullMQ every-5-min job registered idempotently at
+  worker startup on a new `conversation-sweep` queue.
+- **SCALE MATH (the 10–20M rule — house standard from here on)**:
+  worst case 5M conversations stale at once. A row-at-a-time sweep
+  with a 200/tick cap drains in ~87 days — rejected. Instead the
+  tick is a TIME-BUDGETED DRAIN LOOP (55s/tick) of SET-BASED batches:
+  each iteration = one `UPDATE conversations … FROM (select stale
+  batch of 5000 … FOR UPDATE SKIP LOCKED) RETURNING …` + one bulk
+  breadcrumb `INSERT … ON CONFLICT DO NOTHING` + pipelined WS
+  publishes for the returned inapp rows. 5M stale ≈ 1000 batches ≈
+  drains within 1–2 ticks; Postgres does the work, the worker only
+  orchestrates. Finding stale rows is a partial index
+  `(last_message_at) where status='active'` — cost scales with
+  MATCHES, not the 10–20M-row table. SKIP LOCKED + the status guard
+  make overlapping/racing ticks harmless.
+- **Resolution semantics**: same outcome as every other resolve —
+  status flip + summary "auto-resolved after Nh of inactivity" +
+  system breadcrumb (dedupe key `autoresolve-<convId>-<last_message_
+  at epoch>`: re-runs can't double-write) + `conversation.resolved`
+  WS event for inapp rows so an open widget flips live.
+  Reopen-on-new-message is untouched (existing behavior).
+- **Sweep is dumb on purpose**: no per-conversation scheduling, no
+  brain calls, no channel sends — a timer and a status flip. Nothing
+  in the design is per-user; everything is per-batch.
+- Why sweep > per-conversation delayed jobs: 10–20M users churning
+  messages would mean re-scheduling a delayed job on EVERY message
+  (per-user-per-event work — the red flag); one indexed query every
+  5 min is O(stale), and minute-precision is worthless for an
+  hours-scale timeout.
+
+**Slice 1 — backend (build → verify vs tests → commit)**
+- [x] Schema: agents.auto_resolve_hours + partial index on active
+      conversations (migrated)
+- [x] Routes: create/PATCH validation (int 1–720, PATCH accepts null
+      to disable via a 0 wire-sentinel in the repo), agentView
+- [x] Sweep: DEVIATION from plan — no BullMQ repeatable; followed
+      the existing settleCompletedEvents house pattern instead
+      (plain interval in the worker + idempotent set-based SQL).
+      Simpler, has precedent, same scale shape. One statement per
+      batch (CTE: lock SKIP LOCKED → resolve+summary+count → crumb
+      insert ON CONFLICT DO NOTHING → return rows w/ subscriber),
+      55s-budgeted drain loop, batch 5000, pipelined WS resolves
+      for inapp rows, exec-log per conversation. Breadcrumb bumps
+      message_count but NOT last_message_at (keeps the idle
+      timestamp honest).
+- [x] Tests (7 new, 139 total green): stale resolves w/ summary +
+      breadcrumb; fresh survives; NULL-knob agent never swept;
+      re-run no-op; manually-resolved not re-touched; reopen works;
+      knob create/PATCH/null + bounds (0, 721, -5, 1.5 → 400)
+**Slice 2 — dashboard + verification (user-driven)**
+- [ ] Agent form: "Auto-resolve after N hours of inactivity (leave
+      blank to never)" numeric field
+- [ ] Live drive in dev: set the knob on a test agent, backdate one
+      conversation's last_message_at in the dev DB (same sweep code
+      path production runs — only the clock is faked), watch the
+      sweep resolve it in the dashboard + widget within 5 min
+
+**Out of scope**: per-conversation overrides, warning message before
+closing ("are you still there?"), tenant-level default, sweeping
+resolved→archived states.
 
 ## Recently finished
 
