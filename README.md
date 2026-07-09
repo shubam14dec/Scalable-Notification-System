@@ -1,5 +1,7 @@
 # Asyncify
 
+[![CI](https://github.com/shubam14dec/Scalable-Notification-System/actions/workflows/ci.yml/badge.svg)](https://github.com/shubam14dec/Scalable-Notification-System/actions/workflows/ci.yml)
+
 Notification infrastructure — a horizontally scalable, multi-channel
 notification platform built from scratch. Design informed by the
 architecture of production notification systems operating at very large

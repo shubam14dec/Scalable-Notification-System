@@ -26,8 +26,9 @@ notes. Order within this cluster is rough — reorder freely.)
 - [ ] Landing page for asyncify.org (public face; domain currently unpointed)
 - [ ] Release automation: Changesets + GitHub Actions publish pipeline
       (fresh npm token straight into GitHub Secrets)
-- [ ] CI workflow (.github/workflows/ci.yml): typecheck + vitest + builds
-      on every push (deliberately deferred earlier)
+- [x] CI workflow (.github/workflows/ci.yml): postgres/redis/mailpit
+      services, migrate → typecheck → 152 tests → SDK + dashboard
+      builds on every push/PR; README badge. (2026-07-10)
 - [ ] Compliance gap set from email-delivery skill §5: List-Unsubscribe /
       RFC 8058 headers on P2 email, public unsubscribe endpoint, consent
       fields on subscribers, marketing footer block

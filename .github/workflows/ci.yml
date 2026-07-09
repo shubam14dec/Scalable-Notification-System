@@ -1,0 +1,98 @@
+# CI: every push and PR proves — on a clean machine — that the platform
+# typechecks, all integration tests pass against real Postgres/Redis, and
+# every artifact (dashboard + published SDKs) still builds.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: notifications
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mailpit:
+        image: axllent/mailpit
+        ports: ['1025:1025']
+
+    env:
+      # Same shape as .env.example; ClickHouse/OTEL stay off (soft-optional).
+      DATABASE_URL: postgres://postgres:postgres@localhost:5433/notifications
+      REDIS_HOST: localhost
+      REDIS_PORT: '6379'
+      SMTP_HOST: localhost
+      SMTP_PORT: '1025'
+      SMTP_FROM: ci@example.test
+      OTEL_ENABLED: 'false'
+      CLICKHOUSE_ENABLED: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            dashboard/package-lock.json
+            packages/agent/package-lock.json
+            packages/react/package-lock.json
+
+      - name: Install (root)
+        run: npm ci
+
+      - name: Migrate schema
+        run: npm run migrate
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Tests
+        run: npx vitest run
+
+      - name: Build @asyncify-hq/agent
+        working-directory: packages/agent
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build @asyncify-hq/react
+        working-directory: packages/react
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npx vite build
