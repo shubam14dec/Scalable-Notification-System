@@ -48,7 +48,10 @@ notes. Order within this cluster is rough — reorder freely.)
 click → "· clicked" row + onAction → real welcome email through
 Resend to Gmail; telegram inline keyboard tap cleared its spinner and
 answered after a webhook Re-register. Commits 8c31ed6 / bec50ee /
-13cacdb. Review: the action pipeline reused the conversation core
+13cacdb, + 65924ca keyboard-retire polish (user-verified: on tap the
+telegram message rewrites itself — keyboard dropped, choice appended
+as a check line — matching the widget's dim-after-click; first
+accepted tap only, best-effort). Review: the action pipeline reused the conversation core
 wholesale — clicks are just user rows with raw.action, so dedupe,
 transcripts, and both brains got clicks for free. Two operational
 gotchas earned: existing telegram registrations must Re-register to
