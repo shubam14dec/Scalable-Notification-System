@@ -108,6 +108,7 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
       const fullHistory = await conversationTranscriptBefore(conversationId, messageId);
       const turn = await runManagedTurn(agent, conversation, subscriber, fullHistory, message);
       reply = turn.reply ?? undefined;
+      buttons = turn.buttons;
       turnUsage = turn.usage;
       // No reply row to carry the usage? The note breadcrumb carries it.
       if (turn.note) {
@@ -151,7 +152,7 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
         role: 'agent',
         content: reply,
         dedupeKey: `reply-${messageId}`,
-        // Managed turns record their cost; bridge replies their buttons.
+        // Usage from managed turns; buttons from either runtime.
         raw:
           turnUsage || buttons
             ? { ...(turnUsage ? { usage: turnUsage } : {}), ...(buttons ? { buttons } : {}) }

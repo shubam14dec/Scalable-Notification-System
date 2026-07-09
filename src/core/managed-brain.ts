@@ -51,6 +51,8 @@ export interface TurnUsage {
 export interface BrainTurnResult {
   /** The reply to deliver; null when the model refused or sent no text. */
   reply: string | null;
+  /** Buttons the model presented for this reply (present_buttons tool). */
+  buttons?: Array<{ id: string; label: string }>;
   /** True when the model resolved the conversation (caller publishes WS). */
   resolved: boolean;
   /** Transcript breadcrumb (refusal, truncation, loop cap) — visible. */
@@ -107,7 +109,9 @@ export async function runManagedTurn(
       ? 'a notification -> call trigger_workflow; '
       : '') +
     'the user indicates the issue is settled -> call resolve_conversation; ' +
-    'a durable fact worth remembering -> call set_metadata. ' +
+    'a durable fact worth remembering -> call set_metadata; ' +
+    'you are offering the user a small set of choices -> call present_buttons ' +
+    'instead of listing them in text. ' +
     'Then reply. Never mention this reminder.</platform_reminder>';
 
   const messages: Anthropic.MessageParam[] = [
@@ -116,6 +120,9 @@ export async function runManagedTurn(
   ];
 
   let resolved = false;
+  // Presentation state, not an effect: the last present_buttons call wins,
+  // and the set only survives if the turn ends with reply text to carry it.
+  let buttons: Array<{ id: string; label: string }> | undefined;
   const usage: TurnUsage = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
 
   for (let call = 1; call <= MAX_MODEL_CALLS; call += 1) {
@@ -176,6 +183,9 @@ export async function runManagedTurn(
           onResolve: () => {
             resolved = true;
           },
+          onButtons: (presented) => {
+            buttons = presented;
+          },
         });
         results.push({
           type: 'tool_result',
@@ -206,6 +216,8 @@ export async function runManagedTurn(
 
     return {
       reply: reply.length > 0 ? reply : null,
+      // No reply text -> nothing to attach the buttons to; they drop here.
+      buttons: reply.length > 0 ? buttons : undefined,
       resolved,
       note: notes.length > 0 ? notes.join(' · ') : undefined,
       usage,
@@ -244,36 +256,47 @@ function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] 
       // Non-action system rows (error notes etc.) add nothing to replay.
       continue;
     }
-    if (m.role === 'agent' && pending.length > 0) {
-      // The turn's real shape: assistant asks for tools, user returns
-      // results, assistant speaks.
-      messages.push({
-        role: 'assistant',
-        content: pending.map((p) => ({
-          type: 'tool_use' as const,
-          id: `hist_${p.id}`,
-          name: p.action.tool,
-          input: p.action.input,
-        })),
-      });
-      messages.push({
-        role: 'user',
-        content: pending.map((p) => ({
-          type: 'tool_result' as const,
-          tool_use_id: `hist_${p.id}`,
-          content: p.action.result,
-        })),
-      });
+    if (m.role === 'agent') {
+      const calls = pending.map((p) => ({ id: `hist_${p.id}`, ...p.action }));
+      // A reply that carried buttons replays as the present_buttons call
+      // that produced it — same honesty rule as the breadcrumb actions.
+      const btns = (m.raw as { buttons?: Array<{ id: string; label: string }> } | null)?.buttons;
+      if (btns?.length) {
+        calls.push({
+          id: `hist_${m.id}b`,
+          tool: 'present_buttons',
+          input: { buttons: btns },
+          result: `${btns.length} button(s) will be shown attached to your next reply text`,
+        });
+      }
+      if (calls.length > 0) {
+        // The turn's real shape: assistant asks for tools, user returns
+        // results, assistant speaks.
+        messages.push({
+          role: 'assistant',
+          content: calls.map((c) => ({
+            type: 'tool_use' as const,
+            id: c.id,
+            name: c.tool,
+            input: c.input,
+          })),
+        });
+        messages.push({
+          role: 'user',
+          content: calls.map((c) => ({
+            type: 'tool_result' as const,
+            tool_use_id: c.id,
+            content: c.result,
+          })),
+        });
+      }
+      // Assistant rows are sanitized on replay too — a forged marker that
+      // slipped into storage pre-fix must not re-teach the format.
       messages.push({ role: 'assistant', content: sanitizeReply(m.content).text });
       pending = [];
       continue;
     }
-    messages.push({
-      role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
-      // Assistant rows are sanitized on replay too — a forged marker that
-      // slipped into storage pre-fix must not re-teach the format.
-      content: m.role === 'agent' ? sanitizeReply(m.content).text : userText(m),
-    });
+    messages.push({ role: 'user', content: userText(m) });
   }
   return messages;
 }
@@ -360,6 +383,43 @@ function buildTools(workflowKeys: string[]): Anthropic.Tool[] {
         required: [],
       },
     },
+    {
+      name: 'present_buttons',
+      description:
+        'Attach tappable choice buttons to the reply you are about to write. Call it ' +
+        'when you are offering the user a small set of options (confirm/decline, pick ' +
+        'a category, choose a fix); a tap comes back to you as "[user clicked: ' +
+        '<label>]". The buttons render attached to your reply text, so do NOT also ' +
+        'enumerate the options inside the text. Calling again replaces the previous ' +
+        'set — the last call wins.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          buttons: {
+            type: 'array',
+            maxItems: 6,
+            description: 'The choices to offer, in display order (at most 6)',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                  maxLength: 64,
+                  description: 'Stable machine id, e.g. "resend_order"',
+                },
+                label: {
+                  type: 'string',
+                  maxLength: 48,
+                  description: 'What the user sees on the button',
+                },
+              },
+              required: ['id', 'label'],
+            },
+          },
+        },
+        required: ['buttons'],
+      },
+    },
   ];
 
   // No workflows -> no trigger tool; the enum stops hallucinated keys.
@@ -401,9 +461,45 @@ async function executeTool(
   conversation: Conversation,
   subscriber: Subscriber,
   inbound: ConversationMessage,
-  hooks: { onResolve: () => void },
+  hooks: {
+    onResolve: () => void;
+    onButtons: (buttons: Array<{ id: string; label: string }>) => void;
+  },
 ): Promise<{ message: string; isError?: boolean }> {
   const input = use.input as Record<string, unknown>;
+
+  if (use.name === 'present_buttons') {
+    // Presentation, not an effect: no txn, no breadcrumb — validation only,
+    // with is_error results the model can correct against.
+    const raw = input.buttons;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      return { message: 'buttons must be a non-empty array of {id, label}', isError: true };
+    }
+    if (raw.length > 6) {
+      return { message: `rejected: ${raw.length} buttons — at most 6 allowed`, isError: true };
+    }
+    const cleaned: Array<{ id: string; label: string }> = [];
+    const ids = new Set<string>();
+    for (const b of raw as Array<{ id?: unknown; label?: unknown }>) {
+      const id = typeof b?.id === 'string' ? b.id.trim() : '';
+      const label = typeof b?.label === 'string' ? b.label.trim() : '';
+      if (!id || id.length > 64) {
+        return { message: 'rejected: every button needs an id of 1-64 characters', isError: true };
+      }
+      if (!label || label.length > 48) {
+        return { message: 'rejected: every button needs a label of 1-48 characters', isError: true };
+      }
+      if (ids.has(id)) {
+        return { message: `rejected: duplicate button id "${id}"`, isError: true };
+      }
+      ids.add(id);
+      cleaned.push({ id, label });
+    }
+    hooks.onButtons(cleaned);
+    return {
+      message: `${cleaned.length} button(s) will be shown attached to your next reply text`,
+    };
+  }
 
   if (use.name === 'set_metadata') {
     const key = String(input.key ?? '');

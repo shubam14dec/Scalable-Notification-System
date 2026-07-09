@@ -296,6 +296,7 @@ describe('the tool loop', () => {
     await runWorker(turn.conversationId, turn.messageId);
     const tools = seen.at(-1)!.body.tools!;
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'present_buttons',
       'resolve_conversation',
       'set_metadata',
       'trigger_workflow',
@@ -450,6 +451,7 @@ describe('the tool loop', () => {
     expect(wire).toContain('trigger_workflow');
     expect(wire).toContain('resolve_conversation');
     expect(wire).toContain('set_metadata');
+    expect(wire).toContain('present_buttons');
 
     // ...but the stored transcript stays clean (nothing to accumulate or
     // imitate on later turns).
@@ -565,6 +567,152 @@ describe('the tool loop', () => {
     } as Job<ConversationJobData>);
 
     const tools = seen.at(-1)!.body.tools!;
-    expect(tools.map((t) => t.name).sort()).toEqual(['resolve_conversation', 'set_metadata']);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'present_buttons',
+      'resolve_conversation',
+      'set_metadata',
+    ]);
+  });
+});
+
+describe('present_buttons', () => {
+  let conversationId = '';
+  let buttonsTurnMessageId = '';
+
+  test('presented buttons ride the reply row and surface in the transcript', async () => {
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_b1',
+          name: 'present_buttons',
+          input: { buttons: [{ id: 'resend', label: 'Resend the order' }, { id: 'human', label: 'Talk to a human' }] },
+        },
+      ]),
+      textResponse('How should we fix this?'),
+    ];
+    const turn = await sendTurn('order trouble, need choices', 'btn-1');
+    conversationId = turn.conversationId;
+    buttonsTurnMessageId = turn.messageId;
+    await runWorker(turn.conversationId, turn.messageId);
+
+    // The model was told the presentation is pending, not an is_error.
+    const round2 = seen.at(-1)!.body.messages;
+    const last = round2.at(-1) as { role: string; content: Array<{ is_error?: boolean; content: string }> };
+    expect(last.content[0].is_error).toBeUndefined();
+    expect(last.content[0].content).toContain('2 button(s)');
+
+    const t = await transcript(turn.conversationId);
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.content).toBe('How should we fix this?');
+    expect(reply.buttons).toEqual([
+      { id: 'resend', label: 'Resend the order' },
+      { id: 'human', label: 'Talk to a human' },
+    ]);
+    // Presentation is not an effect: no breadcrumb row for it.
+    const system = t.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(system.some((m: { content: string }) => m.content.includes('button'))).toBe(false);
+  });
+
+  test('a re-run of the same turn cannot duplicate the buttons reply', async () => {
+    const before = (await transcript(conversationId)).messages.length;
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_b1r',
+          name: 'present_buttons',
+          input: { buttons: [{ id: 'resend', label: 'Resend the order' }, { id: 'human', label: 'Talk to a human' }] },
+        },
+      ]),
+      textResponse('How should we fix this?'),
+    ];
+    await runWorker(conversationId, buttonsTurnMessageId);
+    expect((await transcript(conversationId)).messages.length).toBe(before);
+  });
+
+  test('replayed history shows the presentation as a REAL tool_use block', async () => {
+    const turn = await sendTurn('follow-up question', 'btn-2');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const msgs = seen.at(-1)!.body.messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; name?: string; input?: { buttons?: unknown } }>;
+    }>;
+    const useMsg = msgs.find(
+      (m) =>
+        m.role === 'assistant' &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'tool_use' && b.name === 'present_buttons'),
+    );
+    expect(useMsg).toBeDefined();
+    const block = (useMsg!.content as Array<{ type: string; name?: string; input?: { buttons?: unknown } }>).find(
+      (b) => b.name === 'present_buttons',
+    )!;
+    expect(block.input?.buttons).toEqual([
+      { id: 'resend', label: 'Resend the order' },
+      { id: 'human', label: 'Talk to a human' },
+    ]);
+  });
+
+  test('invalid sets come back as is_error and the model corrects', async () => {
+    const seven = Array.from({ length: 7 }, (_, i) => ({ id: `b${i}`, label: `Option ${i}` }));
+    stubQueue = [
+      toolUseResponse([{ id: 'toolu_b3', name: 'present_buttons', input: { buttons: seven } }]),
+      toolUseResponse([
+        { id: 'toolu_b4', name: 'present_buttons', input: { buttons: [{ id: 'a', label: 'A' }, { id: 'a', label: 'B' }] } },
+      ]),
+      textResponse('Here are your options.'),
+    ];
+    const turn = await sendTurn('lots of choices', 'btn-3');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    // Both bad rounds were rejected with is_error and the reasons.
+    const secondRound = seen.at(-2)!.body.messages.at(-1) as { content: Array<{ is_error?: boolean; content: string }> };
+    expect(secondRound.content[0].is_error).toBe(true);
+    expect(secondRound.content[0].content).toContain('at most 6');
+    const thirdRound = seen.at(-1)!.body.messages.at(-1) as { content: Array<{ is_error?: boolean; content: string }> };
+    expect(thirdRound.content[0].is_error).toBe(true);
+    expect(thirdRound.content[0].content).toContain('duplicate button id');
+
+    // Nothing invalid stuck: the reply landed with NO buttons.
+    const t = await transcript(turn.conversationId);
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.content).toBe('Here are your options.');
+    expect(reply.buttons).toBeUndefined();
+  });
+
+  test('two calls in one turn: the last set wins', async () => {
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_b5', name: 'present_buttons', input: { buttons: [{ id: 'old', label: 'Old set' }] } },
+        { id: 'toolu_b6', name: 'present_buttons', input: { buttons: [{ id: 'final', label: 'Final set' }] } },
+      ]),
+      textResponse('Pick one:'),
+    ];
+    const turn = await sendTurn('changing my mind', 'btn-4');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const t = await transcript(turn.conversationId);
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.buttons).toEqual([{ id: 'final', label: 'Final set' }]);
+  });
+
+  test('buttons without reply text are dropped, not orphaned', async () => {
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_b7', name: 'present_buttons', input: { buttons: [{ id: 'x', label: 'X' }] } },
+      ]),
+      envelope([], 'end_turn'),
+    ];
+    const before = (await transcript(conversationId)).messages.length;
+    const turn = await sendTurn('silent treatment', 'btn-5');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const t = await transcript(turn.conversationId);
+    // One new user row + the "no reply text" note; no agent row, no buttons.
+    const replies = t.messages.filter((m: { role: string }) => m.role === 'agent');
+    expect(replies.at(-1).content).not.toBe('');
+    expect(t.messages.length).toBe(before + 2);
+    const system = t.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(system.at(-1).content).toContain('no reply text');
   });
 });

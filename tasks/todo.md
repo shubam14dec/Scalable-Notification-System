@@ -73,17 +73,19 @@ Design decisions:
   whatever raw.buttons contains.
 
 **Slice 1 — backend (build → verify vs scripted stub → commit)**
-- [ ] managed-brain.ts: tool definition + loop capture (last call
+- [x] managed-brain.ts: tool definition + loop capture (last call
       wins) + validation with is_error + BrainTurnResult.buttons +
-      history reconstruction for raw.buttons assistant rows
-- [ ] conversation.processor: managed branch threads brain buttons
+      history reconstruction for raw.buttons assistant rows (works
+      for bridge-authored button rows too — a runtime flip keeps
+      honest replay)
+- [x] conversation.processor: managed branch threads brain buttons
       into the reply row raw (bridge path untouched)
-- [ ] Tests (stub scripts tool_use): buttons land on the reply row +
-      flow to the widget transcript; 7 buttons / long label /
-      duplicate ids → is_error → model corrects; tool-call-without-
-      reply-text drops buttons; two calls → last wins; replayed
-      history contains the tool_use block; re-run job → no duplicate
-      row, buttons stable
+- [x] Tests (6 new, 132 total green): buttons land on the reply row
+      + transcript; no breadcrumb (presentation ≠ effect); 7 buttons
+      / duplicate ids → is_error → model corrects, invalid set never
+      sticks; no-reply-text drops buttons; two calls → last wins;
+      replay shows a real present_buttons tool_use block; re-run →
+      no duplicate row; reminder + both tool menus name the tool
 **Slice 2 — real GLM E2E (user-driven, the battle-test)**
 - [ ] User tightens support-2's system prompt (e.g. "when a user
       reports an order issue, use present_buttons to offer
