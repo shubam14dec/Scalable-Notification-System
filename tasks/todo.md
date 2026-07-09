@@ -39,7 +39,68 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — pick the next phase from the backlog)
+### Conversations / Agents — Phase 5: present_buttons tool (plan pending user OK)
+
+Goal: managed LLM agents (GLM/Claude) can offer buttons like bridge
+agents do. Phase 4 shipped the entire pipeline (raw.buttons on the
+reply row → widget/telegram/email rendering, clicks → action events →
+"[user clicked: …]"); this adds only the LLM's send-side entry point.
+
+Design decisions:
+- **Fourth tool, presentation-only**: `present_buttons {buttons:
+  [{id, label}]}` — same limits as the bridge schema (max 6, id ≤64,
+  label ≤48). No side effects → no content-keyed txn needed (unlike
+  trigger_workflow); invalid input (too many, too long, empty,
+  duplicate ids) → `is_error` tool result so the model can correct.
+- **Buttons attach to the turn's final reply text**: the loop captures
+  the last present_buttons call (last call wins), BrainTurnResult
+  carries `buttons`, processor writes them into the reply row's
+  raw.buttons — the exact slot bridge buttons use, so every channel
+  and surface works with ZERO downstream changes. Model calls the
+  tool but produces no text → buttons dropped (nothing to attach to).
+- **Prescriptive tool description** (skill): call it when offering
+  the user a small set of choices; buttons render attached to your
+  reply; do NOT also enumerate the options in the text.
+- **Honest history replay (skill §13)**: assistant rows carrying
+  raw.buttons replay as real tool_use(present_buttons) + tool_result
+  blocks, same reconstruction as trigger/metadata/resolve — the model
+  sees the correct pattern, not bare text that happened to have
+  buttons. Click rows already render as "[user clicked: …]".
+- **Retry-safety**: reply-row dedupe (`reply-<messageId>`) already
+  makes a re-run turn idempotent; a re-run may present different
+  buttons but the first stored row wins — same doctrine as reply text.
+- No UI/schema/SDK changes anywhere — Phase 4 surfaces render
+  whatever raw.buttons contains.
+
+**Slice 1 — backend (build → verify vs scripted stub → commit)**
+- [ ] managed-brain.ts: tool definition + loop capture (last call
+      wins) + validation with is_error + BrainTurnResult.buttons +
+      history reconstruction for raw.buttons assistant rows
+- [ ] conversation.processor: managed branch threads brain buttons
+      into the reply row raw (bridge path untouched)
+- [ ] Tests (stub scripts tool_use): buttons land on the reply row +
+      flow to the widget transcript; 7 buttons / long label /
+      duplicate ids → is_error → model corrects; tool-call-without-
+      reply-text drops buttons; two calls → last wins; replayed
+      history contains the tool_use block; re-run job → no duplicate
+      row, buttons stable
+**Slice 2 — real GLM E2E (user-driven, the battle-test)**
+- [ ] User tightens support-2's system prompt (e.g. "when a user
+      reports an order issue, use present_buttons to offer
+      [Resend the order / Talk to a human], then act on their click")
+      → widget chat → GLM offers real buttons → click → GLM handles
+      "[user clicked: …]" (trigger on resend) → same from telegram
+      with keyboard + retire-on-tap
+
+**Out of scope**: multi-select/forms, per-button styles, email
+numbered-reply parsing back into actions, buttons on breadcrumbs.
+
+**Watch-list for the battle-test** (GLM priors from 3b): does it
+enumerate options in text AND call the tool (harmless, cosmetic);
+does it claim to have offered buttons without calling the tool
+(history reconstruction should prevent — it's the same failure class
+we fixed with breadcrumb replay); does it invent button ids on click
+handling (can't — clicks carry our stored ids).
 
 ## Recently finished
 
