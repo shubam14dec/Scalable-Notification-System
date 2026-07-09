@@ -48,8 +48,13 @@ notes. Order within this cluster is rough — reorder freely.)
 t.me deep link → tap → "Linked! …(maya)" in the bot chat → order
 message → button tap → trigger_workflow → confirmation email in the
 REAL Gmail, from a telegram conversation — the Phase 5 phantom-email
-failure replayed as a passing scenario, zero faked state. Commits
-36000f1 / 3232563. Review: the mapping-table design (no row merges)
+failure replayed as a passing scenario, zero faked state. Email
+auto-match ALSO live-verified same day: a mail from the user's real
+Gmail landed under maya (not an address-keyed stranger) with the
+email identity visible in the Link modal — all three channels now
+resolve to one person, each verified live (widget = born linked via
+subscriber tokens; telegram = deep link; email = auto-match).
+Commits 36000f1 / 3232563. Review: the mapping-table design (no row merges)
 kept every hot path at one unique-index lookup and made unlink
 trivial; the /start token consume-UPDATE doubles as the idempotency
 lock; history repointing means the person keeps their transcript
