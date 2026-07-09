@@ -44,6 +44,36 @@ http
 3. Send a message from the `<AgentChat />` widget (`@asyncify-hq/react`)
    or the API — your handler answers, Asyncify delivers.
 
+## Buttons & clicks
+
+Offer tappable choices with a reply; a tap comes back as an **action**
+event. The platform renders them natively per channel — widget buttons,
+Telegram inline keyboards (retired after the tap), a numbered options
+list in email:
+
+```ts
+const support = defineAgent({
+  onMessage(ctx) {
+    ctx.reply('How should we fix this?', {
+      buttons: [
+        { id: 'resend', label: 'Resend the order' },
+        { id: 'human', label: 'Talk to a human' },
+      ],
+    });
+  },
+  onAction(ctx) {
+    if (ctx.action?.id === 'resend') {
+      ctx.trigger('order-replacement');
+      return 'Done — confirmation on the way.';
+    }
+    return 'You got it — a teammate will pick this up shortly.';
+  },
+});
+```
+
+Agents without `onAction` receive clicks as plain messages — nothing
+breaks if you skip it.
+
 ## Adding an LLM
 
 `ctx.history` maps directly onto chat-completion messages:
