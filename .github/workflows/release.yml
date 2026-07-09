@@ -1,0 +1,43 @@
+# Release: Changesets + npm OIDC trusted publishing (no token anywhere).
+#
+# While changesets accumulate on main, this maintains ONE "Version Packages"
+# PR (version bumps + CHANGELOGs). Merging that PR re-runs this workflow,
+# which publishes exactly the changed packages. npm authenticates via the
+# OIDC id-token (Trusted Publisher binding per package on npmjs.com:
+# this repo + release.yml) — nothing stored, nothing to expire, and every
+# release carries a provenance badge.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency: release-${{ github.ref }}
+
+permissions:
+  contents: write        # the action pushes the version-bump branch
+  pull-requests: write   # ...and opens/updates the Version Packages PR
+  id-token: write        # npm OIDC trusted publishing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # npm >= 11.5 required for OIDC publishing
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Create Version Packages PR or publish
+        uses: changesets/action@v1
+        with:
+          publish: npx changeset publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

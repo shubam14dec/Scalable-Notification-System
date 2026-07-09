@@ -235,6 +235,17 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   or the payments company) — scrubbed once already; keep it that way.
 - **Publishing**: account has 2FA-on-publish; `prepublishOnly` rebuilds;
   scoped packages need `publishConfig.access: public` (already set).
+- **Lockfile poisoning on this Windows machine** (proven twice 2026-07-10):
+  any real `npm install` here writes a package-lock that DROPS the
+  cross-platform wasm-fallback entries (`@emnapi/core`/`runtime` under
+  `@napi-rs/wasm-runtime`) because resolution is biased by the existing
+  Windows node_modules — the lock then works locally but `npm ci` fails on
+  every fresh/Linux machine (CI caught it both times). BEFORE committing any
+  package-lock.json change: regenerate it in a CLEAN ROOM (copy package.json
+  + packages/*/package.json to a temp dir preserving layout, run
+  `npm install --package-lock-only` there, validate `npm ci --dry-run`,
+  copy the lock back) — and do this AFTER any real install, since installs
+  rewrite the lock.
 
 ## 12. Tests own Redis db 15 — never share queues with the dev fleet
 

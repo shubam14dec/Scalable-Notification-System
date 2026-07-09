@@ -46,6 +46,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@types/mjml": "^5.0.0",
     "@types/node": "^22.10.0",
     "@types/nodemailer": "^6.4.17",

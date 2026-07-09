@@ -89,16 +89,22 @@ Design decisions:
   provenance badge. No dry-runs pretending to be releases.
 
 **Slice 1 — workspaces (build → verify → commit)**
-- [ ] Root workspaces field; delete per-package lockfiles; clean-room
-      lockfile regeneration; npm ci --dry-run green
-- [ ] CI: single root install, -w builds, root cache path
-- [ ] Full suite + all builds green locally AND on CI
+- [x] Root workspaces field; per-package lockfiles deleted; clean-room
+      lockfile regeneration; npm ci --dry-run green. GOTCHA earned
+      twice and now in skill §11: any real npm install on this
+      Windows machine drops the cross-platform @emnapi entries from
+      the lock (node_modules bias) — CI caught it both times; always
+      clean-room the lock AFTER the last install, before committing
+- [x] CI: single root install, -w builds, root cache path
+- [x] Full suite (152) + all three -w builds green locally
 **Slice 2 — changesets + release workflow (build → verify → commit)**
-- [ ] @changesets/cli + init; config (independent, public, main)
-- [ ] .github/workflows/release.yml: changesets/action, id-token:
-      write, publish = npx changeset publish
-- [ ] docs: RELEASING.md (the new habit: npx changeset with each
-      package change; release = merge the bot PR)
+- [x] @changesets/cli + init; config: independent versions, access
+      public, baseBranch main
+- [x] .github/workflows/release.yml: changesets/action maintains the
+      Version Packages PR + publishes on merge; permissions contents/
+      pull-requests/id-token write; NO npm token anywhere
+- [x] RELEASING.md: the habit (npx changeset per package change),
+      release = merge the bot PR, OIDC troubleshooting + fallback
 **Slice 3 — user setup + the real release (user-driven)**
 - [ ] User: npmjs.com Trusted Publisher on all 3 packages +
       repo setting allowing Actions to create PRs
