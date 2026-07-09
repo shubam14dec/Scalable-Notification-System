@@ -151,11 +151,18 @@ export interface NotificationInboxProps extends UseNotificationsOptions {
 /* Agent chat — talk to an Asyncify agent from your app.               */
 /* ------------------------------------------------------------------ */
 
+export interface ChatButton {
+  id: string;
+  label: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'agent';
   content: string;
   createdAt: string;
+  /** Buttons offered under an agent reply; a click posts an action. */
+  buttons?: ChatButton[];
   /** True while the optimistic copy waits for the server's 202. */
   pending?: boolean;
 }
@@ -215,7 +222,7 @@ export function useAgentChat({
         const msg = JSON.parse(String(event.data)) as {
           type: string;
           conversation?: { agentIdentifier: string };
-          message?: { id: string; role: 'agent'; text: string; createdAt: string };
+          message?: { id: string; role: 'agent'; text: string; createdAt: string; buttons?: ChatButton[] };
         };
         if (msg.conversation?.agentIdentifier !== agentIdentifier) return;
         if (msg.type === 'conversation.message' && msg.message) {
@@ -224,6 +231,7 @@ export function useAgentChat({
             role: 'agent',
             content: msg.message.text,
             createdAt: msg.message.createdAt,
+            buttons: msg.message.buttons,
           };
           setMessages((prev) =>
             prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming],
@@ -272,7 +280,38 @@ export function useAgentChat({
     [apiUrl, agentIdentifier, subscriberId, headers],
   );
 
-  return { messages, status, connected, send };
+  /** A button click. Appears in the transcript as the label, like a typed reply. */
+  const sendAction = useCallback(
+    async (button: ChatButton) => {
+      const actionEventId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: actionEventId, role: 'user', content: button.label, createdAt: new Date().toISOString(), pending: true },
+      ]);
+      setStatus('active');
+      try {
+        const res = await fetch(
+          `${apiUrl}/v1/agents/${encodeURIComponent(agentIdentifier)}/actions`,
+          {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ subscriberId, actionId: button.id, label: button.label, actionEventId }),
+          },
+        );
+        if (!res.ok) throw new Error(`action failed (${res.status})`);
+        setMessages((prev) => prev.map((m) => (m.id === actionEventId ? { ...m, pending: false } : m)));
+      } catch {
+        setMessages((prev) => prev.filter((m) => m.id !== actionEventId));
+        throw new Error('action not sent — check your connection and try again');
+      }
+    },
+    [apiUrl, agentIdentifier, subscriberId, headers],
+  );
+
+  return { messages, status, connected, send, sendAction };
 }
 
 export interface AgentChatProps extends UseAgentChatOptions {
@@ -285,9 +324,10 @@ export interface AgentChatProps extends UseAgentChatOptions {
 
 export function AgentChat(props: AgentChatProps) {
   const { theme = 'dark', title = props.agentIdentifier, placeholder = 'Type a message…', height = 380 } = props;
-  const { messages, status, connected, send } = useAgentChat(props);
+  const { messages, status, connected, send, sendAction } = useAgentChat(props);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
+  const [clicking, setClicking] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const c = palettes[theme];
   const font = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -343,39 +383,77 @@ export function AgentChat(props: AgentChatProps) {
             Start the conversation — the agent answers right here.
           </p>
         ) : (
-          messages.map((m) => (
-            <div
-              key={m.id}
-              style={{
-                display: 'flex',
-                justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
-                marginBottom: 8,
-              }}
-            >
+          messages.map((m, i) => {
+            // Buttons stay clickable only while theirs is the latest turn;
+            // any newer message (a click included) retires them to context.
+            const buttonsLive =
+              m.role === 'agent' && !!m.buttons?.length && i === messages.length - 1 && !clicking;
+            return (
               <div
+                key={m.id}
                 style={{
-                  maxWidth: '80%',
-                  padding: '7px 10px',
-                  borderRadius: 10,
-                  fontSize: 13,
-                  lineHeight: 1.45,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  opacity: m.pending ? 0.6 : 1,
-                  ...(m.role === 'user'
-                    ? { background: c.badge, color: c.badgeText, borderBottomRightRadius: 3 }
-                    : {
-                        background: c.hover,
-                        color: c.text,
-                        border: `1px solid ${c.border}`,
-                        borderBottomLeftRadius: 3,
-                      }),
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  marginBottom: 8,
                 }}
               >
-                {m.content}
+                <div
+                  style={{
+                    maxWidth: '80%',
+                    padding: '7px 10px',
+                    borderRadius: 10,
+                    fontSize: 13,
+                    lineHeight: 1.45,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    opacity: m.pending ? 0.6 : 1,
+                    ...(m.role === 'user'
+                      ? { background: c.badge, color: c.badgeText, borderBottomRightRadius: 3 }
+                      : {
+                          background: c.hover,
+                          color: c.text,
+                          border: `1px solid ${c.border}`,
+                          borderBottomLeftRadius: 3,
+                        }),
+                  }}
+                >
+                  {m.content}
+                </div>
+                {m.role === 'agent' && !!m.buttons?.length && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, maxWidth: '80%' }}>
+                    {m.buttons.map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        disabled={!buttonsLive}
+                        onClick={() => {
+                          setError('');
+                          setClicking(true);
+                          sendAction(b)
+                            .catch((err) => setError((err as Error).message))
+                            .finally(() => setClicking(false));
+                        }}
+                        style={{
+                          padding: '5px 10px',
+                          borderRadius: 8,
+                          border: `1px solid ${c.border}`,
+                          background: 'transparent',
+                          color: buttonsLive ? c.text : c.text2,
+                          fontSize: 12,
+                          fontFamily: font,
+                          cursor: buttonsLive ? 'pointer' : 'default',
+                          opacity: buttonsLive ? 1 : 0.55,
+                        }}
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
-          ))
+            );
+          })
         )}
         {status === 'resolved' && (
           <p style={{ margin: '10px 0 2px', textAlign: 'center', fontSize: 11, color: c.text2 }}>

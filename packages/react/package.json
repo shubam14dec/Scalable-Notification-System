@@ -1,6 +1,6 @@
 {
   "name": "@asyncify-hq/react",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Drop-in notification inbox for Asyncify — bell, unread badge, live WebSocket updates",
   "keywords": ["notifications", "inbox", "react", "notification-center", "asyncify", "bell"],
   "homepage": "https://asyncify.org",

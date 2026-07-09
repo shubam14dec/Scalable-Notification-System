@@ -1,6 +1,6 @@
 {
   "name": "@asyncify-hq/agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent SDK for Asyncify — receive normalized conversation events from any channel, reply, and fire notification workflows mid-conversation",
   "keywords": ["agents", "ai-agents", "conversations", "chat", "notifications", "asyncify"],
   "homepage": "https://asyncify.org",

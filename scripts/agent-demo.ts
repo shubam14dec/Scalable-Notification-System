@@ -60,13 +60,18 @@ const brain = defineAgent({
 
     if (text.includes('order')) {
       ctx.metadata.set('topic', 'missing-order');
-      ctx.trigger(WORKFLOW, {
-        payload: { name: ctx.subscriber.subscriberId, company: 'Asyncify Demo' },
-      });
-      return (
-        'So sorry about that! I checked and your package is stuck in transit — ' +
-        'a replacement is on the way and a confirmation email is incoming.'
+      // Buttons: the human-in-the-loop building block. Clicks come back
+      // through onAction below (widget click or Telegram inline keyboard).
+      ctx.reply(
+        'So sorry about that! I checked and your package is stuck in transit. How should we fix this?',
+        {
+          buttons: [
+            { id: 'resend', label: 'Resend the order' },
+            { id: 'human', label: 'Talk to a human' },
+          ],
+        },
       );
+      return;
     }
     if (text.includes('thanks') || text.includes('thank you')) {
       ctx.resolve('order issue handled');
@@ -76,6 +81,21 @@ const brain = defineAgent({
       return `Hi ${ctx.subscriber.subscriberId}! I'm the support demo. Ask me about your order.`;
     }
     return 'I can help with orders — try asking "where is my order #1042?"';
+  },
+
+  async onAction(ctx) {
+    console.log(`[${IDENTIFIER}] ${ctx.subscriber.subscriberId} clicked: ${ctx.action?.id}`);
+    if (ctx.action?.id === 'resend') {
+      ctx.trigger(WORKFLOW, {
+        payload: { name: ctx.subscriber.subscriberId, company: 'Asyncify Demo' },
+      });
+      return 'Done — a replacement is on the way and a confirmation email is incoming.';
+    }
+    if (ctx.action?.id === 'human') {
+      ctx.metadata.set('escalated', 'true');
+      return 'You got it — a teammate will pick this up shortly. Anything to add meanwhile?';
+    }
+    return `Got your choice: ${ctx.message.text}`;
   },
 });
 

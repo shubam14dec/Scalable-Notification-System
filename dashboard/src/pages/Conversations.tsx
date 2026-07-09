@@ -31,6 +31,10 @@ interface TranscriptMessage {
   role: 'user' | 'agent' | 'system';
   content: string;
   createdAt: string;
+  /** Buttons the agent offered under this reply. */
+  buttons?: Array<{ id: string; label: string }>;
+  /** True when this user turn was a button click, not typed text. */
+  clicked?: boolean;
 }
 
 export default function ConversationsPage() {
@@ -211,7 +215,8 @@ export function ConversationDetailPage() {
                 >
                   <div className="max-w-[75%]">
                     <p className="mb-0.5 text-[11px] text-t3">
-                      {m.role === 'user' ? 'subscriber' : 'agent'} · {timeAgo(m.createdAt)}
+                      {m.role === 'user' ? 'subscriber' : 'agent'}
+                      {m.clicked ? ' · clicked' : ''} · {timeAgo(m.createdAt)}
                     </p>
                     <div
                       className={`whitespace-pre-wrap break-words rounded-lg border border-bd px-3 py-2 text-[13px] leading-relaxed text-t1 ${
@@ -220,6 +225,18 @@ export function ConversationDetailPage() {
                     >
                       {m.content}
                     </div>
+                    {m.role === 'agent' && !!m.buttons?.length && (
+                      <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
+                        {m.buttons.map((b) => (
+                          <span
+                            key={b.id}
+                            className="rounded-md border border-bd px-2 py-0.5 text-[11px] text-t3"
+                          >
+                            {b.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ),

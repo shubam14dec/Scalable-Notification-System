@@ -94,14 +94,19 @@ Design decisions:
       onAction + spinner ack), dedupe, malformed callback skipped,
       allowed_updates asserted (126 tests green)
 **Slice 3 — widget + dashboard + E2E (user-driven)**
-- [ ] `<AgentChat />`: render buttons, click → action POST, disable
-      after click; bump @asyncify-hq/react
-- [ ] Dashboard transcript: show buttons on agent rows + "[clicked]"
-      marker on action rows
-- [ ] Demo: scripts/agent-demo.ts gains a button flow (order issue →
-      buttons [Resend email / Talk to human]) for the E2E
+- [x] `<AgentChat />`: buttons under agent bubbles, click → optimistic
+      label bubble + POST /actions (client actionEventId dedupe);
+      buttons stay live only while theirs is the latest turn — any
+      newer message retires them. Versions bumped: react 0.2.0,
+      agent 0.2.0 (Slice 1 SDK additions ride the same release)
+- [x] Dashboard transcript: button chips under agent rows +
+      "· clicked" marker on action rows
+- [x] Demo: agent-demo order flow now offers [Resend the order /
+      Talk to a human]; onAction triggers the workflow (resend) or
+      sets escalated metadata (human)
 - [ ] E2E: widget click round-trip; telegram inline keyboard click
-      from the phone
+      from the phone (RE-REGISTER the telegram webhook first —
+      old registrations never receive callback_query)
 
 **Out of scope**: LLM-generated buttons (needs a present_buttons tool
 + schema — follow-up), email click-tracking links, multi-select/forms.
