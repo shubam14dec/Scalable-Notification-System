@@ -65,10 +65,8 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             dashboard/package-lock.json
-            packages/agent/package-lock.json
-            packages/react/package-lock.json
 
-      - name: Install (root)
+      - name: Install (root + workspaces)
         run: npm ci
 
       - name: Migrate schema
@@ -80,23 +78,11 @@ jobs:
       - name: Tests
         run: npx vitest run
 
-      - name: Build @asyncify-hq/node
-        working-directory: packages/sdk-node
+      - name: Build published SDKs (workspaces)
         run: |
-          npm ci
-          npm run build
-
-      - name: Build @asyncify-hq/agent
-        working-directory: packages/agent
-        run: |
-          npm ci
-          npm run build
-
-      - name: Build @asyncify-hq/react
-        working-directory: packages/react
-        run: |
-          npm ci
-          npm run build
+          npm run build -w packages/sdk-node
+          npm run build -w packages/agent
+          npm run build -w packages/react
 
       - name: Build dashboard
         working-directory: dashboard
