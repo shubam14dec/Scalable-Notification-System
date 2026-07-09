@@ -2,11 +2,18 @@
   "name": "@asyncify-hq/react",
   "version": "0.2.0",
   "description": "Drop-in notification inbox for Asyncify — bell, unread badge, live WebSocket updates",
-  "keywords": ["notifications", "inbox", "react", "notification-center", "asyncify", "bell"],
+  "keywords": [
+    "notifications",
+    "inbox",
+    "react",
+    "notification-center",
+    "asyncify",
+    "bell"
+  ],
   "homepage": "https://asyncify.org",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shubam14dec/Scalable-Notification-System.git",
+    "url": "git+https://github.com/shubam14dec/Scalable-Notification-System.git",
     "directory": "packages/react"
   },
   "license": "MIT",
@@ -22,7 +29,9 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "sideEffects": false,
   "publishConfig": {
     "access": "public"

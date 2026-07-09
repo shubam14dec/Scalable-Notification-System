@@ -2,11 +2,18 @@
   "name": "@asyncify-hq/agent",
   "version": "0.2.0",
   "description": "Agent SDK for Asyncify — receive normalized conversation events from any channel, reply, and fire notification workflows mid-conversation",
-  "keywords": ["agents", "ai-agents", "conversations", "chat", "notifications", "asyncify"],
+  "keywords": [
+    "agents",
+    "ai-agents",
+    "conversations",
+    "chat",
+    "notifications",
+    "asyncify"
+  ],
   "homepage": "https://asyncify.org",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shubam14dec/Scalable-Notification-System.git",
+    "url": "git+https://github.com/shubam14dec/Scalable-Notification-System.git",
     "directory": "packages/agent"
   },
   "license": "MIT",
@@ -22,7 +29,9 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "sideEffects": false,
   "publishConfig": {
     "access": "public"
