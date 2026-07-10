@@ -6,6 +6,26 @@ plans get a short review section, then move to Done.
 
 ## Backlog (next candidates, in rough value order)
 
+**From the novu gap analysis (2026-07-11, docs/NOVU-GAP-ANALYSIS.md —
+full tiered comparison lives there; these are the Tier-A picks):**
+
+- [ ] Inbox v2: action buttons (complete/revert semantics) + redirect
+      URLs + archive + snooze on NotificationInbox items (reuses the
+      Phase-4 buttons pipeline + the sweep pattern for snooze resurfacing)
+- [ ] Preferences v2: per-workflow subscriber preferences (layered
+      resolution: subscriber-workflow → subscriber-global → workflow
+      default) + end-user preference center component in the widget
+- [ ] Workflow engine v2: digestKey (group digests by payload field),
+      throttle step, delay-until-date/dynamic, cancel-trigger API
+- [ ] Slack agent channel: OAuth connect, threads → conversations,
+      Block Kit buttons, welcome message (our agent_connections +
+      thread_key model maps 1:1)
+- [ ] Agent replies: edit/delete (ReplyHandle) + typing indicator —
+      small; the prerequisite for streaming
+- [ ] Environment promotion dev→prod with dry-run diff; outbound
+      webhooks to customers (message.sent/failed/delivered/read,
+      workflow.*, preference.updated)
+
 **Agents / conversations — future phases** (continuation of the shipped
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
