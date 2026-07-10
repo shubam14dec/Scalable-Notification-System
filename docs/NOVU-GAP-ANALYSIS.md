@@ -100,6 +100,50 @@ Tiers reflect OUR goals: agents as the differentiator, sellable product,
 
 ---
 
+---
+
+# Round 2 — exhaustive pass (all 440 docs files + full codebase, 2026-07-11)
+
+Eight parallel sweeps: every docs/platform + docs/agents/framework/guides/
+api-reference page read file-by-file; apps/api, apps/worker+ws+webhook+
+inbound-mail, apps/dashboard, libs/dal + application-generic + automation +
+notifications + agent-evals, packages/framework + agent-toolkit +
+chat-adapter(+email) + stateless + novu CLI, packages/js/react/providers/
+shared. Architecture comparison in docs/ARCHITECTURE-COMPARISON.md.
+New findings beyond round 1:
+
+## New feature gaps found (additions to the matrix)
+
+| Feature | What it is | Tier |
+|---|---|---|
+| **Idempotency-Key header** | API-layer dedupe protocol: 409 on in-flight dup, 422 on same-key-different-body (body hash), 24h cached replay with `Idempotency-Replay` header. Distinct from transactionId | **A** (small; rides our Redis) |
+| **SSRF hardening on outbound URLs** | assertSafeOutboundUrl + DNS-pinned redirect re-validation on every user-supplied URL (bridge, webhooks). We currently POST to bridge URLs unguarded | **A** — security, do with next agents phase |
+| **Notification action complete/revert semantics** | Inbox buttons carry server-tracked pending→done state with revert | folds into Inbox v2 (Tier A) — adopt their semantics |
+| **Digest precision** | digestKey + backoff + cron/timed windows (subscriber-timezone), `countSummary`/`sentenceSummary` helpers ("Radek, Dima, and 5 others"), only-one-digest-per-workflow rule, digest-failure-halts rule | already Tier A — semantics now fully specified |
+| **Subscriber schedule (quiet hours)** | weekly per-day windows, 30-min increments, tz-aware, critical + inapp exempt, deferred steps can "extend to schedule" (cap 3 extensions) | Tier B (spec now complete) |
+| **Env variables in templates** | `{{ env.KEY }}` per-environment named/secret values usable in editors, conditions, HTTP steps | **B** (small, useful) |
+| **Webhook connectors** | outbound events straight into ClickHouse/Snowflake/Redshift/SQS/SNS with JS transformations | C (enterprise; note for outbound-webhooks design) |
+| **Contexts** | persistent typed `type:id` objects (≤5/trigger, 64KB data) scoping triggers/topics/subscriptions/inbox — their tenant successor | B (was "tenants"; contexts is the better-designed version to copy) |
+| **Agent cards: Select + TextInput** | beyond buttons: dropdowns and text inputs in cards, plus card links/dividers/fields | **B** — natural next step after our buttons |
+| **Tool approval via workflow (agent-toolkit)** | deferred tool calls fire a notification workflow; human approves from ANY channel; `message.interacted` webhook resumes execution with approve/edit/reject | **B** — pairs beautifully with our buttons + trigger machinery |
+| **Keyless/demo mode** | try the widget/agents with zero signup (`pk_keyless_*` localStorage identity, claim-token upgrade to real org) | C (growth feature, clever) |
+| **Data residency regions** | region-bound API keys, US/EU+ | C (deployment topic) |
+| **Rolling dual API keys** | max 2 active secret keys per env for zero-downtime rotation | **B** (small; we have 1) |
+| **AI copilot** | LangGraph dashboard agent editing workflows with checkpoint/keep/revert | C (their moat investment; ours would be premature) |
+| **add-inbox CLI scaffolder** | `npx`-style codegen detecting framework/pkg-manager, drops a wired widget | B — great DX for @asyncify-hq/react adoption |
+| **`asyncify dev` tunnel command** | their `novu dev`: managed tunnel + watchdog (sleep-drift detect) + half-open probe + auto devBridgeUrl registration — would erase our cloudflared rotation drill | **B** — our recurring pain, their solved problem |
+| **Payload schema validation on trigger** | per-workflow JSON Schema, AJV compiled + LRU-cached by schema hash, opt-in `validatePayload` | B |
+| **Provider catalog machinery** | catalog-as-data (IProviderConfig[] drives UI + typed credentials), Nx generator scaffolding new providers, canonical status enums, generic `*-webhook` escape-hatch provider per channel | B — the enabler for cheap provider breadth |
+| **Agent evals harness** | LLM-judge + deterministic graders + scripted mock-shell tapes, run in CI | B (we battle-test manually; this CI-fies it) |
+| **Streaming adaptation** | post-then-edit-on-interval where editable; buffer-and-post-once on email/WhatsApp | folds into streaming backlog item |
+| **Notification container concept** | trigger×subscriber = one "notification" row holding jobs/messages/status — cleaner billing + activity grouping than per-message | note for engine v2 |
+
+## Corrections/notes to round-1 tiers
+- **Inbound-turn queueing**: confirmed they park+replay concurrent turns; our BullMQ per-conversation jobs serialize but VERIFY ordering under concurrent sends someday.
+- **Their agents product is private beta** and Slack-first; our 3 live channels with verified linking is genuinely competitive. Their edit/delete/typing/streaming/cards-beyond-buttons remain the visible UX gaps.
+- **Environment promotion** (round-1 Tier A) is confirmed as a full diff/publish subsystem (Change entities, per-resource sync strategies, dry-run) — bigger than round 1 assumed; plan as its own phase.
+- **novu has NO circuit breakers** on providers (priority/primary + conditions only) — our failover chains + breakers are ahead; keep saying so in sales material.
+
 ## Recommended build order (Tier A distilled)
 
 1. **Inbox v2** — notification action buttons (+ redirect), archive, snooze.

@@ -26,6 +26,28 @@ full tiered comparison lives there; these are the Tier-A picks):**
       webhooks to customers (message.sent/failed/delivered/read,
       workflow.*, preference.updated)
 
+**Round-2 additions (2026-07-11 exhaustive pass — full details +
+architecture comparison in docs/NOVU-GAP-ANALYSIS.md and
+docs/ARCHITECTURE-COMPARISON.md):**
+
+- [ ] SSRF hardening on all user-supplied outbound URLs (bridge posts,
+      future webhooks): safe-URL assert + DNS-pinned redirect
+      re-validation, validate BEFORE signing (Tier A — security)
+- [ ] Idempotency-Key header protocol: 409 in-flight / 422 body-hash
+      mismatch / 24h cached replay (Tier A — small, rides Redis)
+- [ ] Agent cards v2: Select dropdowns + TextInput on top of the
+      buttons pipeline (Tier B)
+- [ ] Tool approval via workflow: deferred tool call fires a real
+      notification; human approves from any channel; webhook resumes
+      (Tier B — composes our buttons + trigger machinery)
+- [ ] `asyncify dev` CLI command: managed tunnel + sleep-drift
+      watchdog + auto PUBLIC_URL/webhook re-registration — erases the
+      cloudflared rotation drill (Tier B — our own recurring pain)
+- [ ] Rolling dual API keys per environment (Tier B — small)
+- [ ] Engine hygiene from their DAL: keyset pagination + capped
+      counts on list endpoints; mandatory column projection on hot
+      queries; cache-set TTL jitter (Tier B — adopt incrementally)
+
 **Agents / conversations — future phases** (continuation of the shipped
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
