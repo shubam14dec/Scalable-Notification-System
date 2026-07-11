@@ -241,6 +241,19 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   write `.changeset/<name>.md` directly (frontmatter `'@asyncify-hq/x':
   patch|minor|major`, body = the CHANGELOG sentence). Releasing = the
   user merges the bot's Version Packages PR. Full doc: RELEASING.md.
+- **Stopping an `npm run x` background task orphans the tsx child on
+  Windows** (proven 2026-07-12): the wrapper dies, the actual Node process
+  keeps the port → the restart crashes EADDRINUSE while health checks keep
+  answering 200 from the OLD code. Before restarting api/worker/ws, free
+  the port: `Get-NetTCPConnection -LocalPort <p> -State Listen` →
+  `Stop-Process` the owning pid.
+- **Outbound-URL SSRF guard** (Phase 9): every tenant-supplied URL our
+  servers dial must pass `src/core/safe-url.ts` — write-time
+  `assertSafeOutboundUrl` in the route + connect-time `safeDispatcher()`
+  on the fetch. New outbound surfaces (customer webhooks, future channels)
+  adopt BOTH layers; local dev exemptions go in `OUTBOUND_URL_ALLOW`
+  (.env), never code branches. Config-shaped dispatch failures throw
+  PermanentError → transcript note, no retry burn (both runtime branches).
 - **Lockfile poisoning on this Windows machine** (proven twice 2026-07-10):
   any real `npm install` here writes a package-lock that DROPS the
   cross-platform wasm-fallback entries (`@emnapi/core`/`runtime` under
@@ -249,9 +262,15 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   every fresh/Linux machine (CI caught it both times). BEFORE committing any
   package-lock.json change: regenerate it in a CLEAN ROOM (copy package.json
   + packages/*/package.json to a temp dir preserving layout, run
-  `npm install --package-lock-only` there, validate `npm ci --dry-run`,
-  copy the lock back) — and do this AFTER any real install, since installs
-  rewrite the lock.
+  `npm install --package-lock-only` there, copy the lock back) — and do
+  this AFTER any real install, since installs rewrite the lock. Two
+  corollaries proven 2026-07-12 (third incident): (1) the clean room gets
+  package.json files ONLY — copying the existing lock in carries the
+  poisoned resolution with it; the lock must be BORN in the clean room;
+  (2) `npm ci --dry-run` on this machine CANNOT catch the breakage — the
+  missing entries are wasm fallbacks only Linux asks for — so Windows
+  dry-run success proves nothing; watch the CI run after pushing any lock
+  change.
 
 ## 12. Tests own Redis db 15 — never share queues with the dev fleet
 

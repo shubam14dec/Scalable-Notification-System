@@ -30,9 +30,8 @@ full tiered comparison lives there; these are the Tier-A picks):**
 architecture comparison in docs/NOVU-GAP-ANALYSIS.md and
 docs/ARCHITECTURE-COMPARISON.md):**
 
-- [ ] SSRF hardening on all user-supplied outbound URLs (bridge posts,
-      future webhooks): safe-URL assert + DNS-pinned redirect
-      re-validation, validate BEFORE signing (Tier A — security)
+- [x] SSRF hardening on all user-supplied outbound URLs — Phase 9,
+      commit 77a4400 (2026-07-12)
 - [ ] Idempotency-Key header protocol: 409 in-flight / 422 body-hash
       mismatch / 24h cached replay (Tier A — small, rides Redis)
 - [ ] Agent cards v2: Select dropdowns + TextInput on top of the
@@ -82,7 +81,26 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Phase 9: SSRF hardening on user-supplied outbound URLs
+(nothing — next up per the agents track: Phase 10, message
+edit/delete + typing indicator)
+
+## Recently finished
+
+### Phase 9: SSRF hardening — COMPLETE
+(committed+pushed 77a4400, 2026-07-12; 191 tests green. Review: the
+guard is two layers sharing one predicate — write-time asserts with
+field-named 400s, connect-time IP pinning via a shared undici
+dispatcher hook, redirects refused on bridge posts. E2E found a real
+adjacent bug: the bridge branch burned 39s of retries on a
+PermanentError the managed branch handled gracefully — now both
+fast-fail into a transcript note within the same second. The
+allowlist keeps dev on the production code path (config, not
+branches). SMTP got write-time checks only — nodemailer owns its
+sockets; revisit if subscriber-supplied SMTP ever ships. Ops gotcha
+leddered: stopping the npm-wrapper background task orphans the tsx
+child on Windows — kill by port before restarting a worker.)
+
+### (original Phase 9 plan)
 
 Goal: a tenant can never make our servers talk to something private.
 Three surfaces accept arbitrary URLs today, validated only by zod
