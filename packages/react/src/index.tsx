@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 
 /**
  * @asyncify-hq/react — drop-in notification inbox for Asyncify.
@@ -165,6 +166,10 @@ export interface ChatMessage {
   buttons?: ChatButton[];
   /** True while the optimistic copy waits for the server's 202. */
   pending?: boolean;
+  /** Set when the message was edited; drives the "(edited)" marker. */
+  editedAt?: string | null;
+  /** Set when the message was deleted; renders a tombstone. */
+  deletedAt?: string | null;
 }
 
 export interface UseAgentChatOptions {
@@ -186,11 +191,24 @@ export function useAgentChat({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<'active' | 'resolved'>('active');
   const [connected, setConnected] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const headers = useCallback(
     () => ({ 'content-type': 'application/json', 'x-subscriber-token': token }),
     [token],
   );
+
+  const clearTyping = useCallback(() => {
+    if (typingTimer.current) {
+      clearTimeout(typingTimer.current);
+      typingTimer.current = null;
+    }
+    setTyping(false);
+  }, []);
+
+  // A live typing signal auto-expires after 15s if nothing follows it.
+  useEffect(() => () => clearTyping(), [clearTyping]);
 
   // Durable transcript over REST.
   useEffect(() => {
@@ -222,9 +240,25 @@ export function useAgentChat({
         const msg = JSON.parse(String(event.data)) as {
           type: string;
           conversation?: { agentIdentifier: string };
-          message?: { id: string; role: 'agent'; text: string; createdAt: string; buttons?: ChatButton[] };
+          message?: {
+            id: string;
+            role: 'agent';
+            text: string;
+            createdAt: string;
+            buttons?: ChatButton[];
+            editedAt?: string | null;
+            deletedAt?: string | null;
+          };
         };
         if (msg.conversation?.agentIdentifier !== agentIdentifier) return;
+        if (msg.type === 'conversation.typing') {
+          setTyping(true);
+          if (typingTimer.current) clearTimeout(typingTimer.current);
+          typingTimer.current = setTimeout(() => setTyping(false), 15_000);
+          return;
+        }
+        // Any concrete message activity retires a pending typing signal.
+        if (msg.type.startsWith('conversation.message')) clearTyping();
         if (msg.type === 'conversation.message' && msg.message) {
           const incoming: ChatMessage = {
             id: msg.message.id,
@@ -237,6 +271,18 @@ export function useAgentChat({
             prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming],
           );
           setStatus('active');
+        } else if (msg.type === 'conversation.message.updated' && msg.message) {
+          const { id, text, editedAt } = msg.message;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === id ? { ...m, content: text, editedAt: editedAt ?? null } : m)),
+          );
+        } else if (msg.type === 'conversation.message.deleted' && msg.message) {
+          const { id, deletedAt } = msg.message;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === id ? { ...m, content: '', deletedAt: deletedAt ?? null, buttons: undefined } : m,
+            ),
+          );
         } else if (msg.type === 'conversation.resolved') {
           setStatus('resolved');
         }
@@ -271,7 +317,15 @@ export function useAgentChat({
           },
         );
         if (!res.ok) throw new Error(`send failed (${res.status})`);
-        setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, pending: false } : m)));
+        // The 202 body carries the durable DB row id — adopt it so a later
+        // edit/delete targets a real row. A duplicate:true 200 has no
+        // messageId; keep the client id in that case.
+        const body = (await res.json().catch(() => ({}))) as { messageId?: string };
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, id: body.messageId ?? m.id, pending: false } : m,
+          ),
+        );
       } catch {
         setMessages((prev) => prev.filter((m) => m.id !== messageId));
         throw new Error('message not sent — check your connection and try again');
@@ -302,7 +356,13 @@ export function useAgentChat({
           },
         );
         if (!res.ok) throw new Error(`action failed (${res.status})`);
-        setMessages((prev) => prev.map((m) => (m.id === actionEventId ? { ...m, pending: false } : m)));
+        // Same id swap as send(): the 202 body's messageId is the durable row.
+        const body = (await res.json().catch(() => ({}))) as { messageId?: string };
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === actionEventId ? { ...m, id: body.messageId ?? m.id, pending: false } : m,
+          ),
+        );
       } catch {
         setMessages((prev) => prev.filter((m) => m.id !== actionEventId));
         throw new Error('action not sent — check your connection and try again');
@@ -311,7 +371,59 @@ export function useAgentChat({
     [apiUrl, agentIdentifier, subscriberId, headers],
   );
 
-  return { messages, status, connected, send, sendAction };
+  /** Edit an own message. Optimistic content swap; reverts if the PATCH fails. */
+  const editMessage = useCallback(
+    async (id: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      let previous: ChatMessage | undefined;
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== id) return m;
+          previous = m;
+          return { ...m, content: trimmed, editedAt: new Date().toISOString() };
+        }),
+      );
+      try {
+        const res = await fetch(
+          `${apiUrl}/v1/agents/${encodeURIComponent(agentIdentifier)}/messages/${encodeURIComponent(id)}`,
+          { method: 'PATCH', headers: headers(), body: JSON.stringify({ subscriberId, text: trimmed }) },
+        );
+        if (!res.ok) throw new Error(`edit failed (${res.status})`);
+      } catch {
+        if (previous) setMessages((prev) => prev.map((m) => (m.id === id ? previous! : m)));
+        throw new Error('edit not saved — check your connection and try again');
+      }
+    },
+    [apiUrl, agentIdentifier, subscriberId, headers],
+  );
+
+  /** Delete an own message. Optimistic tombstone; reverts if the DELETE fails. */
+  const deleteMessage = useCallback(
+    async (id: string) => {
+      let previous: ChatMessage | undefined;
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== id) return m;
+          previous = m;
+          return { ...m, content: '', deletedAt: new Date().toISOString(), buttons: undefined };
+        }),
+      );
+      try {
+        const res = await fetch(
+          `${apiUrl}/v1/agents/${encodeURIComponent(agentIdentifier)}/messages/${encodeURIComponent(id)}?subscriberId=${encodeURIComponent(subscriberId)}`,
+          { method: 'DELETE', headers: headers() },
+        );
+        if (!res.ok) throw new Error(`delete failed (${res.status})`);
+      } catch {
+        if (previous) setMessages((prev) => prev.map((m) => (m.id === id ? previous! : m)));
+        throw new Error('delete not saved — check your connection and try again');
+      }
+    },
+    [apiUrl, agentIdentifier, subscriberId, headers],
+  );
+
+  return { messages, status, connected, typing, send, sendAction, editMessage, deleteMessage };
 }
 
 export interface AgentChatProps extends UseAgentChatOptions {
@@ -324,17 +436,54 @@ export interface AgentChatProps extends UseAgentChatOptions {
 
 export function AgentChat(props: AgentChatProps) {
   const { theme = 'dark', title = props.agentIdentifier, placeholder = 'Type a message…', height = 380 } = props;
-  const { messages, status, connected, send, sendAction } = useAgentChat(props);
+  const { messages, status, connected, typing, send, sendAction, editMessage, deleteMessage } =
+    useAgentChat(props);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
   const [clicking, setClicking] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
   const listRef = useRef<HTMLDivElement | null>(null);
   const c = palettes[theme];
   const font = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages.length]);
+  }, [messages.length, typing]);
+
+  const beginEdit = (m: ChatMessage) => {
+    setError('');
+    setEditingId(m.id);
+    setEditDraft(m.content);
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditDraft('');
+  };
+  const saveEdit = async (id: string) => {
+    const text = editDraft;
+    setEditingId(null);
+    setEditDraft('');
+    try {
+      await editMessage(id, text);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  const removeMessage = (id: string) => {
+    setError('');
+    deleteMessage(id).catch((err) => setError((err as Error).message));
+  };
+
+  const ctrlBtn: CSSProperties = {
+    padding: 0,
+    background: 'transparent',
+    border: 'none',
+    color: c.text2,
+    fontSize: 11,
+    fontFamily: font,
+    cursor: 'pointer',
+  };
 
   const submit = async () => {
     const text = draft;
@@ -362,6 +511,7 @@ export function AgentChat(props: AgentChatProps) {
         overflow: 'hidden',
       }}
     >
+      <style>{`@keyframes asyncify-typing{0%,60%,100%{opacity:0.25}30%{opacity:1}}`}</style>
       <div
         style={{
           display: 'flex',
@@ -388,6 +538,9 @@ export function AgentChat(props: AgentChatProps) {
             // any newer message (a click included) retires them to context.
             const buttonsLive =
               m.role === 'agent' && !!m.buttons?.length && i === messages.length - 1 && !clicking;
+            const isDeleted = !!m.deletedAt;
+            const isEditing = editingId === m.id;
+            const canControl = m.role === 'user' && !m.pending && !isDeleted;
             return (
               <div
                 key={m.id}
@@ -398,62 +551,173 @@ export function AgentChat(props: AgentChatProps) {
                   marginBottom: 8,
                 }}
               >
-                <div
-                  style={{
-                    maxWidth: '80%',
-                    padding: '7px 10px',
-                    borderRadius: 10,
-                    fontSize: 13,
-                    lineHeight: 1.45,
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    opacity: m.pending ? 0.6 : 1,
-                    ...(m.role === 'user'
-                      ? { background: c.badge, color: c.badgeText, borderBottomRightRadius: 3 }
-                      : {
-                          background: c.hover,
-                          color: c.text,
-                          border: `1px solid ${c.border}`,
-                          borderBottomLeftRadius: 3,
-                        }),
-                  }}
-                >
-                  {m.content}
-                </div>
-                {m.role === 'agent' && !!m.buttons?.length && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, maxWidth: '80%' }}>
-                    {m.buttons.map((b) => (
-                      <button
-                        key={b.id}
-                        type="button"
-                        disabled={!buttonsLive}
-                        onClick={() => {
-                          setError('');
-                          setClicking(true);
-                          sendAction(b)
-                            .catch((err) => setError((err as Error).message))
-                            .finally(() => setClicking(false));
-                        }}
-                        style={{
-                          padding: '5px 10px',
-                          borderRadius: 8,
-                          border: `1px solid ${c.border}`,
-                          background: 'transparent',
-                          color: buttonsLive ? c.text : c.text2,
-                          fontSize: 12,
-                          fontFamily: font,
-                          cursor: buttonsLive ? 'pointer' : 'default',
-                          opacity: buttonsLive ? 1 : 0.55,
-                        }}
-                      >
-                        {b.label}
-                      </button>
-                    ))}
+                {isDeleted ? (
+                  <div
+                    style={{
+                      maxWidth: '80%',
+                      padding: '7px 10px',
+                      borderRadius: 10,
+                      fontSize: 13,
+                      fontStyle: 'italic',
+                      color: c.text2,
+                      background: 'transparent',
+                      border: `1px solid ${c.border}`,
+                      ...(m.role === 'user'
+                        ? { borderBottomRightRadius: 3 }
+                        : { borderBottomLeftRadius: 3 }),
+                    }}
+                  >
+                    message deleted
                   </div>
+                ) : isEditing ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '80%', alignItems: 'flex-end' }}>
+                    <input
+                      value={editDraft}
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void saveEdit(m.id);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          cancelEdit();
+                        }
+                      }}
+                      autoFocus
+                      aria-label="Edit message"
+                      style={{
+                        width: '100%',
+                        height: 30,
+                        padding: '0 10px',
+                        borderRadius: 8,
+                        border: `1px solid ${c.border}`,
+                        background: 'transparent',
+                        color: c.text,
+                        fontSize: 13,
+                        fontFamily: font,
+                        outline: 'none',
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <button type="button" style={ctrlBtn} onClick={() => void saveEdit(m.id)}>
+                        save
+                      </button>
+                      <button type="button" style={ctrlBtn} onClick={cancelEdit}>
+                        cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        maxWidth: '80%',
+                        padding: '7px 10px',
+                        borderRadius: 10,
+                        fontSize: 13,
+                        lineHeight: 1.45,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        opacity: m.pending ? 0.6 : 1,
+                        ...(m.role === 'user'
+                          ? { background: c.badge, color: c.badgeText, borderBottomRightRadius: 3 }
+                          : {
+                              background: c.hover,
+                              color: c.text,
+                              border: `1px solid ${c.border}`,
+                              borderBottomLeftRadius: 3,
+                            }),
+                      }}
+                    >
+                      {m.content}
+                    </div>
+                    {m.editedAt && (
+                      <span style={{ marginTop: 2, fontSize: 10, color: c.text2 }}>(edited)</span>
+                    )}
+                    {m.role === 'agent' && !!m.buttons?.length && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, maxWidth: '80%' }}>
+                        {m.buttons.map((b) => (
+                          <button
+                            key={b.id}
+                            type="button"
+                            disabled={!buttonsLive}
+                            onClick={() => {
+                              setError('');
+                              setClicking(true);
+                              sendAction(b)
+                                .catch((err) => setError((err as Error).message))
+                                .finally(() => setClicking(false));
+                            }}
+                            style={{
+                              padding: '5px 10px',
+                              borderRadius: 8,
+                              border: `1px solid ${c.border}`,
+                              background: 'transparent',
+                              color: buttonsLive ? c.text : c.text2,
+                              fontSize: 12,
+                              fontFamily: font,
+                              cursor: buttonsLive ? 'pointer' : 'default',
+                              opacity: buttonsLive ? 1 : 0.55,
+                            }}
+                          >
+                            {b.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {canControl && (
+                      <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+                        <button type="button" style={ctrlBtn} onClick={() => beginEdit(m)}>
+                          edit
+                        </button>
+                        <button type="button" style={ctrlBtn} onClick={() => removeMessage(m.id)}>
+                          delete
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );
           })
+        )}
+        {typing && status === 'active' && (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-start',
+              marginBottom: 8,
+            }}
+          >
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '9px 12px',
+                borderRadius: 10,
+                borderBottomLeftRadius: 3,
+                background: c.hover,
+                border: `1px solid ${c.border}`,
+              }}
+              aria-label="Agent is typing"
+            >
+              {[0, 1, 2].map((n) => (
+                <span
+                  key={n}
+                  style={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: '50%',
+                    background: c.text2,
+                    animation: 'asyncify-typing 1.2s ease-in-out infinite',
+                    animationDelay: `${n * 0.18}s`,
+                  }}
+                />
+              ))}
+            </div>
+          </div>
         )}
         {status === 'resolved' && (
           <p style={{ margin: '10px 0 2px', textAlign: 'center', fontSize: 11, color: c.text2 }}>

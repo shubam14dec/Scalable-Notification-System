@@ -138,7 +138,7 @@ function newAgentSecret(): string {
  * Inbound turns accept the widget's credential (x-subscriber-token, scoped
  * to exactly one subscriber) besides api-key/JWT — same pattern as inbox.
  */
-async function authenticateSender(
+export async function authenticateSender(
   req: FastifyRequest,
   reply: FastifyReply,
   subscriberId: string,
@@ -428,6 +428,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
             role: m.role,
             content: m.content,
             createdAt: m.created_at,
+            editedAt: m.edited_at,
+            deletedAt: m.deleted_at,
             buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
           })),
       };
@@ -501,6 +503,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
           role: m.role,
           content: m.content,
           createdAt: m.created_at,
+          editedAt: m.edited_at,
+          deletedAt: m.deleted_at,
+          deletedBy: m.deleted_by,
           usage: usageOf(m),
           buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
           clicked: Boolean((m.raw as { action?: unknown } | null)?.action),

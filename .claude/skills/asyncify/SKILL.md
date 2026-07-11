@@ -247,6 +247,15 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   answering 200 from the OLD code. Before restarting api/worker/ws, free
   the port: `Get-NetTCPConnection -LocalPort <p> -State Listen` →
   `Stop-Process` the owning pid.
+- **Optimistic UI rows must adopt the server's durable id** (proven in
+  Phase 10 E2E, 2026-07-12): the widget kept its client-generated uuid
+  after the 202, so PATCH/DELETE on a freshly-sent message 404'd
+  ("unknown message") — the client id is only a dedupe key, never a row
+  id. Any optimistic insert whose row can later be addressed (edit,
+  delete, react) must swap in the server id from the accept response.
+  Corollary for record-only edits: pre-edit agent replies keep stale
+  facts; operators purge a fact by deleting the reply that CONTAINS it,
+  not the reply that repeats it.
 - **Outbound-URL SSRF guard** (Phase 9): every tenant-supplied URL our
   servers dial must pass `src/core/safe-url.ts` — write-time
   `assertSafeOutboundUrl` in the route + connect-time `safeDispatcher()`

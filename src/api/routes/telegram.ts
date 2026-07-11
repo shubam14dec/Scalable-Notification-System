@@ -19,6 +19,8 @@ import {
 } from '../../db/identities.repo';
 import {
   deleteConnection,
+  editConversationMessage,
+  findConversationByThread,
   findMessageByTelegramId,
   getAgent,
   getAgentById,
@@ -213,6 +215,11 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       // Inline-keyboard clicks arrive as callback_query, not message.
       if (update?.callback_query) {
         return handleCallback(connection, update.callback_query);
+      }
+
+      // A user editing a message they already sent arrives as edited_message.
+      if (update?.edited_message) {
+        return handleEditedMessage(connection, update.edited_message);
       }
 
       const message = update?.message;
@@ -430,4 +437,42 @@ async function handleCallback(
   });
 
   return { ok: true };
+}
+
+/**
+ * A user edited a message they already sent (telegram re-pushes it as
+ * edited_message). We update the stored row IN PLACE so the transcript stays
+ * honest — but an edit is NOT a new turn: no WS publish, no enqueue, no brain
+ * re-dispatch. Guards mirror the message branch exactly; every skip acks so
+ * Telegram stops re-delivering.
+ */
+async function handleEditedMessage(
+  connection: AgentConnection,
+  edited: NonNullable<TelegramUpdate['edited_message']>,
+): Promise<unknown> {
+  if (
+    !edited.text ||
+    !edited.from ||
+    edited.from.is_bot ||
+    edited.chat.type !== 'private' ||
+    connection.status !== 'active'
+  ) {
+    return { ok: true, skipped: true };
+  }
+  const agent = await getAgentById(connection.agent_id);
+  if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
+
+  await resolveTelegramSubscriber(connection.tenant_id, edited.from.id);
+  // An edit must never CREATE a conversation — findConversationByThread, not
+  // openConversation. No thread yet means there is nothing to edit.
+  const conversation = await findConversationByThread(agent.id, 'telegram', String(edited.chat.id));
+  if (!conversation) return { ok: true, skipped: true };
+
+  // Only the user's own live rows are editable; agent/system rows and
+  // tombstones are left untouched.
+  const row = await findMessageByTelegramId(conversation.id, edited.message_id);
+  if (!row || row.role !== 'user' || row.deleted_at) return { ok: true, skipped: true };
+
+  await editConversationMessage(row.id, connection.tenant_id, edited.text);
+  return { ok: true, edited: true };
 }

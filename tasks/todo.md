@@ -81,8 +81,66 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — next up per the agents track: Phase 10, message
-edit/delete + typing indicator)
+(nothing — next up per the agents track: Phase 11, send-agent-reply
+API + onResolve callback)
+
+## Recently finished
+
+### Conversations / Agents — Phase 10: edit/delete + typing — COMPLETE
+(user-verified 2026-07-12 on widget AND real Telegram: widget inline
+edit/(edited)/tombstones/typing dots all clean; Telegram typing shown,
+in-app edit of a TG message landed with the edited marker, operator
+delete vanished the bot reply from the real TG chat within seconds.
+Review: first phase run under the CLAUDE.md delegation rules — 2 Opus
+backend slices + 1 Opus UI slice + 1 Sonnet test slice, all audited
+against the plan; one E2E-found bug (widget kept its optimistic client
+id after the 202, so PATCH/DELETE 404'd on fresh messages) went back
+to the SAME agent per the revision gate and passed on first retry —
+fix: send()/sendAction() adopt the server's durable messageId from the
+202 body. The 22:07 telegram session became an accidental semantics
+demo: record-only edit means pre-edit agent replies keep the stale
+order number (the model then reconciles both, groundedly) — deleting
+the agent's FIRST reply, not just the later one, is how an operator
+purges a stale fact from history. 207 tests, 3x no-flake.)
+
+### (original Phase 10 plan)
+(plan approved 2026-07-12; full plan in
+`~/.claude/plans/tranquil-swimming-acorn.md`. Semantics: edit =
+record-only; delete = soft tombstone, user own-messages + operator
+any-row; typing = platform-emitted, client 15s TTL, no stop event.
+Delegated implementation per CLAUDE.md handoff rules; manager reviews
+each slice.)
+
+- [x] 1. Migration: edited_at/deleted_at/deleted_by on
+      conversation_messages + ConversationMessage type; migrate + verify
+      (Opus slice 1, audited; 191 tests green)
+- [x] 2. Repo: editConversationMessage + softDeleteConversationMessage;
+      deleted_at filter in conversationHistoryBefore (SQL)
+- [x] 3. Brain safety: buildHistory deleted-row rule (agent row → clear
+      pending breadcrumbs); processConversation deleted-inbound guard
+- [x] 4. Extract publishConversationEvent → src/core/conversation-events.ts
+      (pure move, tests stay green)
+- [x] 5. Telegram client: sendChatAction + deleteMessage +
+      edited_message in allowed_updates + shared TelegramMessage type
+      (Opus slice 2, audited; 191 tests still green)
+- [x] 6. Routes: new conversation-messages.ts (PATCH + user DELETE +
+      operator DELETE), authenticateSender export, GET mappings grow
+      editedAt/deletedAt/deletedBy
+- [x] 7. Telegram outbound-delete propagation (48h guard, best-effort)
+- [x] 8. Typing: typingEmitter in processor + onModelCall hook in
+      runManagedTurn; turn-start + per-model-call emission
+- [x] 9. Inbound edited_message handler in routes/telegram.ts
+- [x] 10. Tests: conversation-messages.test.ts (new) + telegram/
+      managed-brain additions; npm test + tsc green (Sonnet slice,
+      audited + re-run by manager: 207 tests, 3x no-flake)
+- [x] 11. Widget: ChatMessage fields, WS branches (typing/updated/
+      deleted), edit/delete UI, typing bubble; react changeset SAME commit
+      (Opus UI slice, audited; react tsup + dashboard tsc/vite green)
+- [x] 12. Dashboard: tombstone + edited marker + operator two-step delete
+- [x] 13. Manual E2E: InboxPreview + real Telegram (Re-register first);
+      TG no-deletion-updates limitation documented in the plan + here:
+      user-side TG deletes are never reported to bots, transcript keeps them
+- [x] 14. Review section above; single verified commit; push; memory update
 
 ## Recently finished
 

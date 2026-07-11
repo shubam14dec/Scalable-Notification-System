@@ -1,17 +1,16 @@
 import type { Job } from 'bullmq';
 import { z } from 'zod';
 import { logger } from '../../shared/logger';
-import { redis } from '../../shared/redis';
 import { PRIORITIES } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
 import { internalTrigger } from '../../core/internal-trigger';
 import { signWebhook } from '../../api/webhook-signature';
 import { openSecret } from '../../auth/secret-box';
-import { inAppPubSubChannel } from '../../providers/inapp';
 import { telegram } from '../../channels/telegram';
 import { sendWithFailover } from '../../providers/registry';
 import { isSuppressed } from '../../db/repositories';
 import { runManagedTurn, type TurnUsage } from '../../core/managed-brain';
+import { publishConversationEvent } from '../../core/conversation-events';
 import { PermanentError } from '../../shared/errors';
 import { fetch as safeFetch } from 'undici';
 import {
@@ -97,8 +96,15 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
     logger.info({ agent: agent.identifier }, 'agent disabled, skipping dispatch');
     return;
   }
+  // A message soft-deleted before we processed it gets no reply.
+  if (message.deleted_at) return;
 
   const history = await conversationHistoryBefore(conversationId, messageId);
+
+  // Turn-start "composing" pulse for both runtimes; the managed branch pulses
+  // again on each model call via the onModelCall hook.
+  const emitTyping = typingEmitter(conversation, subscriber.external_id, agent);
+  emitTyping();
 
   // The brain branch: who answers this turn. Everything after (reply row,
   // channel delivery, signals, breadcrumbs) is identical for both runtimes.
@@ -112,7 +118,9 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
       // Richer history (incl. tool-action breadcrumbs) — the brain folds
       // them in so past tool-backed replies don't look like bare claims.
       const fullHistory = await conversationTranscriptBefore(conversationId, messageId);
-      const turn = await runManagedTurn(agent, conversation, subscriber, fullHistory, message);
+      const turn = await runManagedTurn(agent, conversation, subscriber, fullHistory, message, {
+        onModelCall: emitTyping,
+      });
       reply = turn.reply ?? undefined;
       buttons = turn.buttons;
       turnUsage = turn.usage;
@@ -354,6 +362,43 @@ async function applySignals(
 }
 
 /**
+ * Fire-and-forget "agent is composing" pulse. Never awaited on the hot path,
+ * never fails the turn. inapp -> pub/sub; telegram -> sendChatAction; email
+ * -> no-op. Returns an `emitTyping` closure the caller pulses per model call.
+ */
+function typingEmitter(
+  conversation: Conversation,
+  subscriberExternalId: string,
+  agent: Agent,
+): () => void {
+  if (conversation.channel === 'inapp') {
+    return () => {
+      void publishConversationEvent(conversation, subscriberExternalId, agent, {
+        type: 'conversation.typing',
+      }).catch(() => {});
+    };
+  }
+  if (conversation.channel === 'telegram') {
+    // Load + unseal the bot creds once, on first pulse; every later call
+    // reuses the memoized promise (a rejection just makes each pulse a no-op).
+    let creds: Promise<{ botToken: string } | null> | undefined;
+    return () => {
+      if (!creds) {
+        creds = getConnectionForAgent(conversation.agent_id, 'telegram').then((connection) =>
+          connection && connection.status === 'active'
+            ? (JSON.parse(openSecret(connection.credentials)) as { botToken: string })
+            : null,
+        );
+      }
+      void creds
+        .then((c) => c && telegram.sendChatAction(c.botToken, conversation.thread_key))
+        .catch(() => {});
+    };
+  }
+  return () => {};
+}
+
+/**
  * Channel-aware reply delivery. in-app: publish on the subscriber's WS
  * pub/sub channel (the row is already the durable inbox copy). telegram:
  * sendMessage via the connection's bot, recording the telegram message id
@@ -475,26 +520,6 @@ async function systemNote(
     dedupeKey: `signal-${messageId}-${signalIndex}`,
     raw,
   });
-}
-
-/** Live push over the same per-subscriber channel the inbox already uses. */
-async function publishConversationEvent(
-  conversation: Conversation,
-  subscriberExternalId: string,
-  agent: Agent,
-  event: Record<string, unknown>,
-): Promise<void> {
-  await redis.publish(
-    inAppPubSubChannel(conversation.tenant_id, subscriberExternalId),
-    JSON.stringify({
-      ...event,
-      conversation: {
-        id: conversation.id,
-        agentIdentifier: agent.identifier,
-        agentName: agent.name,
-      },
-    }),
-  );
 }
 
 /** DLQ hook: retries exhausted — leave the failure visible in the transcript. */

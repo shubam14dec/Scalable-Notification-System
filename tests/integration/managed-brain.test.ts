@@ -19,6 +19,7 @@ import {
   processConversation,
   type ConversationJobData,
 } from '../../src/workers/processors/conversation.processor';
+import { softDeleteConversationMessage } from '../../src/db/conversations.repo';
 
 let app: FastifyInstance;
 let apiKey = '';
@@ -714,5 +715,77 @@ describe('present_buttons', () => {
     expect(t.messages.length).toBe(before + 2);
     const system = t.messages.filter((m: { role: string }) => m.role === 'system');
     expect(system.at(-1).content).toContain('no reply text');
+  });
+});
+
+describe('deleted breadcrumb pairing', () => {
+  test('a soft-deleted agent reply drops its tool_use/tool_result pairing and text from replayed history', async () => {
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_del1', name: 'trigger_workflow', input: { workflowKey: 'brain-wf', payload: { name: 'Del' } } },
+      ]),
+      textResponse('Replacement is on its way for the deleted-breadcrumb test!'),
+    ];
+    const turn = await sendTurn('order trouble for deletion test', 'del-brain-1');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const t = await transcript(turn.conversationId);
+    const breadcrumb = t.messages.findLast(
+      (m: { role: string; content: string }) =>
+        m.role === 'system' && m.content.includes('triggered workflow brain-wf'),
+    );
+    expect(breadcrumb).toBeDefined();
+    const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(reply.content).toBe('Replacement is on its way for the deleted-breadcrumb test!');
+
+    // Soft-delete the agent reply row directly — no dashboard route exercise
+    // needed here, this test is about replay, not the delete endpoint.
+    await softDeleteConversationMessage(reply.id, tenantId, 'operator');
+
+    // Drive the NEXT turn: buildHistory must skip the deleted agent row AND
+    // drop the breadcrumb pending in front of it (same doctrine as an
+    // in-flight tool action whose reply never landed).
+    const next = await sendTurn('any update on that order?', 'del-brain-2');
+    await runWorker(next.conversationId, next.messageId);
+
+    const wireMessages = seen.at(-1)!.body.messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; input?: { payload?: { name?: string } }; content?: string }>;
+    }>;
+
+    // No trace of the deleted reply's text anywhere in replayed history.
+    const hasReplyText = wireMessages.some(
+      (m) =>
+        typeof m.content === 'string' &&
+        m.content.includes('Replacement is on its way for the deleted-breadcrumb test'),
+    );
+    expect(hasReplyText).toBe(false);
+
+    // No trace of the tool_use call that produced it (unique payload marks it).
+    const hasToolUseBlock = wireMessages.some(
+      (m) =>
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'tool_use' && b.input?.payload?.name === 'Del'),
+    );
+    expect(hasToolUseBlock).toBe(false);
+
+    // No trace of the matching tool_result either — this turn's transactionId
+    // is a unique fingerprint, so this can't false-positive on earlier
+    // (non-deleted, legitimately still-replayed) trigger_workflow breadcrumbs.
+    const forbiddenTxnMarker = `conv-${turn.messageId}-brain-wf`;
+    const hasToolResultBlock = wireMessages.some(
+      (m) =>
+        Array.isArray(m.content) &&
+        m.content.some(
+          (b) => b.type === 'tool_result' && typeof b.content === 'string' && b.content.includes(forbiddenTxnMarker),
+        ),
+    );
+    expect(hasToolResultBlock).toBe(false);
+
+    // The stub still accepted the request and answered normally — the
+    // history reconstruction stayed structurally valid Anthropic messages.
+    const t2 = await transcript(next.conversationId);
+    const finalReply = t2.messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(finalReply.content).toBe('echo(any update on that order?)');
   });
 });

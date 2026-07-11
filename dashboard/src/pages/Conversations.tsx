@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
@@ -35,6 +36,12 @@ interface TranscriptMessage {
   buttons?: Array<{ id: string; label: string }>;
   /** True when this user turn was a button click, not typed text. */
   clicked?: boolean;
+  /** Set when the message was edited; drives the "· edited" byline marker. */
+  editedAt?: string | null;
+  /** Set when the message was deleted; renders a tombstone. */
+  deletedAt?: string | null;
+  /** Who deleted the message — named in the tombstone. */
+  deletedBy?: 'user' | 'operator' | null;
 }
 
 export default function ConversationsPage() {
@@ -179,6 +186,26 @@ export function ConversationDetailPage() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['conversation', id] }),
   });
 
+  // Two-step inline confirm for operator message deletion.
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteMessage = useMutation({
+    mutationFn: (messageId: string) =>
+      api(`/v1/conversations/${id}/messages/${messageId}`, { method: 'DELETE' }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['conversation', id] }),
+  });
+  const onDeleteClick = (messageId: string) => {
+    if (confirmingId === messageId) {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      setConfirmingId(null);
+      deleteMessage.mutate(messageId);
+      return;
+    }
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirmingId(messageId);
+    confirmTimer.current = setTimeout(() => setConfirmingId(null), 3_000);
+  };
+
   const metadataEntries = Object.entries(data?.conversation.metadata ?? {});
 
   return (
@@ -214,18 +241,37 @@ export function ConversationDetailPage() {
                   className={`mb-3 flex ${m.role === 'user' ? 'justify-start' : 'justify-end'}`}
                 >
                   <div className="max-w-[75%]">
-                    <p className="mb-0.5 text-[11px] text-t3">
-                      {m.role === 'user' ? 'subscriber' : 'agent'}
-                      {m.clicked ? ' · clicked' : ''} · {timeAgo(m.createdAt)}
+                    <p className="mb-0.5 flex items-center gap-1.5 text-[11px] text-t3">
+                      <span>
+                        {m.role === 'user' ? 'subscriber' : 'agent'}
+                        {m.clicked ? ' · clicked' : ''} · {timeAgo(m.createdAt)}
+                        {m.editedAt && !m.deletedAt ? ` · edited ${timeAgo(m.editedAt)}` : ''}
+                      </span>
+                      {!m.deletedAt && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteClick(m.id)}
+                          disabled={deleteMessage.isPending}
+                          className="text-t3 transition-colors hover:text-t1"
+                        >
+                          {confirmingId === m.id ? 'confirm?' : 'delete'}
+                        </button>
+                      )}
                     </p>
-                    <div
-                      className={`whitespace-pre-wrap break-words rounded-lg border border-bd px-3 py-2 text-[13px] leading-relaxed text-t1 ${
-                        m.role === 'agent' ? 'bg-elevated' : 'bg-transparent'
-                      }`}
-                    >
-                      {m.content}
-                    </div>
-                    {m.role === 'agent' && !!m.buttons?.length && (
+                    {m.deletedAt ? (
+                      <div className="rounded-lg border border-bd bg-transparent px-3 py-2 text-[13px] italic leading-relaxed text-t3">
+                        message deleted by {m.deletedBy ?? 'operator'}
+                      </div>
+                    ) : (
+                      <div
+                        className={`whitespace-pre-wrap break-words rounded-lg border border-bd px-3 py-2 text-[13px] leading-relaxed text-t1 ${
+                          m.role === 'agent' ? 'bg-elevated' : 'bg-transparent'
+                        }`}
+                      >
+                        {m.content}
+                      </div>
+                    )}
+                    {!m.deletedAt && m.role === 'agent' && !!m.buttons?.length && (
                       <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
                         {m.buttons.map((b) => (
                           <span

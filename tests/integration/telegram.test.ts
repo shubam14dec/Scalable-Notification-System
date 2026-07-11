@@ -56,6 +56,7 @@ function startTelegramStub(): Promise<void> {
         sendMessage: { message_id: method === 'sendMessage' ? ++messageIdSeq : 0 },
         answerCallbackQuery: true,
         editMessageText: true,
+        deleteMessage: true,
       };
       tgCalls.push({ method, body, result: results[method] });
       if (method === 'setWebhook') webhookSecretSeen = String(body.secret_token ?? '');
@@ -99,6 +100,20 @@ function tgUpdate(updateId: number, text: string, userId = 555001) {
     message: {
       message_id: updateId * 10,
       date: 1_700_000_000,
+      text,
+      from: { id: userId, is_bot: false, first_name: 'Ana', username: 'ana_tg' },
+      chat: { id: userId, type: 'private' },
+    },
+  };
+}
+
+/** Telegram re-pushes an edited message as `edited_message`, same shape as `message`. */
+function tgEditedUpdate(updateId: number, messageId: number, text: string, userId = 555001) {
+  return {
+    update_id: updateId,
+    edited_message: {
+      message_id: messageId,
+      date: 1_700_000_100,
       text,
       from: { id: userId, is_bot: false, first_name: 'Ana', username: 'ana_tg' },
       chat: { id: userId, type: 'private' },
@@ -168,7 +183,7 @@ describe('connect flow', () => {
     const setWebhook = tgCalls.find((c) => c.method === 'setWebhook');
     expect(setWebhook?.body.url).toBe(`http://localhost:3000/webhooks/telegram/${connectionId}`);
     // Without callback_query here, inline-keyboard clicks are never delivered.
-    expect(setWebhook?.body.allowed_updates).toEqual(['message', 'callback_query']);
+    expect(setWebhook?.body.allowed_updates).toEqual(['message', 'callback_query', 'edited_message']);
     expect(webhookSecretSeen).toMatch(/^[0-9a-f]{48}$/);
   });
 
@@ -364,6 +379,183 @@ describe('inline keyboards', () => {
       callback_query: { id: 'cbq-2', from: { id: 555001, is_bot: false } },
     });
     expect(json(res).skipped).toBe(true);
+  });
+});
+
+describe('inbound edited_message', () => {
+  test('an edited_message update rewrites the stored row content and sets edited_at', async () => {
+    const original = await postUpdate(tgUpdate(500, 'please edit me'));
+    expect(original.statusCode).toBe(200);
+
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    const conv = json(list).conversations[0];
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const row = json(detail).messages.find((m: { content: string }) => m.content === 'please edit me');
+    expect(row).toBeDefined();
+    expect(row.editedAt).toBeFalsy();
+
+    const editRes = await postUpdate(tgEditedUpdate(501, 500 * 10, 'edited: please edit me'));
+    expect(editRes.statusCode).toBe(200);
+    expect(json(editRes).edited).toBe(true);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const updatedRow = json(after).messages.find((m: { id: string }) => m.id === row.id);
+    expect(updatedRow.content).toBe('edited: please edit me');
+    expect(updatedRow.editedAt).toBeTruthy();
+  });
+
+  test('edited_message for an unknown chat is acked without creating a conversation', async () => {
+    const before = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    const countBefore = json(before).conversations.length;
+
+    const res = await postUpdate(tgEditedUpdate(502, 99999, 'nobody home', 999999999));
+    expect(res.statusCode).toBe(200);
+    expect(json(res).ok).toBe(true);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(json(after).conversations.length).toBe(countBefore);
+  });
+});
+
+describe('operator delete (telegram)', () => {
+  async function processLastUserTurn(convId: string) {
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${convId}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const turn = json(detail).messages.findLast((m: { role: string }) => m.role === 'user');
+    const data: ConversationJobData = { tenantId, conversationId: convId, messageId: turn.id };
+    await processConversation({ data } as Job<ConversationJobData>);
+    return turn;
+  }
+
+  test('deleting a telegram agent reply calls Bot API deleteMessage with matching chat/message ids', async () => {
+    const sendsBefore = sends().length;
+    await postUpdate(tgUpdate(700, 'need help with my order please'));
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    const conv = json(list).conversations[0];
+    await processLastUserTurn(conv.id);
+    expect(sends().length).toBe(sendsBefore + 1);
+    const newSend = sends().at(-1)!;
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const replyRow = json(detail).messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(replyRow).toBeDefined();
+
+    const deleteCallsBefore = tgCalls.filter((c) => c.method === 'deleteMessage').length;
+    const del = await app.inject({
+      method: 'DELETE',
+      url: `/v1/conversations/${conv.id}/messages/${replyRow.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(del.statusCode).toBe(200);
+    expect(json(del).deleted).toBe(true);
+
+    const deleteCalls = tgCalls.filter((c) => c.method === 'deleteMessage');
+    expect(deleteCalls.length).toBe(deleteCallsBefore + 1);
+    const lastDelete = deleteCalls.at(-1)!;
+    expect(lastDelete.body.chat_id).toBe('555001');
+    expect(lastDelete.body.message_id).toBe((newSend.result as { message_id: number }).message_id);
+  });
+
+  test('a reply older than the 48h delete window is tombstoned but not deleted from telegram', async () => {
+    await postUpdate(tgUpdate(701, 'another order question please'));
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    const conv = json(list).conversations[0];
+    await processLastUserTurn(conv.id);
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const replyRow = json(detail).messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(replyRow).toBeDefined();
+
+    // Backdate past the 48h delete window (direct SQL — no route exists for this).
+    await pool.query(
+      `update conversation_messages set created_at = now() - interval '49 hours' where id = $1`,
+      [replyRow.id],
+    );
+
+    const deleteCallsBefore = tgCalls.filter((c) => c.method === 'deleteMessage').length;
+    const del = await app.inject({
+      method: 'DELETE',
+      url: `/v1/conversations/${conv.id}/messages/${replyRow.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    expect(del.statusCode).toBe(200);
+    expect(json(del).deleted).toBe(true);
+
+    // Tombstone written, but the >48h window means no Bot API call was made.
+    expect(tgCalls.filter((c) => c.method === 'deleteMessage').length).toBe(deleteCallsBefore);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const tombstoned = json(after).messages.find((m: { id: string }) => m.id === replyRow.id);
+    expect(tombstoned.content).toBe('');
+    expect(tombstoned.deletedBy).toBe('operator');
+  });
+});
+
+describe('typing indicator (telegram)', () => {
+  test('processing a telegram turn calls sendChatAction', async () => {
+    const callsBefore = tgCalls.filter((c) => c.method === 'sendChatAction').length;
+    await postUpdate(tgUpdate(800, 'just checking in on my order'));
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/conversations?agent=tg-support',
+      headers: { 'x-api-key': apiKey },
+    });
+    const conv = json(list).conversations[0];
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/conversations/${conv.id}`,
+      headers: { 'x-api-key': apiKey },
+    });
+    const turn = json(detail).messages.findLast((m: { role: string }) => m.role === 'user');
+    const data: ConversationJobData = { tenantId, conversationId: conv.id, messageId: turn.id };
+    await processConversation({ data } as Job<ConversationJobData>);
+
+    const chatActionCalls = tgCalls.filter((c) => c.method === 'sendChatAction');
+    expect(chatActionCalls.length).toBe(callsBefore + 1);
+    expect(chatActionCalls.at(-1)?.body.chat_id).toBe('555001');
   });
 });
 

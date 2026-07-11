@@ -17,6 +17,7 @@ import { registerTopicRoutes } from './routes/topics';
 import { registerTrackingRoutes } from './routes/tracking';
 import { registerTemplateRoutes } from './routes/templates';
 import { registerAgentRoutes } from './routes/agents';
+import { registerConversationMessageRoutes } from './routes/conversation-messages';
 import { registerTelegramRoutes } from './routes/telegram';
 import { registerEmailChannelRoutes } from './routes/email-channel';
 import { registerIdentityRoutes } from './routes/identities';
@@ -55,6 +56,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerTrackingRoutes(app);
   registerTemplateRoutes(app);
   registerAgentRoutes(app);
+  registerConversationMessageRoutes(app);
   registerTelegramRoutes(app);
   registerEmailChannelRoutes(app);
   registerIdentityRoutes(app);

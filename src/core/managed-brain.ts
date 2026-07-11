@@ -76,6 +76,7 @@ export async function runManagedTurn(
   subscriber: Subscriber,
   history: ConversationMessage[],
   inbound: ConversationMessage,
+  hooks?: { onModelCall?: () => void },
 ): Promise<BrainTurnResult> {
   if (!agent.llm_credentials) {
     throw new PermanentError(`managed agent ${agent.identifier} has no LLM credentials`);
@@ -146,6 +147,8 @@ export async function runManagedTurn(
   const usage: TurnUsage = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
 
   for (let call = 1; call <= MAX_MODEL_CALLS; call += 1) {
+    // Pulse the "composing" indicator at the start of each model round.
+    hooks?.onModelCall?.();
     let response: Anthropic.Message;
     try {
       response = await client.messages.create({
@@ -275,6 +278,10 @@ function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] 
   // assistant turn (the reply they belong to).
   let pending: Array<{ id: string; action: { tool: string; input: Record<string, unknown>; result: string } }> = [];
   for (const m of history) {
+    if (m.deleted_at) {
+      if (m.role === 'agent') pending = [];
+      continue;
+    }
     if (m.role === 'system') {
       const action =
         (m.raw as { action?: { tool: string; input: Record<string, unknown>; result: string } } | null)?.action ??

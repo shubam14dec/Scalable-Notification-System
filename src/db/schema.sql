@@ -366,6 +366,10 @@ create table if not exists conversation_messages (
 create index if not exists conversation_messages_conv_idx
   on conversation_messages (conversation_id, created_at);
 
+alter table conversation_messages add column if not exists edited_at timestamptz;
+alter table conversation_messages add column if not exists deleted_at timestamptz;
+alter table conversation_messages add column if not exists deleted_by text; -- 'user' | 'operator'
+
 -- ---- Backfill for installs created before the accounts layer ----
 -- Give orphan environments a default organization, and move their legacy
 -- plaintext api_key into the hashed api_keys table (old keys keep working).

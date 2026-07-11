@@ -18,16 +18,21 @@ export interface TelegramWebhookInfo {
   last_error_date?: number;
 }
 
+/** A Telegram message — the shape both fresh and edited messages share. */
+export interface TelegramMessage {
+  message_id: number;
+  date: number;
+  text?: string;
+  from?: { id: number; is_bot: boolean; first_name?: string; username?: string };
+  chat: { id: number; type: string };
+}
+
 /** The subset of a Telegram Update the platform handles. */
 export interface TelegramUpdate {
   update_id: number;
-  message?: {
-    message_id: number;
-    date: number;
-    text?: string;
-    from?: { id: number; is_bot: boolean; first_name?: string; username?: string };
-    chat: { id: number; type: string };
-  };
+  message?: TelegramMessage;
+  /** The same message re-sent after the user edited it in their client. */
+  edited_message?: TelegramMessage;
   /** An inline-keyboard button press. */
   callback_query?: {
     id: string;
@@ -77,9 +82,10 @@ export const telegram = {
     call<boolean>(token, 'setWebhook', {
       url,
       secret_token: secretToken,
-      // callback_query = inline-keyboard clicks. Connections registered
-      // before buttons existed must re-register to start receiving them.
-      allowed_updates: ['message', 'callback_query'],
+      // callback_query = inline-keyboard clicks, edited_message = inbound
+      // edits. Connections registered before these existed must re-register
+      // to start receiving them.
+      allowed_updates: ['message', 'callback_query', 'edited_message'],
     }),
 
   deleteWebhook: (token: string) => call<boolean>(token, 'deleteWebhook'),
@@ -107,6 +113,14 @@ export const telegram = {
   /** Acks a button press so the client stops showing its spinner. */
   answerCallbackQuery: (token: string, callbackQueryId: string) =>
     call<boolean>(token, 'answerCallbackQuery', { callback_query_id: callbackQueryId }),
+
+  /** Shows the "typing…" indicator in the chat; clears itself after ~5s. */
+  sendChatAction: (token: string, chatId: string | number) =>
+    call<boolean>(token, 'sendChatAction', { chat_id: chatId, action: 'typing' }),
+
+  /** Removes a sent message from the chat entirely (edits older than 48h reject). */
+  deleteMessage: (token: string, chatId: string | number, messageId: number) =>
+    call<boolean>(token, 'deleteMessage', { chat_id: chatId, message_id: messageId }),
 
   /**
    * Rewrites a sent message. Telegram has no disabled-button state, so

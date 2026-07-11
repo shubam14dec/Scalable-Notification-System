@@ -53,6 +53,9 @@ export interface ConversationMessage {
   dedupe_key: string;
   raw: unknown;
   created_at: string;
+  edited_at: string | null;
+  deleted_at: string | null;
+  deleted_by: 'user' | 'operator' | null;
 }
 
 // ---- agents ----
@@ -531,6 +534,36 @@ export async function updateConversationMessageRaw(id: string, raw: unknown): Pr
   ]);
 }
 
+/** Record-only edit. Returns null when missing, deleted, or tenant-mismatched. */
+export async function editConversationMessage(
+  id: string,
+  tenantId: string,
+  content: string,
+): Promise<ConversationMessage | null> {
+  const { rows } = await pool.query(
+    `update conversation_messages set content = $3, edited_at = now()
+     where id = $1 and tenant_id = $2 and deleted_at is null
+     returning *`,
+    [id, tenantId, content],
+  );
+  return rows[0] ?? null;
+}
+
+/** Soft-delete tombstone. Idempotent: second call matches nothing, returns null. */
+export async function softDeleteConversationMessage(
+  id: string,
+  tenantId: string,
+  deletedBy: 'user' | 'operator',
+): Promise<ConversationMessage | null> {
+  const { rows } = await pool.query(
+    `update conversation_messages set content = '', deleted_at = now(), deleted_by = $3
+     where id = $1 and tenant_id = $2 and deleted_at is null
+     returning *`,
+    [id, tenantId, deletedBy],
+  );
+  return rows[0] ?? null;
+}
+
 export async function conversationTranscript(
   conversationId: string,
   limit = 200,
@@ -557,6 +590,7 @@ export async function conversationHistoryBefore(
        select m.* from conversation_messages m
        where m.conversation_id = $1
          and m.role in ('user', 'agent')
+         and m.deleted_at is null
          and m.created_at < (select created_at from conversation_messages where id = $2)
        order by m.created_at desc limit $3
      ) t order by created_at asc`,
