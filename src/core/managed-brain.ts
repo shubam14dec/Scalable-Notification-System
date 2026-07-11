@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { fetch as undiciFetch } from 'undici';
 import { openSecret } from '../auth/secret-box';
+import { assertSafeOutboundUrl, safeDispatcher, UnsafeOutboundUrlError } from './safe-url';
 import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
 import { listWorkflows } from '../db/repositories';
@@ -78,6 +80,17 @@ export async function runManagedTurn(
   if (!agent.llm_credentials) {
     throw new PermanentError(`managed agent ${agent.identifier} has no LLM credentials`);
   }
+  // Literal-IP base URLs bypass the dispatcher's DNS hook — assert first.
+  if (agent.llm_base_url) {
+    try {
+      await assertSafeOutboundUrl(agent.llm_base_url, { resolve: false });
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) {
+        throw new PermanentError(`llm base URL blocked: ${err.message}`);
+      }
+      throw err;
+    }
+  }
   const { apiKey } = JSON.parse(openSecret(agent.llm_credentials)) as { apiKey: string };
 
   const client = new Anthropic({
@@ -87,6 +100,13 @@ export async function runManagedTurn(
     // BullMQ owns outer retries; one SDK retry absorbs blips without
     // multiplying against the job's attempts.
     maxRetries: 1,
+    // SSRF gate on llm_base_url: connect-time IP pinning via the shared
+    // dispatcher — a tenant's base URL can never reach private ranges.
+    fetch: ((input: unknown, init?: object) =>
+      undiciFetch(input as Parameters<typeof undiciFetch>[0], {
+        ...init,
+        dispatcher: safeDispatcher(),
+      })) as unknown as typeof globalThis.fetch,
   });
 
   const workflowKeys = (await listWorkflows(conversation.tenant_id)).map(
@@ -145,6 +165,13 @@ export async function runManagedTurn(
         err instanceof Anthropic.BadRequestError
       ) {
         throw new PermanentError(`brain config error (${err.status}): ${err.message}`, err);
+      }
+      // An SSRF-blocked base URL is a config mistake, not a blip — the SDK
+      // wraps the connect failure, so walk the cause chain for our error.
+      for (let e: unknown = err; e instanceof Error; e = e.cause) {
+        if (e instanceof UnsafeOutboundUrlError) {
+          throw new PermanentError(`llm base URL blocked: ${e.message}`, err as Error);
+        }
       }
       throw new TransientError(`brain call failed: ${(err as Error).message}`, err);
     }

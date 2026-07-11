@@ -82,7 +82,73 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — pick the next phase from the backlog)
+### Phase 9: SSRF hardening on user-supplied outbound URLs
+
+Goal: a tenant can never make our servers talk to something private.
+Three surfaces accept arbitrary URLs today, validated only by zod
+`.url()`: `agents.bridge_url` (POSTed every bridge turn,
+conversation.processor.ts:229), `agents.llm_base_url` (Anthropic SDK
+baseURL, managed-brain.ts:85), and the SMTP `host` credential
+(integrations). Any of them can point at 127.0.0.1:6379 (our Redis),
+Postgres, or 169.254.169.254 (cloud metadata) — the classic SSRF holes.
+
+**Design — two layers, one predicate:**
+
+1. **Write-time validation** (UX layer, fast feedback): new
+   `src/core/safe-url.ts` exports `assertSafeOutboundUrl(url)` —
+   http/https only, no userinfo (`user:pass@`), hostname not
+   localhost/*.local/*.internal, not a literal private/reserved IP
+   (v4: 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12,
+   192.168/16, 198.18/15, 224/4, 240/4; v6: ::1, ::, fc00::/7,
+   fe80::/10, ::ffff: v4-mapped), plus a DNS resolve whose answers
+   must all be public. Applied in agents create/patch (bridgeUrl +
+   llm.baseUrl → 400 with a clear message) and integrations
+   create/update for the SMTP host.
+2. **Connect-time IP pinning** (the actual security boundary, immune
+   to DNS rebinding and exotic IP encodings): a shared undici Agent
+   whose `connect.lookup` filters the resolved IPs through the same
+   predicate at socket time — the check rides the lookup the socket
+   already does, zero extra DNS queries. Bridge fetch gets
+   `dispatcher: safeDispatcher()` + `redirect: 'manual'` (a bridge
+   must never redirect; kills the redirect-revalidation class
+   entirely). Managed brain passes a custom `fetch` to the Anthropic
+   SDK wired to the same dispatcher. Blocked at dispatch →
+   PermanentError → existing no-retry breadcrumb path.
+
+**Local dev without a code fork (no-shortcuts rule):**
+`OUTBOUND_URL_ALLOW` env — comma list of exact hostnames exempt from
+the private check (`localhost,127.0.0.1,host.docker.internal` in dev
+.env; EMPTY in prod). Same code path always; config, not branches —
+agent:demo (localhost:4100) and the z.ai tunnel keep working.
+
+**Known gap accepted this phase:** SMTP gets write-time checks only
+(nodemailer owns its sockets; dispatch-time pinning there is a
+follow-up if we ever allow subscriber-supplied SMTP).
+
+**Scale math:** validation runs per agent-save (rare) and per
+conversation turn (human-paced; even 1M chatting DAU ≈ low hundreds
+of turns/sec). The connect-time filter adds a few range compares per
+socket connect, amortized further by keep-alive. Zero per-user-per-
+tick work, zero extra DNS round trips.
+
+**Slices:**
+- [x] 1. `src/core/safe-url.ts` (predicate + assert + safeDispatcher
+      singleton + OUTBOUND_URL_ALLOW) with unit tests: private v4/v6,
+      v4-mapped v6, metadata IP, localhost names, userinfo, bad
+      schemes, allowlist exemption (35 unit tests)
+- [x] 2. Write-time: agents create/patch validate bridgeUrl +
+      llm.baseUrl; integrations validate SMTP host; integration tests
+      (private bridgeUrl → 400; allowlisted localhost → 201)
+- [x] 3. Dispatch-time: bridge fetch dispatcher + redirect manual;
+      managed-brain custom fetch; blocked URL → PermanentError →
+      transcript note, no retries (E2E-found fix: the bridge branch
+      didn't catch PermanentError — 39s of retry burn → same-second
+      fast-fail after giving it the managed branch's doctrine)
+- [x] 4. .env/.env.example + tests/setup.ts allowlist; drove E2E:
+      169.254.169.254 + 10.0.0.1 + nip.io-to-127.0.0.1 all 400;
+      SQL-planted private URL blocked at dispatch with transcript
+      note; agent:demo round-trip green via allowlist (191 tests)
+- [x] 5. Commit (no packages/* change → no changeset)
 
 ## Recently finished
 

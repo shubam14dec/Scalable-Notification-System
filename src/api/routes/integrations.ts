@@ -12,6 +12,21 @@ import {
   listIntegrations,
   updateIntegration,
 } from '../../db/integrations.repo';
+import { assertSafeOutboundHost, UnsafeOutboundUrlError } from '../../core/safe-url';
+
+/** SMTP is the one provider whose destination host the tenant controls. */
+async function unsafeSmtpHostError(provider: string, creds: unknown): Promise<string | null> {
+  if (provider !== 'smtp') return null;
+  const host = (creds as { host?: unknown }).host;
+  if (typeof host !== 'string') return null; // schema validation already failed it
+  try {
+    await assertSafeOutboundHost(host);
+    return null;
+  } catch (err) {
+    if (err instanceof UnsafeOutboundUrlError) return `credentials.host: ${err.message}`;
+    throw err;
+  }
+}
 
 const CreateSchema = z.object({
   channel: z.enum(CHANNELS),
@@ -76,6 +91,8 @@ export function registerIntegrationRoutes(app: FastifyInstance) {
     if (!check.ok) {
       return reply.code(400).send({ error: check.error });
     }
+    const unsafeHost = await unsafeSmtpHostError(body.provider, check.value);
+    if (unsafeHost) return reply.code(400).send({ error: unsafeHost });
 
     const row = await createIntegration({
       tenantId: req.tenant.id,
@@ -108,6 +125,8 @@ export function registerIntegrationRoutes(app: FastifyInstance) {
           parsed.data.credentials,
         );
         if (!check.ok) return reply.code(400).send({ error: check.error });
+        const unsafeHost = await unsafeSmtpHostError(existing.provider, check.value);
+        if (unsafeHost) return reply.code(400).send({ error: unsafeHost });
         sealed = sealSecret(JSON.stringify(check.value));
       }
 

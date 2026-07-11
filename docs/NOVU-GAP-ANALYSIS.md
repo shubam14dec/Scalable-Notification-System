@@ -159,3 +159,53 @@ New findings beyond round 1:
    platform features customers ask about in week one.
 
 Everything Tier B/C stays recorded here; promote when a phase slot opens.
+
+---
+
+# Round 3 — agents docs deep-read (docs/agents/* + api-reference agents/channel-connections/channel-endpoints/contexts, 2026-07-11)
+
+Line-by-line read of every agents doc page (including Going to Production,
+which prior sweeps skipped) plus the agents API reference. New findings
+only — rows already in rounds 1–2 are not repeated, just enriched.
+
+## New feature gaps
+
+| Feature | What it is | Ours today | Tier |
+|---|---|---|---|
+| **Send-agent-reply API** | `POST /v1/agents/{agentId}/reply` — backend injects a message into an existing conversation WITHOUT a bridge turn. Enables proactive pings into a thread and human-agent takeover | replies only flow out of a brain/bridge turn | **A** — small (deliverReply machinery exists); unlocks human handoff, a top support-product ask |
+| **Per-env bridge model** | agent carries `bridgeUrl` (prod) + `devBridgeUrl` + `devBridgeActive`; dashboard toggles Local/Development/Production; dedicated `PUT /agents/:id/bridge` API; **production 403s tunnel URLs** (accidental local routing guard) | single bridge_url; tunnel rotation = manual re-register | **B** — pairs with the `asyncify dev` tunnel item (round 2) and SSRF hardening |
+| **Agent publish dev→prod** | "Publish changes" copies agent to prod (same identifier), arrives **inactive**, providers must be reconnected per env; deploys via `novu sync --bridge-url` CLI or official GitHub Action | manual re-create | fold into **env promotion** (Tier A platform item) — agents are now a spec'd resource type for it |
+| **Agent scaffolder** | `npx novu init -t agent` generates a Next.js bridge app (`/api/novu` route + starter handler); dashboard shows the command pre-filled with keys | scripts/agent-demo.ts only | **B** — merge with round-2 "add-inbox CLI scaffolder" into one `create-asyncify-app` effort |
+| **ChannelConnection vs ChannelEndpoint split** | two public CRUD resources: *connection* = workspace/tenant-level install (Slack workspace, Teams tenant admin-consent), *endpoint* = per-user address (`ms_teams_user`, telegram chat). `connectionMode: subscriber\|shared`, shared connections scoped by **context** | agent_connections conflates bot-install with agent; subscriber identities live elsewhere | **A as design work** — this is the data model that makes Slack/Teams multi-workspace distribution possible; adopt BEFORE building the Slack channel |
+| **onResolve callback to bridge** | resolve (manual or platform-initiated) fires the bridge's `onResolve` handler — cleanup/analytics/summary hook | resolve is a signal IN only; our auto-resolve (Phase 6) never tells the bridge | **B** (small) — one more event type on the existing signed POST |
+| **onReaction + reaction capability matrix** | `onReaction` handler (emoji add/remove); reactions supported per-channel incl. **email via Gmail** | none | C (unchanged) — matrix detail: typing/edit/reactions are per-provider capabilities, document ours the same way |
+| **Inbound attachment normalization** | platform files normalized to `message.attachments` (type/mimeType/size), **short-lived signed URLs (15 min), 25 MB cap**; outbound `FileRef` = exactly one of `url` (server-side fetch) or `data` (in-memory) | none | C (unchanged) — spec now complete enough to build from |
+| **Agent `behavior` object** | per-agent delivery behavior: acknowledgement + reaction settings (e.g. auto-ack inbound before brain responds) | none | C (small UX sugar) |
+| **Managed-agent plan cards** | live tool-use card in the thread (thinking/running/complete per tool); MCP auth pauses the card with an authorize prompt | breadcrumbs are dashboard-only; end user sees nothing while brain works | **B** — our typing-indicator/edit work is the substrate; a "working on it" card is the visible half of streaming |
+| **Managed demo credentials** | try a managed agent with Novu-provided limited Claude credits, no Anthropic account | user must bring an API key | C — growth lever, same family as round-2 keyless mode |
+| **Create-from-prompt + templates** | LLM generates the system prompt from a plain-text description; preset templates (Support, Sales…) | blank textarea | C (demo sugar, was round-1 "AI-generated agent config") |
+
+## API-design notes (avoid their mistakes, copy their good calls)
+- Their reply endpoint takes `{agentId}` (DB id) while every sibling route
+  takes `{identifier}` (slug) — inconsistent; ours should stay slug-everywhere.
+- Contexts live at `/v2/` while agents are `/v1/` — version drift across one
+  product surface; avoid.
+- Agents list is cursor-paginated; integration links are a sub-resource with
+  their own CRUD (`/agents/:id/integrations/:linkId`) — clean pattern worth
+  copying when an agent can hold many channel links.
+- Local docs carry no field schemas (remote OpenAPI only) — our docs should
+  keep inline schemas; it's a real DX edge.
+
+## Revised agents-track order (supersedes the round-2 agents items)
+
+1. **SSRF hardening** (approved) — now also covers their tunnel-URL-in-prod
+   403 guard: validate bridge URLs at write AND dispatch time.
+2. **Message edit/delete + typing** (Tier A, unchanged).
+3. **Send-agent-reply API + onResolve callback** — small pair, big product
+   story (human handoff + lifecycle hooks).
+4. **Connection/endpoint model rework** — the Slack prerequisite.
+5. **Slack channel** on top of it.
+6. **Cards v2** (Select/TextInput/CardLink/Divider) + plan-card streaming.
+7. **Connect-button components** in @asyncify-hq/react (Telegram first — the
+   deep link + poll flow already exists server-side from Phase 7).
+8. **`asyncify dev` + scaffolder** as the DX phase.

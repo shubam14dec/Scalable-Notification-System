@@ -154,6 +154,80 @@ describe('agent management', () => {
     });
     expect(res.statusCode).toBe(409);
   });
+
+  test('SSRF guard rejects private bridge URLs on create and patch', async () => {
+    for (const url of [
+      'http://192.168.1.1/bridge',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://10.0.0.5:4100/',
+      'http://internal-api.internal/',
+      'http://user:pass@example.com/',
+    ]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/agents',
+        headers: { 'x-api-key': apiKey },
+        payload: { identifier: 'itest-ssrf', name: 'SSRF', bridgeUrl: url },
+      });
+      expect(res.statusCode, url).toBe(400);
+      expect(json(res).error).toContain('bridgeUrl');
+    }
+
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: '/v1/agents/itest-support',
+      headers: { 'x-api-key': apiKey },
+      payload: { bridgeUrl: 'http://127.0.0.2:6379/' },
+    });
+    expect(patched.statusCode).toBe(400);
+  });
+
+  test('SSRF guard rejects a private llm.baseUrl on create', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents',
+      headers: { 'x-api-key': apiKey },
+      payload: {
+        identifier: 'itest-ssrf-llm',
+        name: 'SSRF LLM',
+        runtime: 'managed',
+        llm: { apiKey: 'sk-test-123', baseUrl: 'http://169.254.169.254/v1' },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(json(res).error).toContain('llmBaseUrl');
+  });
+
+  test('SSRF guard rejects a private SMTP host on integration create', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/integrations',
+      headers: { 'x-api-key': apiKey },
+      payload: {
+        channel: 'email',
+        provider: 'smtp',
+        credentials: { host: '192.168.0.10', port: 587, from: 'x@example.com' },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(json(res).error).toContain('credentials.host');
+  });
+
+  test('allowlisted localhost bridge URLs still work (dev path)', async () => {
+    // bridgeUrl above IS localhost — the 201 in the first test proves the
+    // allowlist path; this asserts the same explicitly for 127.0.0.1.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents',
+      headers: { 'x-api-key': apiKey },
+      payload: {
+        identifier: 'itest-allowlisted',
+        name: 'Allowlisted',
+        bridgeUrl: bridgeUrl.replace('localhost', '127.0.0.1'),
+      },
+    });
+    expect(res.statusCode).toBe(201);
+  });
 });
 
 describe('the two-way loop', () => {

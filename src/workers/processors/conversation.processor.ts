@@ -13,6 +13,12 @@ import { sendWithFailover } from '../../providers/registry';
 import { isSuppressed } from '../../db/repositories';
 import { runManagedTurn, type TurnUsage } from '../../core/managed-brain';
 import { PermanentError } from '../../shared/errors';
+import { fetch as safeFetch } from 'undici';
+import {
+  assertSafeOutboundUrl,
+  safeDispatcher,
+  UnsafeOutboundUrlError,
+} from '../../core/safe-url';
 import {
   conversationHistoryBefore,
   conversationTranscriptBefore,
@@ -135,10 +141,27 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
       throw err;
     }
   } else {
-    const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
-    reply = dispatched.reply;
-    buttons = dispatched.buttons;
-    signals = dispatched.signals;
+    try {
+      const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
+      reply = dispatched.reply;
+      buttons = dispatched.buttons;
+      signals = dispatched.signals;
+    } catch (err) {
+      // Same doctrine as the managed branch: a config-shaped failure
+      // (missing/blocked bridge URL) can't be fixed by retrying — surface
+      // it in the transcript and stop, instead of burning attempts.
+      if (err instanceof PermanentError) {
+        await systemNote(conversation, messageId, 0, err.message);
+        logExec({
+          tenantId,
+          transactionId: `conv-${conversationId}`,
+          level: 'error',
+          detail: `bridge dispatch permanent failure: ${err.message}`,
+        });
+        return;
+      }
+      throw err;
+    }
   }
 
   if (reply !== undefined && reply.length > 0) {
@@ -219,14 +242,26 @@ async function dispatchToBridge(
     })),
   });
 
+  // SSRF gate, both halves: the assert catches literal private IPs (which
+  // bypass custom DNS lookup), the dispatcher re-checks every resolved
+  // address at connect time (DNS rebinding). Blocked → no retries.
+  try {
+    await assertSafeOutboundUrl(agent.bridge_url, { resolve: false });
+  } catch (err) {
+    if (err instanceof UnsafeOutboundUrlError) {
+      throw new PermanentError(`bridge URL blocked: ${err.message}`);
+    }
+    throw err;
+  }
+
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = signWebhook(openSecret(agent.signing_secret), timestamp, rawBody);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), BRIDGE_TIMEOUT_MS);
-  let response: Response;
+  let response: Awaited<ReturnType<typeof safeFetch>>;
   try {
-    response = await fetch(agent.bridge_url, {
+    response = await safeFetch(agent.bridge_url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -235,7 +270,19 @@ async function dispatchToBridge(
       },
       body: rawBody,
       signal: controller.signal,
+      dispatcher: safeDispatcher(),
+      // A bridge must answer directly; following redirects would let a
+      // vetted public host bounce us to a private one.
+      redirect: 'manual',
     });
+  } catch (err) {
+    // undici wraps connect-time failures ("fetch failed" → cause chain).
+    for (let e: unknown = err; e instanceof Error; e = e.cause) {
+      if (e instanceof UnsafeOutboundUrlError) {
+        throw new PermanentError(`bridge URL blocked: ${e.message}`);
+      }
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }

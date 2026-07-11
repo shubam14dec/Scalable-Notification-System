@@ -24,6 +24,28 @@ import {
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
+import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
+
+/**
+ * SSRF write-time gate: bridgeUrl and llm.baseUrl are dialed by our
+ * servers, so they must never point at private infrastructure. Returns
+ * the rejection message, or null when everything is safe.
+ */
+async function unsafeUrlError(urls: {
+  bridgeUrl?: string | null;
+  llmBaseUrl?: string | null;
+}): Promise<string | null> {
+  for (const [field, value] of Object.entries(urls)) {
+    if (!value) continue;
+    try {
+      await assertSafeOutboundUrl(value);
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) return `${field}: ${err.message}`;
+      throw err;
+    }
+  }
+  return null;
+}
 
 /** Managed-runtime brain config; apiKey is write-only (sealed at rest). */
 const LlmConfigSchema = z.object({
@@ -152,6 +174,11 @@ export function registerAgentRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
     }
+    const unsafe = await unsafeUrlError({
+      bridgeUrl: parsed.data.bridgeUrl,
+      llmBaseUrl: parsed.data.llm?.baseUrl,
+    });
+    if (unsafe) return reply.code(400).send({ error: unsafe });
     const secret = newAgentSecret();
     const agent = await createAgent({
       tenantId: req.tenant.id,
@@ -213,6 +240,11 @@ export function registerAgentRoutes(app: FastifyInstance) {
       ) {
         return reply.code(400).send({ error: 'managed runtime requires llm.apiKey' });
       }
+      const unsafe = await unsafeUrlError({
+        bridgeUrl: parsed.data.bridgeUrl,
+        llmBaseUrl: parsed.data.llm?.baseUrl,
+      });
+      if (unsafe) return reply.code(400).send({ error: unsafe });
 
       const agent = await updateAgent(req.tenant.id, req.params.identifier, {
         name: parsed.data.name,
