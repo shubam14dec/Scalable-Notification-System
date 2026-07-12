@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { authenticate } from '../auth';
-import { env } from '../../config/env';
+import { getPublicUrl } from '../../config/public-url';
 import { logger } from '../../shared/logger';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
@@ -47,8 +47,8 @@ export function credentials(connection: AgentConnection): TelegramCredentials {
   return JSON.parse(openSecret(connection.credentials)) as TelegramCredentials;
 }
 
-export function webhookUrl(connectionId: string): string {
-  return `${env.publicUrl}/webhooks/telegram/${connectionId}`;
+export async function webhookUrl(connectionId: string): Promise<string> {
+  return `${await getPublicUrl()}/webhooks/telegram/${connectionId}`;
 }
 
 /**
@@ -71,7 +71,7 @@ export const telegramBotTokenSchema = z
  */
 export async function registerWebhook(connection: AgentConnection): Promise<string> {
   const creds = credentials(connection);
-  const url = webhookUrl(connection.id);
+  const url = await webhookUrl(connection.id);
   await telegram.setWebhook(creds.botToken, url, creds.webhookSecret);
   return url;
 }
@@ -158,7 +158,7 @@ export async function connectionWebhookState(c: AgentConnection): Promise<{
         url: info.url,
         pendingUpdates: info.pending_update_count,
         lastError: info.last_error_message ?? null,
-        expectedUrl: webhookUrl(c.id),
+        expectedUrl: await webhookUrl(c.id),
       };
     } catch (err) {
       webhook = { error: (err as Error).message };
@@ -167,11 +167,11 @@ export async function connectionWebhookState(c: AgentConnection): Promise<{
     // Unlike telegram (we register the webhook), the USER pastes this URL
     // into their provider — so it stays retrievable here. It is our minted
     // inbound credential, tenant-admin scoped.
-    webhook = { url: emailWebhookUrl(c.id, c.credentials) };
+    webhook = { url: await emailWebhookUrl(c.id, c.credentials) };
   } else if (c.channel === 'slack') {
     // Like email: the USER pastes these into the Slack app config, so they
     // stay statically rebuildable here (no secret in them — routing is by id).
-    webhook = slackWebhookUrls(c.id);
+    webhook = await slackWebhookUrls(c.id);
   }
   return { channel: c.channel, status: c.status, config: c.config, webhook, createdAt: c.created_at };
 }

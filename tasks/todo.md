@@ -84,6 +84,72 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+### Conversations / Agents — Phase 16: @asyncify-hq/cli (TRACK FINALE)
+(plan approved 2026-07-12; full plan in
+`~/.claude/plans/tranquil-swimming-acorn.md`. PUBLIC_URL becomes a
+runtime setting (redis config:public-url + env fallback, 5s
+write-through cache, 4 call sites across api+worker) → rotations need
+ZERO restarts; authed PUT/GET /v1/ops/public-url; `asyncify dev` =
+cloudflared spawn + rolling-buffer URL parse + ordered rewire (PUT →
+.env CRLF-safe write → reconnect loop w/ stale-cache guard → ●-marked
+paste table) + sleep-aware watchdog (3 fails/20s → rotate, storm
+breaker); `create-agent` scaffolder from the demo pattern. USER
+ACTION at release: npm Trusted Publisher for the new package. ALL
+COMMITS LOCAL. All Opus.)
+
+- [x] A. Backend: public-url resolver + ops endpoint + 4-call-site
+      async propagation + .env.example
+      (Opus, audited; tsc green, zero env.publicUrl residuals outside
+      fallback+ops GET source branch, live no-restart proof on an
+      ephemeral :3055 instance, .env + redis restored to current
+      tunnel; 15 suite timeouts = pre-existing parallel flakiness in
+      agents/inactivity-sweep, both green in isolation)
+- [x] B. packages/cli: dev command (preflight/tunnel/rewire/watchdog)
+      + create-agent + README + changeset + CLEAN-ROOM lockfile
+      (Opus, audited; build+help+scaffold verified; the poisoned lock
+      had dropped @emnapi 11→6, clean room restored 11 — the ritual
+      proved itself again)
+- [x] C. Tests: cli unit (pure fns) + ops-url integration incl. the
+      no-restart drill-elimination assertion + R1 redis hygiene
+      (Opus, audited; 38 unit + 6 integration, suite 364 green 2x,
+      44/44 re-verified by manager, dev redis key unleaked; note:
+      watchdog post-pause rotate can re-pause while old rotation
+      stamps are inside the 120s window — conservative, by design)
+- [x] D. Docs: runbook leads with the CLI one-liner, manual flow
+      demoted to fallback, runtime-URL note + curls, RELEASING
+      trusted-publisher note (Opus, audited; scrub clean)
+- [x] E. Manual E2E (user-run 2026-07-13) + review + single LOCAL
+      commit + memory
+
+**Phase 16 review — COMPLETE (user-verified 2026-07-13):** The E2E
+earned its keep AGAIN: the first live `asyncify dev` run hit a DNS
+race no manual drill could ever hit — the CLI called telegram
+setWebhook seconds after cloudflared printed the URL, BEFORE the
+tunnel's DNS record existed; Telegram's resolver negative-cached the
+NXDOMAIN and kept rejecting the (by then resolvable) host for ~4
+minutes. Manual pasting always took >1min, which is why 4+ hand
+rotations never saw it. Fix (Opus, audited): waitForTunnelReady()
+readiness gate — poll {url}/health through the tunnel until 2
+consecutive 200s (60s budget) BEFORE any rewire, at both spawn sites
+(startup + watchdog rotation), so third parties' first DNS query
+lands after the record exists; plus reconnectOne retries
+"Failed to resolve host" 3x/10s. Suite 364→368. Second run: clean
+startup, telegram ✔ first try; user killed cloudflared → watchdog
+rotated → readiness wait → full auto-rewire incl. telegram ✔ → real
+telegram message flowed through the resurrected tunnel. Redis key +
+.env + all three channels' listed URLs verified on the rotated base.
+Slack + Postmark re-pasted from the ●-table. Scaffolder: create-agent
+→ npm install (8s) → key into .env → npm run dev → registered,
+bridge on :4200, echo reply in the dashboard inbox — zero to talking
+agent in 4 commands. Staging incident: creating the bin shims needed
+a real npm install which re-poisoned the lock (@emnapi 11→6);
+clean-room regenerated back to B's exact 49+/21− shape (fourth
+incident; order-of-operations lesson in the skill ledger). The
+rotation drill this phase existed to kill is dead: cold start =
+`npx asyncify dev` + paste ●-rows; rotation = nothing.
+
+## Recently finished
+
 ### Conversations / Agents — Phase 15: connect-button components — COMPLETE
 (user-verified 2026-07-12 as his own customer's end user: telegram
 linked from the widget via deep link (typed /start on phone — desktop

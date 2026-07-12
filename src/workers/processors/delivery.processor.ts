@@ -1,5 +1,5 @@
 import { UnrecoverableError, type Job } from 'bullmq';
-import { env } from '../../config/env';
+import { getPublicUrl } from '../../config/public-url';
 import { getMessage, messageByStep, updateMessage, type MessageRow } from '../../db/repositories';
 import { sendWithFailover } from '../../providers/registry';
 import { PermanentError } from '../../shared/errors';
@@ -163,6 +163,7 @@ async function deliver(
   await updateMessage(message.id, { status: 'sending', attempts: job.attemptsMade + 1 });
 
   const timer = deliverySeconds.startTimer({ channel: message.channel });
+  const publicUrl = await getPublicUrl();
   try {
     const result = await sendWithFailover(message.channel, {
       messageId: message.id,
@@ -173,7 +174,7 @@ async function deliver(
       htmlBody,
       // Email opens are tracked via a 1px pixel keyed by message id.
       pixelUrl:
-        message.channel === 'email' ? `${env.publicUrl}/o/${message.id}.gif` : undefined,
+        message.channel === 'email' ? `${publicUrl}/o/${message.id}.gif` : undefined,
     });
 
     await updateMessage(message.id, {

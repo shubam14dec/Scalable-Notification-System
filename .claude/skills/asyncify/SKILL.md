@@ -296,7 +296,24 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   (2) `npm ci --dry-run` on this machine CANNOT catch the breakage — the
   missing entries are wasm fallbacks only Linux asks for — so Windows
   dry-run success proves nothing; watch the CI run after pushing any lock
-  change.
+  change. Fourth incident 2026-07-13: a new workspace package with a `bin`
+  needs a REAL root install to create the node_modules/.bin shims (a
+  --package-lock-only run never links them) — order is real install →
+  shims exist (untracked, safe) → clean-room-regenerate the lock it just
+  poisoned. Verify with `grep -c @emnapi package-lock.json` (healthy = 11
+  as of 2026-07).
+
+- **Never register a freshly-minted hostname with a third party before it
+  resolves** (Phase 16 E2E, 2026-07-13): `asyncify dev` called telegram
+  setWebhook seconds after cloudflared printed the quick-tunnel URL — before
+  the DNS record existed. Telegram's resolver negative-cached the NXDOMAIN
+  and kept rejecting the hostname for ~4 minutes after it resolved everywhere
+  else. Manual pasting never hit this (humans take >1min); only automation
+  can lose this race. Rule: after minting any public hostname, poll it
+  through the public path (`GET {url}/health`, 2 consecutive 200s) BEFORE
+  telling anyone about it — see `waitForTunnelReady` in packages/cli — and
+  treat "Failed to resolve host" from a webhook registration as retryable,
+  not fatal.
 
 ## 12. Tests own Redis db 15 — never share queues with the dev fleet
 

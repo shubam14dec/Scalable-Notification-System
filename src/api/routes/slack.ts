@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { env } from '../../config/env';
+import { getPublicUrl } from '../../config/public-url';
 import { logger } from '../../shared/logger';
 import { logExec } from '../../core/execution-log';
 import { getQueue, QUEUE } from '../../shared/queues';
@@ -64,13 +64,14 @@ export function credentials(connection: AgentConnection): SlackCredentials {
  * the webhook), the USER pastes these into the Slack app config — so they are
  * static and rebuildable here (email-shaped). connectionId is the routing key.
  */
-export function slackWebhookUrls(connectionId: string): {
+export async function slackWebhookUrls(connectionId: string): Promise<{
   eventsUrl: string;
   interactivityUrl: string;
-} {
+}> {
+  const base = await getPublicUrl();
   return {
-    eventsUrl: `${env.publicUrl}/webhooks/slack/${connectionId}/events`,
-    interactivityUrl: `${env.publicUrl}/webhooks/slack/${connectionId}/interactivity`,
+    eventsUrl: `${base}/webhooks/slack/${connectionId}/events`,
+    interactivityUrl: `${base}/webhooks/slack/${connectionId}/interactivity`,
   };
 }
 
@@ -126,7 +127,7 @@ export async function handleSlackConnect(
   }
 
   reply.code(201);
-  return reply.send({ channel: 'slack', teamName: r.team, ...slackWebhookUrls(connection.id) });
+  return reply.send({ channel: 'slack', teamName: r.team, ...(await slackWebhookUrls(connection.id)) });
 }
 
 /**

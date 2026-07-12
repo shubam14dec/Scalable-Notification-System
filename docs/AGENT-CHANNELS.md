@@ -48,6 +48,27 @@ read — nothing is hardcoded.
 http), stable, and routed to the API service. Set it in the deployment's
 environment/secret config (the Helm chart's env section), never in code.
 
+**Runtime public URL (no restart).** `PUBLIC_URL` is only the **boot
+fallback**. At runtime an authed ops endpoint — and the CLI below, which
+calls it for you — **overrides** it across both the API and the worker with a
+**~5s propagation bound**, no restart. Validation accepts an `http(s)` base
+URL only (no path or query).
+
+```bash
+# Set the runtime public URL (instantly, across api + worker).
+curl -X PUT -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/ops/public-url \
+  -d '{"url":"https://random-words.trycloudflare.com"}'
+
+# Read the value in force and where it came from.
+curl -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/ops/public-url
+# → { "url":"https://random-words.trycloudflare.com", "source":"runtime" }
+```
+
+`source` is `runtime` once the ops endpoint has set a value, or `env` while
+the value is still the `PUBLIC_URL` boot fallback.
+
 ## The connections API
 
 All routes are tenant-scoped by the API key. The `agentIdentifier` field is
@@ -184,11 +205,46 @@ that history is on the model.
 ## Runbook: rotating the tunnel / changing `PUBLIC_URL`
 
 After `PUBLIC_URL` changes (new tunnel URL locally, or the real domain going
-live), the providers still hold the **old** webhook URLs. Fix both channels
-from the **Connections** page:
+live), the providers still hold the **old** webhook URLs. The CLI rewires
+everything for you; the manual fallback below does the same by hand.
 
-1. **Deploy / restart with the new `PUBLIC_URL`** (e.g.
-   `PUBLIC_URL=https://api.asyncify.org`).
+### The one-liner (recommended)
+
+```bash
+npx @asyncify-hq/cli dev
+```
+
+This spawns a cloudflared quick tunnel and then, with **zero restarts and
+zero clicks**, automatically:
+
+1. **Sets the runtime public URL** via the ops endpoint — it propagates to
+   the api and worker in ~5s, **no restart** — and rewrites the `PUBLIC_URL`
+   line in your `.env`.
+2. **Re-registers every active Telegram webhook** in the tenant.
+
+Steps 1–2 are the two channels that *can* be pushed programmatically, so
+they're fully automatic. For the two that can't, the CLI prints a **paste
+table** — Slack (Events + Interactivity URLs) and email (inbound URL) — with
+a **●** marking only the rows that **changed** since the last rotation. Paste
+**just the ●-marked rows** into the provider config (the manual steps below
+say exactly where each goes); unmarked rows are already correct.
+
+It then **watches the tunnel**, health-checking through it every 20s; when
+the tunnel dies or sleeps it **respawns and re-runs the whole rewire
+automatically**. Requires `cloudflared` installed.
+
+Flags: `--port 3000`, `--api-url <url>`, `--api-key <key>` (or the
+`ASYNCIFY_API_KEY` env var), and `--no-env-write` to leave `.env` untouched.
+
+### Manual fallback
+
+The CLI is the fast path; this is the identical rewire done by hand, and it
+still works. Fix each channel from the **Connections** page:
+
+1. **Point the runtime public URL at the new value** — either
+   `PUT /v1/ops/public-url {url}` (propagates in ~5s, no restart; see the
+   *Runtime public URL* note above) or deploy / restart with the new
+   `PUBLIC_URL` (e.g. `PUBLIC_URL=https://api.asyncify.org`).
 2. **Telegram — one click per connection.** On the Connections page each
    Telegram connection shows a **webhook badge** comparing *registered* vs
    *expected* URL. When they mismatch, press **Re-register**. (API

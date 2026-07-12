@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { authenticate } from '../auth';
-import { env } from '../../config/env';
+import { getPublicUrl } from '../../config/public-url';
 import { logExec } from '../../core/execution-log';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { sealSecret, openSecret } from '../../auth/secret-box';
@@ -76,7 +76,7 @@ export async function handleEmailConnect(
     address: address.toLowerCase(),
     // The credential the user pastes into the provider's inbound settings —
     // retrievable again from the channels listing.
-    webhookUrl: emailWebhookUrl(connection.id, connection.credentials),
+    webhookUrl: await emailWebhookUrl(connection.id, connection.credentials),
   });
 }
 
@@ -216,7 +216,10 @@ async function resolveEmailSubscriber(tenantId: string, fromEmail: string): Prom
 }
 
 /** Rebuild the webhook URL (used by connect and the channels listing). */
-export function emailWebhookUrl(connectionId: string, sealedCredentials: string): string {
+export async function emailWebhookUrl(
+  connectionId: string,
+  sealedCredentials: string,
+): Promise<string> {
   const { webhookSecret } = JSON.parse(openSecret(sealedCredentials)) as EmailCredentials;
-  return `${env.publicUrl}/webhooks/email/${connectionId}?key=${webhookSecret}`;
+  return `${await getPublicUrl()}/webhooks/email/${connectionId}?key=${webhookSecret}`;
 }

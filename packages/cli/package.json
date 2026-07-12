@@ -1,0 +1,36 @@
+{
+  "name": "@asyncify-hq/cli",
+  "version": "0.0.0",
+  "description": "Asyncify dev CLI — managed tunnel with automatic webhook rewiring, and an agent scaffolder",
+  "homepage": "https://asyncify.org",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shubam14dec/Scalable-Notification-System.git",
+    "directory": "packages/cli"
+  },
+  "license": "MIT",
+  "author": "Shubam Patil",
+  "type": "module",
+  "bin": {
+    "asyncify": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}

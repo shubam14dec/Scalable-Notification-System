@@ -9,7 +9,10 @@ scale.
 
 SDKs: [`@asyncify-hq/node`](packages/sdk-node) ·
 [`@asyncify-hq/react`](packages/react) (drop-in `<NotificationInbox />`,
-plus `<ConnectChannels />` so end users link their own Telegram/Slack).
+plus `<ConnectChannels />` so end users link their own Telegram/Slack) ·
+[`@asyncify-hq/agent`](packages/agent) (bridge agents) ·
+[`@asyncify-hq/cli`](packages/cli) (`asyncify` — one-command local tunnel +
+webhook rewire, and agent scaffolding).
 
 **Channels:** email, SMS, push, in-app (live WebSocket push + durable inbox) —
 extensible via one provider interface.
@@ -176,6 +179,13 @@ can fire real notification workflows mid-conversation (`ctx.trigger`).
 Try it: `npm run agent:demo`, then chat from the dashboard's Inbox
 preview.
 
+**Fastest way to start your own bridge agent:**
+`npx @asyncify-hq/cli create-agent <dir>` scaffolds a ready-to-run project —
+`package.json` (with [`@asyncify-hq/agent`](packages/agent)), an `agent.ts`
+wired for `onMessage` / `onAction` / `onResolve` plus self-registration,
+`.env.example`, a README and `.gitignore`. Then `npm install && npm run dev`
+(needs Node ≥ 20.6).
+
 Channel setup and the local-tunnel → production migration (PUBLIC_URL,
 Telegram re-register, Postmark inbound, Slack app manifest + per-channel
 routing, custom MX domain when DNS is available):
@@ -237,6 +247,18 @@ npm run ws                    # WebSocket gateway, ws://localhost:3001
 # live in-app demo (fourth terminal):
 npm run ws:client -- alice    # then trigger the welcome workflow for alice
 ```
+
+**Expose it to the internet for agent channels (Telegram/Slack/email).** One
+command spins up a tunnel and wires every inbound webhook to it — no restart:
+
+```bash
+npx @asyncify-hq/cli dev       # cloudflared tunnel → sets the runtime public
+                               # URL, updates .env, re-registers Telegram
+                               # webhooks, prints the Slack/email paste table,
+                               # and re-rewires automatically if the tunnel dies
+```
+
+See [docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md#runbook-rotating-the-tunnel--changing-public_url).
 
 Send a notification:
 
