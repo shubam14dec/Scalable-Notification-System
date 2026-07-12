@@ -477,6 +477,170 @@ export interface AgentChatProps extends UseAgentChatOptions {
   height?: number;
 }
 
+/* ------------------------------------------------------------------ */
+/* Custom select card. Native <select> popups can't be themed (the OS  */
+/* paints them), so the dropdown is real elements the palette owns.    */
+/* ------------------------------------------------------------------ */
+
+function CardSelect({
+  card,
+  c,
+  font,
+  live,
+  onPick,
+}: {
+  card: Extract<Card, { type: 'select' }>;
+  c: (typeof palettes)['dark'];
+  font: string;
+  live: boolean;
+  onPick: (option: CardOption) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<CardOption | null>(null);
+  // One index drives both mouse hover and arrow-key navigation.
+  const [highlight, setHighlight] = useState(0);
+  // Open upward when a downward panel would spill past the scroll container.
+  const [openUp, setOpenUp] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  const inert = !live || !!picked;
+
+  // A click anywhere outside closes the panel.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  const toggle = () => {
+    if (inert) return;
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const el = wrapRef.current;
+    if (el) {
+      // Nearest scrollable ancestor = the message list; viewport as fallback.
+      // 190 ≈ panel maxHeight (180) + the 4px gap + borders.
+      let p = el.parentElement;
+      while (p && p.scrollHeight <= p.clientHeight) p = p.parentElement;
+      const limit = p ? p.getBoundingClientRect().bottom : window.innerHeight;
+      setOpenUp(el.getBoundingClientRect().bottom + 190 > limit);
+    }
+    setHighlight(0);
+    setOpen(true);
+  };
+
+  const pick = (option: CardOption) => {
+    setPicked(option);
+    setOpen(false);
+    onPick(option);
+  };
+
+  return (
+    <div
+      ref={wrapRef}
+      style={{ position: 'relative', marginTop: 6, maxWidth: '80%', minWidth: 180 }}
+      onKeyDown={(e) => {
+        if (inert) return;
+        if (e.key === 'Escape') {
+          setOpen(false);
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (!open) {
+            toggle();
+            return;
+          }
+          const n = card.options.length;
+          setHighlight((h) => (e.key === 'ArrowDown' ? (h + 1) % n : (h - 1 + n) % n));
+        } else if (e.key === 'Enter' && open) {
+          e.preventDefault();
+          const option = card.options[highlight];
+          if (option) pick(option);
+        }
+      }}
+    >
+      <button
+        type="button"
+        disabled={inert}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={toggle}
+        style={{
+          width: '100%',
+          height: 30,
+          padding: '0 10px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          borderRadius: 8,
+          border: `1px solid ${c.border}`,
+          background: c.hover,
+          color: picked ? c.text : c.text2,
+          fontSize: 13,
+          fontFamily: font,
+          cursor: inert ? 'default' : 'pointer',
+          opacity: inert ? 0.55 : 1,
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {picked?.label ?? card.prompt ?? 'Choose…'}
+        </span>
+        <span style={{ fontSize: 10, color: c.text2, flexShrink: 0 }}>{open ? '▴' : '▾'}</span>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          aria-label={card.prompt ?? 'Choose an option'}
+          style={{
+            position: 'absolute',
+            ...(openUp ? { bottom: 'calc(100% + 4px)' } : { top: 'calc(100% + 4px)' }),
+            left: 0,
+            minWidth: '100%',
+            zIndex: 10,
+            background: c.bg,
+            border: `1px solid ${c.border}`,
+            borderRadius: 8,
+            padding: 4,
+            maxHeight: 180,
+            overflowY: 'auto',
+          }}
+        >
+          {card.options.map((o, idx) => (
+            <button
+              key={o.id}
+              type="button"
+              role="option"
+              aria-selected={picked?.id === o.id}
+              onMouseEnter={() => setHighlight(idx)}
+              onClick={() => pick(o)}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                padding: '7px 10px',
+                borderRadius: 6,
+                border: 'none',
+                background: highlight === idx ? c.hover : 'transparent',
+                color: c.text,
+                fontSize: 13,
+                fontFamily: font,
+                cursor: 'pointer',
+              }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AgentChat(props: AgentChatProps) {
   const { theme = 'dark', title = props.agentIdentifier, placeholder = 'Type a message…', height = 380 } = props;
   const { messages, status, connected, typing, send, sendAction, editMessage, deleteMessage } =
@@ -738,43 +902,13 @@ export function AgentChat(props: AgentChatProps) {
                       </div>
                     )}
                     {card?.type === 'select' && (
-                      <select
-                        aria-label={card.prompt ?? 'Choose an option'}
-                        disabled={!cardLive}
-                        defaultValue=""
-                        onChange={(e) => {
-                          const opt = card.options.find((o) => o.id === e.target.value);
-                          if (opt) answerSelect({ id: card.id, label: opt.label, value: opt.id });
-                        }}
-                        style={{
-                          marginTop: 6,
-                          maxWidth: '80%',
-                          height: 30,
-                          padding: '0 8px',
-                          borderRadius: 8,
-                          border: `1px solid ${c.border}`,
-                          // A solid themed surface + colorScheme make the
-                          // browser render the NATIVE dropdown popup in the
-                          // widget's theme instead of defaulting to light.
-                          background: c.hover,
-                          colorScheme: theme,
-                          color: cardLive ? c.text : c.text2,
-                          fontSize: 13,
-                          fontFamily: font,
-                          outline: 'none',
-                          cursor: cardLive ? 'pointer' : 'default',
-                          opacity: cardLive ? 1 : 0.55,
-                        }}
-                      >
-                        <option value="" disabled style={{ background: c.hover, color: c.text2 }}>
-                          {card.prompt ?? 'Choose…'}
-                        </option>
-                        {card.options.map((o) => (
-                          <option key={o.id} value={o.id} style={{ background: c.hover, color: c.text }}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
+                      <CardSelect
+                        card={card}
+                        c={c}
+                        font={font}
+                        live={cardLive}
+                        onPick={(o) => answerSelect({ id: card.id, label: o.label, value: o.id })}
+                      />
                     )}
                     {card?.type === 'text_input' && cardLive && (
                       <div style={{ display: 'flex', gap: 6, marginTop: 6, width: '80%' }}>
