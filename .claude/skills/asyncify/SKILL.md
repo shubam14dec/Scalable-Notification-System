@@ -109,8 +109,20 @@ When the user says **"start everything"** (all commands from the repo root
    (worker), :3001/health (ws), :5173 (dashboard). Report the four
    statuses; only claim "everything is up" when all four return.
 
+4. **Tunnel (Phase 16+): the USER runs `npx asyncify dev` in his own
+   terminal** (needs `$env:ASYNCIFY_API_KEY = <his tenant key>` — the
+   seed key sees zero connections). It spawns cloudflared, waits for
+   public reachability, publishes the runtime PUBLIC_URL (redis
+   `config:public-url` — zero process restarts), auto-reconnects
+   telegram, prints the ●-marked slack/email paste table, and watchdogs
+   rotations. NEVER hand-edit .env + restart for a tunnel change
+   anymore; that drill is dead. Slack/Postmark URLs need re-pasting
+   only when the URL actually rotated (● marks).
+
 **"Stop everything"**: stop the four Node background tasks, then
 `docker compose stop` (never `down -v` — that deletes data volumes).
+The user Ctrl-C's his own `asyncify dev` terminal (channels go dark
+until its next run — expected).
 Login: dashboard user shubam@xmobility.ai; env API keys are in the
 dashboard (API keys page). Everything survives restarts.
 
