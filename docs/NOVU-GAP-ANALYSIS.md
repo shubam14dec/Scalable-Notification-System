@@ -13,6 +13,47 @@ Tiers reflect OUR goals: agents as the differentiator, sellable product,
 
 ---
 
+## Addendum 2026-07-12 — shipped since this analysis (Phases 9–13)
+
+The "Ours today" column below predates a five-phase build-out. Now CLOSED
+from our side: **Slack channel** (threads, Block Kit buttons + retire,
+manifest install, edit/delete parity incl. inbound deletions), **message
+edit/delete** (soft tombstones, user + operator, cross-channel propagation),
+**typing indicators** (in-app + telegram; slack has no bot API for it),
+**SSRF hardening**, plus two things this table never listed because novu
+doesn't have them:
+
+**Ours that novu lacks (verified against their tree as of 96d6460a22):**
+1. **Send-agent-reply API + onResolve lifecycle webhooks** — backends push
+   proactive messages into conversations (idempotent, queue-backed with
+   live-proven downtime recovery); bridges get signed resolved events.
+2. **The connection switchboard** — channel identities (bot/mailbox/
+   workspace) are standalone re-pointable resources; re-point moves
+   conversations with history riding; webhook URLs survive; canary brain
+   swaps are a dropdown. Novu welds channels to agents.
+3. **Per-scope Slack routing rules** — #billing → agent B, #support →
+   agent A on ONE workspace install (connection_routing_rules +
+   resolveAgentForInbound scope seam).
+4. **BYO LLM managed brain** — any Anthropic-compatible endpoint (user-
+   supplied key/model/base URL, e.g. z.ai GLM), with tool-use
+   (trigger_workflow enum-validated, set_metadata, resolve,
+   present_buttons) and the anti-fabrication defense stack (tool-block
+   history replay, breadcrumb audit trail, per-turn platform reminder,
+   reserved-vocabulary sanitization). Novu Connect is managed-Claude only.
+5. **Cross-channel subscriber identity** — telegram deep-link /start
+   linking, email auto-match, slack email auto-match: one human across
+   widget/telegram/email/slack, with history repointing.
+6. **Email as a full agent channel** (Postmark inbound → brain → threaded
+   provider-chain reply with failover/suppression) — novu's email is
+   notification-only, not two-way agent conversation.
+
+Remaining agent-side gaps vs novu stand as tiered below (streaming/plan
+cards = Phase 14, tool approvals, welcome messages, connect-button
+components = Phase 15). Platform-side tiers (inbox v2, preferences v2,
+workflow engine v2, env promotion) unchanged.
+
+---
+
 ## 1. Agents (our flagship — novu calls theirs "Novu Connect", private beta)
 
 | Novu feature | What it is | Ours today | Tier |
