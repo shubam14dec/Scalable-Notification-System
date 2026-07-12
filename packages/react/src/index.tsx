@@ -650,6 +650,7 @@ export function AgentChat(props: AgentChatProps) {
   const [clicking, setClicking] = useState(false);
   // One draft suffices: only the last message's text-input card is ever live.
   const [cardDraft, setCardDraft] = useState('');
+  const [cardFocus, setCardFocus] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -744,7 +745,7 @@ export function AgentChat(props: AgentChatProps) {
         overflow: 'hidden',
       }}
     >
-      <style>{`@keyframes asyncify-typing{0%,60%,100%{opacity:0.25}30%{opacity:1}}`}</style>
+      <style>{`@keyframes asyncify-typing{0%,60%,100%{opacity:0.25}30%{opacity:1}}.asy-card-input::placeholder{color:${c.text2}}.asy-card-send:hover:enabled{background:${c.hover}}`}</style>
       <div
         style={{
           display: 'flex',
@@ -911,40 +912,59 @@ export function AgentChat(props: AgentChatProps) {
                       />
                     )}
                     {card?.type === 'text_input' && cardLive && (
-                      <div style={{ display: 'flex', gap: 6, marginTop: 6, width: '80%' }}>
-                        <input
-                          value={cardDraft}
-                          onChange={(e) => setCardDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              submitCard(card.id);
-                            }
-                          }}
-                          placeholder={card.placeholder ?? ''}
-                          maxLength={3000}
-                          aria-label={card.prompt ?? 'Your answer'}
-                          style={{
-                            flex: 1,
-                            height: 30,
-                            padding: '0 10px',
-                            borderRadius: 8,
-                            border: `1px solid ${c.border}`,
-                            background: 'transparent',
-                            color: c.text,
-                            fontSize: 13,
-                            fontFamily: font,
-                            outline: 'none',
-                          }}
-                        />
-                        <button
-                          type="button"
-                          style={ctrlBtn}
-                          disabled={!cardDraft.trim()}
-                          onClick={() => submitCard(card.id)}
-                        >
-                          send
-                        </button>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6, width: '80%' }}>
+                        {card.prompt && (
+                          <span style={{ fontSize: 12, color: c.text2 }}>{card.prompt}</span>
+                        )}
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <input
+                            className="asy-card-input"
+                            value={cardDraft}
+                            onChange={(e) => setCardDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                submitCard(card.id);
+                              }
+                            }}
+                            onFocus={() => setCardFocus(true)}
+                            onBlur={() => setCardFocus(false)}
+                            placeholder={card.placeholder ?? ''}
+                            maxLength={3000}
+                            aria-label={card.prompt ?? 'Your answer'}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              height: 30,
+                              padding: '0 10px',
+                              borderRadius: 8,
+                              border: `1px solid ${cardFocus ? c.text2 : c.border}`,
+                              background: c.hover,
+                              color: c.text,
+                              fontSize: 13,
+                              fontFamily: font,
+                              outline: 'none',
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="asy-card-send"
+                            disabled={!cardDraft.trim()}
+                            onClick={() => submitCard(card.id)}
+                            style={{
+                              padding: '5px 12px',
+                              borderRadius: 8,
+                              border: `1px solid ${c.border}`,
+                              background: 'transparent',
+                              color: cardDraft.trim() ? c.text : c.text2,
+                              fontSize: 12,
+                              fontFamily: font,
+                              cursor: cardDraft.trim() ? 'pointer' : 'default',
+                            }}
+                          >
+                            send
+                          </button>
+                        </div>
                       </div>
                     )}
                     {canControl && (
