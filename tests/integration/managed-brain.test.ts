@@ -111,6 +111,16 @@ async function sendTurn(text: string, messageId: string) {
   return json(res) as { conversationId: string; messageId: string };
 }
 
+async function sendTurnAs(subscriberId: string, text: string, messageId: string) {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/v1/agents/glm-support/messages',
+    headers: { 'x-api-key': apiKey },
+    payload: { subscriberId, text, messageId },
+  });
+  return json(res) as { conversationId: string; messageId: string };
+}
+
 async function transcript(conversationId: string) {
   const res = await app.inject({
     method: 'GET',
@@ -118,6 +128,18 @@ async function transcript(conversationId: string) {
     headers: { 'x-api-key': apiKey },
   });
   return json(res);
+}
+
+/** The transcript detail endpoint hides `raw.card`; read it straight from the row. */
+async function latestAgentRaw(
+  conversationId: string,
+): Promise<{ content: string; raw: Record<string, unknown>; created_at: string } | undefined> {
+  const { rows } = await pool.query(
+    `select content, raw, created_at from conversation_messages
+      where conversation_id = $1 and role = 'agent' order by created_at desc limit 1`,
+    [conversationId],
+  );
+  return rows[0];
 }
 
 async function runWorker(conversationId: string, messageId: string) {
@@ -298,6 +320,8 @@ describe('the tool loop', () => {
     const tools = seen.at(-1)!.body.tools!;
     expect(tools.map((t) => t.name).sort()).toEqual([
       'present_buttons',
+      'present_choices',
+      'request_input',
       'resolve_conversation',
       'set_metadata',
       'trigger_workflow',
@@ -570,6 +594,8 @@ describe('the tool loop', () => {
     const tools = seen.at(-1)!.body.tools!;
     expect(tools.map((t) => t.name).sort()).toEqual([
       'present_buttons',
+      'present_choices',
+      'request_input',
       'resolve_conversation',
       'set_metadata',
     ]);
@@ -787,5 +813,333 @@ describe('deleted breadcrumb pairing', () => {
     const t2 = await transcript(next.conversationId);
     const finalReply = t2.messages.findLast((m: { role: string }) => m.role === 'agent');
     expect(finalReply.content).toBe('echo(any update on that order?)');
+  });
+});
+
+describe('present_choices / request_input (cards)', () => {
+  test('present_choices: the card rides the reply row raw and the tool_result confirms it', async () => {
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_pc1',
+          name: 'present_choices',
+          input: {
+            id: 'pick_size',
+            prompt: 'Which size?',
+            options: [
+              { id: 's', label: 'Small' },
+              { id: 'm', label: 'Medium' },
+              { id: 'l', label: 'Large' },
+            ],
+          },
+        },
+      ]),
+      textResponse('What size would you like?'),
+    ];
+    const turn = await sendTurnAs('card-user-1', 'i need a size', 'pc-1');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    // The tool_result told the model the picker is pending (not an is_error).
+    const round2 = seen.at(-1)!.body.messages;
+    const last = round2.at(-1) as { content: Array<{ is_error?: boolean; content: string }> };
+    expect(last.content[0].is_error).toBeUndefined();
+    expect(last.content[0].content).toContain('3-option choice list');
+
+    const reply = await latestAgentRaw(turn.conversationId);
+    expect(reply!.content).toBe('What size would you like?');
+    expect(reply!.raw.card).toEqual({
+      type: 'select',
+      id: 'pick_size',
+      prompt: 'Which size?',
+      options: [
+        { id: 's', label: 'Small' },
+        { id: 'm', label: 'Medium' },
+        { id: 'l', label: 'Large' },
+      ],
+    });
+    // A presentation tool posts NO plan-card step — the reply is a single row.
+    const t = await transcript(turn.conversationId);
+    expect(t.messages.filter((m: { role: string }) => m.role === 'agent')).toHaveLength(1);
+  });
+
+  test('request_input: a text_input card rides the reply row raw', async () => {
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_ri1',
+          name: 'request_input',
+          input: { id: 'order_id', prompt: 'Your order id?', placeholder: 'e.g. #1042' },
+        },
+      ]),
+      textResponse('What is your order id?'),
+    ];
+    const turn = await sendTurnAs('card-user-2', 'i want to check an order', 'ri-1');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const round2 = seen.at(-1)!.body.messages;
+    const last = round2.at(-1) as { content: Array<{ is_error?: boolean; content: string }> };
+    expect(last.content[0].is_error).toBeUndefined();
+    expect(last.content[0].content).toContain('text input field');
+
+    const reply = await latestAgentRaw(turn.conversationId);
+    expect(reply!.content).toBe('What is your order id?');
+    expect(reply!.raw.card).toEqual({
+      type: 'text_input',
+      id: 'order_id',
+      prompt: 'Your order id?',
+      placeholder: 'e.g. #1042',
+    });
+  });
+
+  test('invalid cards come back as is_error and never stick to the reply', async () => {
+    // Each bad round is rejected; the model finally answers with plain text.
+    const cases: Array<{ tool: string; input: Record<string, unknown>; reason: RegExp }> = [
+      { tool: 'present_choices', input: { id: 'one', options: [{ id: 'a', label: 'A' }] }, reason: /2-25 options/ },
+      {
+        tool: 'present_choices',
+        input: { id: 'many', options: Array.from({ length: 26 }, (_, i) => ({ id: `o${i}`, label: `O${i}` })) },
+        reason: /2-25 options/,
+      },
+      {
+        tool: 'present_choices',
+        input: { id: 'dup', options: [{ id: 'x', label: 'A' }, { id: 'x', label: 'B' }] },
+        reason: /duplicate option ids/,
+      },
+      {
+        tool: 'request_input',
+        input: { id: 'ph', placeholder: 'z'.repeat(65) },
+        reason: /64 chars or fewer/,
+      },
+    ];
+
+    let i = 0;
+    for (const c of cases) {
+      i += 1;
+      stubQueue = [
+        toolUseResponse([{ id: `toolu_bad_${i}`, name: c.tool, input: c.input }]),
+        textResponse('Here is the plain-text answer instead.'),
+      ];
+      const turn = await sendTurnAs(`card-bad-${i}`, `bad card ${i}`, `bad-card-${i}`);
+      await runWorker(turn.conversationId, turn.messageId);
+
+      const errResult = seen.at(-1)!.body.messages.at(-1) as {
+        content: Array<{ is_error?: boolean; content: string }>;
+      };
+      expect(errResult.content[0].is_error).toBe(true);
+      expect(errResult.content[0].content).toMatch(c.reason);
+
+      // Nothing invalid stuck: the reply landed with no card.
+      const reply = await latestAgentRaw(turn.conversationId);
+      expect(reply!.content).toBe('Here is the plain-text answer instead.');
+      expect(reply!.raw.card).toBeUndefined();
+    }
+  });
+
+  test('presentation slot is shared: present_buttons then present_choices → card wins', async () => {
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_pe1', name: 'present_buttons', input: { buttons: [{ id: 'b', label: 'Btn' }] } },
+        {
+          id: 'toolu_pe2',
+          name: 'present_choices',
+          input: { id: 'pick', options: [{ id: 'a', label: 'A' }, { id: 'b2', label: 'B' }] },
+        },
+      ]),
+      textResponse('Choose:'),
+    ];
+    const turn = await sendTurnAs('slot-user-1', 'buttons then card', 'slot-1');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const reply = await latestAgentRaw(turn.conversationId);
+    expect((reply!.raw.card as { type: string }).type).toBe('select');
+    expect(reply!.raw.buttons).toBeUndefined();
+  });
+
+  test('presentation slot is shared: present_choices then present_buttons → buttons win', async () => {
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_pe3',
+          name: 'present_choices',
+          input: { id: 'pick', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+        },
+        { id: 'toolu_pe4', name: 'present_buttons', input: { buttons: [{ id: 'final', label: 'Final' }] } },
+      ]),
+      textResponse('Choose:'),
+    ];
+    const turn = await sendTurnAs('slot-user-2', 'card then buttons', 'slot-2');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const reply = await latestAgentRaw(turn.conversationId);
+    expect(reply!.raw.buttons).toEqual([{ id: 'final', label: 'Final' }]);
+    expect(reply!.raw.card).toBeUndefined();
+  });
+
+  test('a card with no reply text is dropped, not orphaned', async () => {
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_drop',
+          name: 'present_choices',
+          input: { id: 'pick', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+        },
+      ]),
+      envelope([], 'end_turn'),
+    ];
+    const turn = await sendTurnAs('slot-user-3', 'silent card', 'drop-1');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    const t = await transcript(turn.conversationId);
+    // No agent row at all — the card had nothing to attach to.
+    expect(t.messages.some((m: { role: string }) => m.role === 'agent')).toBe(false);
+    const system = t.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(system.at(-1).content).toContain('no reply text');
+  });
+
+  test('a select card and a text_input card each replay as their own tool_use pair', async () => {
+    // Turn 1: a select card reply.
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_rp1',
+          name: 'present_choices',
+          input: { id: 'colour', options: [{ id: 'r', label: 'Red' }, { id: 'g', label: 'Green' }] },
+        },
+      ]),
+      textResponse('Which colour?'),
+    ];
+    const t1 = await sendTurnAs('replay-card-user', 'colour please', 'rpc-1');
+    await runWorker(t1.conversationId, t1.messageId);
+
+    // Turn 2: a text_input card reply.
+    stubQueue = [
+      toolUseResponse([
+        { id: 'toolu_rp2', name: 'request_input', input: { id: 'zip', placeholder: '00000' } },
+      ]),
+      textResponse('What is your zip?'),
+    ];
+    const t2 = await sendTurnAs('replay-card-user', 'zip please', 'rpc-2');
+    await runWorker(t2.conversationId, t2.messageId);
+
+    // Turn 3: drive a plain turn and inspect the reconstructed wire history.
+    const t3 = await sendTurnAs('replay-card-user', 'anything else', 'rpc-3');
+    await runWorker(t3.conversationId, t3.messageId);
+
+    const msgs = seen.at(-1)!.body.messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; name?: string; input?: Record<string, unknown> }>;
+    }>;
+    const choicesUse = msgs.find(
+      (m) =>
+        m.role === 'assistant' &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'tool_use' && b.name === 'present_choices'),
+    );
+    const inputUse = msgs.find(
+      (m) =>
+        m.role === 'assistant' &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'tool_use' && b.name === 'request_input'),
+    );
+    expect(choicesUse).toBeDefined();
+    expect(inputUse).toBeDefined();
+    const choicesBlock = (choicesUse!.content as Array<{ name?: string; input?: Record<string, unknown> }>).find(
+      (b) => b.name === 'present_choices',
+    )!;
+    expect((choicesBlock.input as { options: unknown }).options).toEqual([
+      { id: 'r', label: 'Red' },
+      { id: 'g', label: 'Green' },
+    ]);
+    const inputBlock = (inputUse!.content as Array<{ name?: string; input?: Record<string, unknown> }>).find(
+      (b) => b.name === 'request_input',
+    )!;
+    expect((inputBlock.input as { id: string }).id).toBe('zip');
+  });
+
+  test('a re-run of a card turn cannot duplicate the reply', async () => {
+    const script = () => [
+      toolUseResponse([
+        {
+          id: 'toolu_rr',
+          name: 'present_choices',
+          input: { id: 'pick', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+        },
+      ]),
+      textResponse('Pick one please.'),
+    ];
+    stubQueue = script();
+    const turn = await sendTurnAs('card-rerun-user', 'rerun card', 'card-rerun-1');
+    await runWorker(turn.conversationId, turn.messageId);
+    const before = (await transcript(turn.conversationId)).messages.length;
+
+    stubQueue = script();
+    await runWorker(turn.conversationId, turn.messageId);
+    expect((await transcript(turn.conversationId)).messages.length).toBe(before);
+  });
+});
+
+describe('plan-card replay ordering (the pinned invariant)', () => {
+  test('the plan-card reply sorts after its own breadcrumbs, and next-turn history folds them in', async () => {
+    stubQueue = [
+      toolUseResponse([
+        {
+          id: 'toolu_po1',
+          name: 'trigger_workflow',
+          input: { workflowKey: 'brain-wf', payload: { name: 'Plan' } },
+        },
+      ]),
+      textResponse('Your replacement is on the way!'),
+    ];
+    const turn = await sendTurnAs('plan-order-user', 'my order is missing', 'plan-order-1');
+    await runWorker(turn.conversationId, turn.messageId);
+
+    // (a) The reply row's created_at is AFTER every signal-* breadcrumb it
+    // produced this turn (finalize's created_at bump restores the invariant).
+    const { rows } = await pool.query(
+      `select role, content, dedupe_key, created_at from conversation_messages
+        where conversation_id = $1 order by created_at asc`,
+      [turn.conversationId],
+    );
+    const replyRow = [...rows].reverse().find((r) => r.role === 'agent')!;
+    const breadcrumbs = rows.filter(
+      (r) => r.role === 'system' && String(r.dedupe_key).startsWith(`signal-${turn.messageId}`),
+    );
+    expect(breadcrumbs.length).toBeGreaterThan(0);
+    for (const b of breadcrumbs) {
+      expect(new Date(replyRow.created_at).getTime()).toBeGreaterThan(new Date(b.created_at).getTime());
+    }
+    expect(replyRow.content).toBe('Your replacement is on the way!');
+
+    // (b) The next turn's wire history folds this turn into ONE reply: an
+    // assistant tool_use, the matching user tool_result, then the reply text.
+    const next = await sendTurnAs('plan-order-user', 'any update?', 'plan-order-2');
+    await runWorker(next.conversationId, next.messageId);
+
+    const msgs = seen.at(-1)!.body.messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; id?: string; name?: string; tool_use_id?: string }>;
+    }>;
+    const useIdx = msgs.findIndex(
+      (m) =>
+        m.role === 'assistant' &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'tool_use' && b.name === 'trigger_workflow'),
+    );
+    expect(useIdx).toBeGreaterThanOrEqual(0);
+    const useBlock = (msgs[useIdx].content as Array<{ type: string; id?: string }>).find(
+      (b) => b.type === 'tool_use',
+    )!;
+    const resultMsg = msgs[useIdx + 1];
+    expect(resultMsg.role).toBe('user');
+    expect(
+      (resultMsg.content as Array<{ type: string; tool_use_id?: string }>).some(
+        (b) => b.type === 'tool_result' && b.tool_use_id === useBlock.id,
+      ),
+    ).toBe(true);
+    // The reply text follows as the next assistant string row.
+    const replyMsg = msgs[useIdx + 2];
+    expect(replyMsg.role).toBe('assistant');
+    expect(typeof replyMsg.content).toBe('string');
+    expect(replyMsg.content).toBe('Your replacement is on the way!');
   });
 });

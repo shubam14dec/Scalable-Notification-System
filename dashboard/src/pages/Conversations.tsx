@@ -34,6 +34,14 @@ interface TranscriptMessage {
   createdAt: string;
   /** Buttons the agent offered under this reply. */
   buttons?: Array<{ id: string; label: string }>;
+  /** A card the agent offered under this reply (select choices or a text input). */
+  card?: {
+    type: string;
+    id: string;
+    prompt?: string;
+    options?: Array<{ id: string; label: string }>;
+    placeholder?: string;
+  };
   /** True when this user turn was a button click, not typed text. */
   clicked?: boolean;
   /** Set when the message was edited; drives the "· edited" byline marker. */
@@ -281,6 +289,36 @@ export function ConversationDetailPage() {
                             {b.label}
                           </span>
                         ))}
+                      </div>
+                    )}
+                    {!m.deletedAt && m.role === 'agent' && m.card && (
+                      <div className="mt-1.5 flex flex-col items-end gap-1">
+                        {m.card.type === 'select' ? (
+                          <>
+                            {m.card.prompt && (
+                              <span className="text-[11px] text-t3">{m.card.prompt}</span>
+                            )}
+                            <div className="flex flex-wrap justify-end gap-1.5">
+                              {m.card.options?.map((o) => (
+                                <span
+                                  key={o.id}
+                                  className="rounded-md border border-bd px-2 py-0.5 text-[11px] text-t3"
+                                >
+                                  {o.label}
+                                </span>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            {m.card.prompt && (
+                              <span className="text-[11px] text-t3">{m.card.prompt}</span>
+                            )}
+                            <span className="rounded-md border border-dashed border-bd px-2 py-0.5 text-[11px] text-t3">
+                              ✎ {m.card.placeholder ?? 'free text'}
+                            </span>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>

@@ -812,14 +812,22 @@ export async function getConversationMessageByDedupe(
   return rows[0] ?? null;
 }
 
-/** The reply row a telegram inline-keyboard click was attached to. */
+/**
+ * The reply row a telegram inline-keyboard click / ForceReply answer was
+ * attached to. Matches EITHER the reply's own message id (buttons, select
+ * keyboards, and the reply the plan card finalized on) OR — for a text_input
+ * card finalized as a separate ForceReply prompt (D14) — that prompt's message
+ * id stored on the same row as `cardPromptTelegramMessageId`. The two ids are
+ * always distinct telegram messages, so the OR can never be ambiguous.
+ */
 export async function findMessageByTelegramId(
   conversationId: string,
   telegramMessageId: number,
 ): Promise<ConversationMessage | null> {
   const { rows } = await pool.query(
     `select * from conversation_messages
-     where conversation_id = $1 and raw->>'telegramMessageId' = $2
+     where conversation_id = $1
+       and (raw->>'telegramMessageId' = $2 or raw->>'cardPromptTelegramMessageId' = $2)
      limit 1`,
     [conversationId, String(telegramMessageId)],
   );
@@ -846,6 +854,39 @@ export async function updateConversationMessageRaw(id: string, raw: unknown): Pr
     id,
     JSON.stringify(raw),
   ]);
+}
+
+/**
+ * Overwrite an agent message's content in place — the plan-card streaming
+ * engine's PROGRESS writes (⏳/✓/✗ step edits). Deliberately does NOT touch
+ * edited_at: a finalized reply must never render "(edited)" (that is the
+ * whole reason this exists instead of editConversationMessage). Content-only,
+ * no tenant guard (the caller owns the row it created this turn).
+ */
+export async function setAgentMessageContent(id: string, content: string): Promise<void> {
+  await pool.query(
+    'update conversation_messages set content = $2 where id = $1 and deleted_at is null',
+    [id, content],
+  );
+}
+
+/**
+ * The plan card's FINAL write: content + a created_at bump to now(). Why the
+ * bump: the plan-card row is inserted at the FIRST tool call, so its
+ * insert-time created_at precedes the tool breadcrumbs written during the
+ * turn — but replay pairing (buildHistory buffers system breadcrumbs and
+ * attaches them to the NEXT agent row) and transcript layout both require a
+ * turn's reply to sort AFTER its own breadcrumbs. Bumping at finalize
+ * restores the invariant that a turn's reply is its last-written row, so the
+ * turn's breadcrumbs fold into THIS reply, not the next one. Like
+ * setAgentMessageContent, edited_at stays untouched — a finalized reply must
+ * never render "(edited)".
+ */
+export async function finalizeAgentMessage(id: string, content: string): Promise<void> {
+  await pool.query(
+    'update conversation_messages set content = $2, created_at = now() where id = $1 and deleted_at is null',
+    [id, content],
+  );
 }
 
 /** Record-only edit. Returns null when missing, deleted, or tenant-mismatched. */

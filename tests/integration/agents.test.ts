@@ -14,13 +14,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest'
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/api/app';
 import { closeQueues, getQueue, QUEUE } from '../../src/shared/queues';
-import { redis } from '../../src/shared/redis';
+import { redis, createRedis } from '../../src/shared/redis';
 import { pool } from '../../src/db/pool';
 import {
   processConversation,
   type ConversationJobData,
 } from '../../src/workers/processors/conversation.processor';
 import { createHandler, defineAgent, type ResolveContext } from '../../packages/agent/src/index';
+import { inAppPubSubChannel } from '../../src/providers/inapp';
 
 let app: FastifyInstance;
 let bridge: Server;
@@ -53,6 +54,26 @@ const brain = defineAgent({
       });
       return;
     }
+    if (text.includes('pick size')) {
+      ctx.reply('What size?', {
+        card: {
+          type: 'select',
+          id: 'size',
+          prompt: 'Choose a size',
+          options: [
+            { id: 's', label: 'Small' },
+            { id: 'l', label: 'Large' },
+          ],
+        },
+      });
+      return;
+    }
+    if (text.includes('your email')) {
+      ctx.reply('What is your email?', {
+        card: { type: 'text_input', id: 'email', placeholder: 'you@example.com' },
+      });
+      return;
+    }
     if (text.includes('thanks')) {
       ctx.resolve('handled');
       return 'Anytime!';
@@ -66,6 +87,77 @@ const brain = defineAgent({
     resolvedContexts.push(ctx);
   },
 });
+
+// ---- stub Anthropic-compatible server (for the managed plan-card lifecycle) ----
+let llmStub: Server;
+let llmBaseUrl = '';
+const llmSeen: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+let llmQueue: unknown[] = [];
+let llmMode: 'ok' | 'auth' = 'ok';
+const llmEnvelope = (content: unknown[], stopReason: string) => ({
+  id: 'msg_stub',
+  type: 'message',
+  role: 'assistant',
+  model: 'glm-4-test',
+  content,
+  stop_reason: stopReason,
+  stop_sequence: null,
+  usage: { input_tokens: 10, output_tokens: 5 },
+});
+const llmToolUse = (uses: Array<{ id: string; name: string; input: unknown }>) =>
+  llmEnvelope(uses.map((u) => ({ type: 'tool_use', ...u })), 'tool_use');
+const llmText = (text: string) => llmEnvelope([{ type: 'text', text }], 'end_turn');
+
+function startLlmStub(): Promise<void> {
+  llmStub = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const body = JSON.parse(raw) as { messages: Array<{ role: string; content: unknown }> };
+      llmSeen.push({ messages: body.messages });
+      res.setHeader('content-type', 'application/json');
+      if (llmQueue.length > 0) {
+        res.end(JSON.stringify(llmQueue.shift()));
+        return;
+      }
+      if (llmMode === 'auth') {
+        res.statusCode = 401;
+        res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'bad key' } }));
+        return;
+      }
+      res.end(JSON.stringify(llmText('default managed reply')));
+    });
+  });
+  return new Promise((r) => llmStub.listen(0, () => r()));
+}
+
+/** Raw ioredis SUBSCRIBE — observe the WS pub/sub frames the gateway would. */
+async function subscribeCollector(channel: string) {
+  const sub = createRedis();
+  const events: Array<Record<string, unknown>> = [];
+  await sub.subscribe(channel);
+  sub.on('message', (_c: string, msg: string) => events.push(JSON.parse(msg)));
+  return { events, close: () => sub.quit() };
+}
+
+async function waitUntil(pred: () => boolean, timeoutMs = 2500, stepMs = 25): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (pred()) return;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  throw new Error('timed out waiting for a condition');
+}
+
+async function sendManaged(subscriberId: string, text: string, messageId: string) {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/v1/agents/itest-managed/messages',
+    headers: { 'x-api-key': apiKey },
+    payload: { subscriberId, text, messageId },
+  });
+  return json(res) as { conversationId: string; messageId: string };
+}
 
 beforeEach(() => {
   resolvedContexts.length = 0;
@@ -154,6 +246,9 @@ async function transcript(conversationId: string) {
 }
 
 beforeAll(async () => {
+  await startLlmStub();
+  llmBaseUrl = `http://localhost:${(llmStub.address() as AddressInfo).port}`;
+
   app = await buildApp();
 
   const signup = await app.inject({
@@ -182,10 +277,26 @@ beforeAll(async () => {
   );
   await new Promise<void>((r) => bridge.listen(0, r));
   bridgeUrl = `http://localhost:${(bridge.address() as AddressInfo).port}/`;
+
+  // A managed agent (inapp) for the plan-card streaming lifecycle tests.
+  const managed = await app.inject({
+    method: 'POST',
+    url: '/v1/agents',
+    headers: { 'x-api-key': apiKey },
+    payload: {
+      identifier: 'itest-managed',
+      name: 'IT Managed',
+      runtime: 'managed',
+      model: 'glm-4-test',
+      llm: { apiKey: 'managed-test-key', baseUrl: llmBaseUrl },
+    },
+  });
+  expect(managed.statusCode).toBe(201);
 });
 
 afterAll(async () => {
   bridge?.close();
+  llmStub?.close();
   await app.close();
   await closeQueues();
   await redis.quit();
@@ -669,5 +780,347 @@ describe('old-SDK compat: a bridge that only ever answers {signals:[]}', () => {
     await expect(
       processConversation(jobs[0] as Job<ConversationJobData>),
     ).resolves.not.toThrow();
+  });
+});
+
+/** The transcript detail endpoint hides `raw.card` — read the row directly. */
+async function latestAgentRaw(
+  conversationId: string,
+): Promise<{ id: string; content: string; raw: Record<string, unknown> }> {
+  const { rows } = await pool.query(
+    `select id, content, raw from conversation_messages
+      where conversation_id = $1 and role = 'agent' order by created_at desc limit 1`,
+    [conversationId],
+  );
+  return rows[0];
+}
+async function actionRowById(conversationId: string, messageId: string) {
+  const { rows } = await pool.query(
+    `select content, raw from conversation_messages where conversation_id = $1 and id = $2`,
+    [conversationId, messageId],
+  );
+  return rows[0] as { content: string; raw: { action?: { id: string; value?: string; kind?: string } } };
+}
+
+describe('bridge cards', () => {
+  let conversationId = '';
+
+  test('a bridge reply carrying a select card lands on the row and the widget surfaces it', async () => {
+    const turn = await sendTurnAs('card-sub-1', 'pick size please', 'card-turn-1');
+    conversationId = turn.body.conversationId;
+    await runWorkerFor(turn.body);
+
+    const reply = await latestAgentRaw(conversationId);
+    expect(reply.content).toBe('What size?');
+    expect(reply.raw.card).toEqual({
+      type: 'select',
+      id: 'size',
+      prompt: 'Choose a size',
+      options: [
+        { id: 's', label: 'Small' },
+        { id: 'l', label: 'Large' },
+      ],
+    });
+
+    // The widget conversation endpoint surfaces the card on the message.
+    const widget = await app.inject({
+      method: 'GET',
+      url: '/v1/agents/itest-support/conversation?subscriberId=card-sub-1',
+      headers: { 'x-api-key': apiKey },
+    });
+    const cardMsg = json(widget).messages.findLast((m: { role: string }) => m.role === 'agent');
+    expect(cardMsg.card.type).toBe('select');
+    expect(cardMsg.card.options).toHaveLength(2);
+  });
+
+  test('a bridge reply carrying a text_input card lands on the row', async () => {
+    const turn = await sendTurnAs('card-sub-2', 'give me your email field', 'card-turn-2');
+    await runWorkerFor(turn.body);
+    const reply = await latestAgentRaw(turn.body.conversationId);
+    expect(reply.raw.card).toEqual({ type: 'text_input', id: 'email', placeholder: 'you@example.com' });
+  });
+
+  test('a bridge response carrying BOTH buttons and a card is rejected (invalid response)', async () => {
+    // A raw bridge (bypassing the SDK guard) that returns the illegal shape.
+    const raw = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(Buffer.from(c as Uint8Array)));
+      req.on('end', () => {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify({
+            reply: 'both',
+            buttons: [{ id: 'a', label: 'A' }],
+            card: { type: 'text_input', id: 't' },
+            signals: [],
+          }),
+        );
+      });
+    });
+    await new Promise<void>((r) => raw.listen(0, r));
+    const rawUrl = `http://localhost:${(raw.address() as AddressInfo).port}/`;
+    try {
+      const create = await app.inject({
+        method: 'POST',
+        url: '/v1/agents',
+        headers: { 'x-api-key': apiKey },
+        payload: { identifier: 'itest-badcard-bridge', name: 'Bad Card', bridgeUrl: rawUrl },
+      });
+      expect(create.statusCode).toBe(201);
+
+      const turn = await app.inject({
+        method: 'POST',
+        url: '/v1/agents/itest-badcard-bridge/messages',
+        headers: { 'x-api-key': apiKey },
+        payload: { subscriberId: 'badcard-sub', text: 'hi', messageId: 'badcard-1' },
+      });
+      const body = json(turn);
+      await expect(
+        runWorkerFor({ conversationId: body.conversationId, messageId: body.messageId }),
+      ).rejects.toThrow(/invalid response/);
+    } finally {
+      raw.close();
+    }
+  });
+});
+
+describe('actions POST matrix', () => {
+  test('label only → button action; label+value → select; value only → input; neither → 400', async () => {
+    const open = await sendTurnAs('action-matrix-sub', 'hi', 'am-open-1');
+    const conversationId = open.body.conversationId;
+
+    const post = async (payload: Record<string, unknown>) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/agents/itest-support/actions',
+        headers: { 'x-api-key': apiKey },
+        payload: { subscriberId: 'action-matrix-sub', ...payload },
+      });
+
+    // label only → plain button.
+    const labelOnly = json(
+      await post({ actionId: 'btn', label: 'Resend', actionEventId: 'am-1' }),
+    );
+    let row = await actionRowById(conversationId, labelOnly.messageId);
+    expect(row.content).toBe('Resend');
+    expect(row.raw.action).toEqual({ id: 'btn' });
+
+    // label + value → select.
+    const both = json(
+      await post({ actionId: 'size', label: 'Small', value: 's', actionEventId: 'am-2' }),
+    );
+    row = await actionRowById(conversationId, both.messageId);
+    expect(row.content).toBe('Small');
+    expect(row.raw.action).toEqual({ id: 'size', value: 's', kind: 'select' });
+
+    // value only → input (raw typed answer, content = value).
+    const valueOnly = json(
+      await post({ actionId: 'order', value: '#1042', actionEventId: 'am-3' }),
+    );
+    row = await actionRowById(conversationId, valueOnly.messageId);
+    expect(row.content).toBe('#1042');
+    expect(row.raw.action).toEqual({ id: 'order', value: '#1042', kind: 'input' });
+
+    // neither label nor value → 400.
+    const neither = await post({ actionId: 'x', actionEventId: 'am-4' });
+    expect(neither.statusCode).toBe(400);
+  });
+});
+
+describe('push cards', () => {
+  test('push with a card delivers it; push with buttons AND a card is a 400', async () => {
+    const open = await sendTurnAs('push-card-sub', 'hi', 'pc-open-1');
+    const conversationId = open.body.conversationId;
+
+    const withCard = await pushMessage(conversationId, {
+      text: 'Choose a size',
+      card: { type: 'select', id: 'sz', options: [{ id: 's', label: 'S' }, { id: 'l', label: 'L' }] },
+      messageId: 'push-card-1',
+    });
+    expect(withCard.status).toBe(202);
+    await runJob(`conv-deliver-${withCard.body.messageId}`);
+    const row = await actionRowById(conversationId, withCard.body.messageId);
+    expect((row.raw as { card?: { type: string } }).card?.type).toBe('select');
+
+    const both = await pushMessage(conversationId, {
+      text: 'nope',
+      buttons: [{ id: 'a', label: 'A' }],
+      card: { type: 'text_input', id: 't' },
+    });
+    expect(both.status).toBe(400);
+  });
+});
+
+describe('plan-card lifecycle (inapp, managed)', () => {
+  test('streams an evolving message: early ⏳ post, ≥1 update, final = reply; one row, no (edited)', async () => {
+    const subscriberId = 'plan-life-1';
+    const collector = await subscribeCollector(inAppPubSubChannel(tenantId, subscriberId));
+    try {
+      llmQueue = [
+        llmToolUse([
+          { id: 'toolu_pl1', name: 'trigger_workflow', input: { workflowKey: 'itest-workflow', payload: { name: 'Ana' } } },
+        ]),
+        llmText('Your replacement is on the way!'),
+      ];
+      const turn = await sendManaged(subscriberId, 'my order is missing', 'plan-life-msg-1');
+      await runWorkerFor(turn);
+      await waitUntil(() =>
+        collector.events.some(
+          (e) => e.type === 'conversation.message.updated' && (e.message as { text?: string })?.text === 'Your replacement is on the way!',
+        ),
+      );
+
+      const posts = collector.events.filter((e) => e.type === 'conversation.message');
+      const updates = collector.events.filter((e) => e.type === 'conversation.message.updated');
+      // Early post carried the ⏳ progress body.
+      expect(posts.length).toBeGreaterThanOrEqual(1);
+      expect(String((posts[0].message as { text: string }).text)).toContain('⏳');
+      // At least one update, the final of which is the reply text.
+      expect(updates.length).toBeGreaterThanOrEqual(1);
+      const finalUpdate = updates.at(-1)!.message as { id: string; text: string };
+      expect(finalUpdate.text).toBe('Your replacement is on the way!');
+      // Every frame is the SAME row id — the plan card is one evolving message.
+      const ids = new Set(
+        [...posts, ...updates].map((e) => (e.message as { id: string }).id),
+      );
+      expect(ids.size).toBe(1);
+
+      // Exactly one agent row, its content is the final reply, no (edited).
+      const { rows } = await pool.query(
+        `select content, edited_at from conversation_messages where conversation_id = $1 and role = 'agent'`,
+        [turn.conversationId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].content).toBe('Your replacement is on the way!');
+      expect(rows[0].edited_at).toBeNull();
+    } finally {
+      await collector.close();
+    }
+  });
+
+  test('final update carries buttons when the turn presents them', async () => {
+    const subscriberId = 'plan-life-btn';
+    const collector = await subscribeCollector(inAppPubSubChannel(tenantId, subscriberId));
+    try {
+      llmQueue = [
+        llmToolUse([
+          { id: 'toolu_pb1', name: 'trigger_workflow', input: { workflowKey: 'itest-workflow' } },
+        ]),
+        // Second round: present buttons, then a final text response.
+        llmToolUse([
+          { id: 'toolu_pb2', name: 'present_buttons', input: { buttons: [{ id: 'yes', label: 'Yes' }] } },
+        ]),
+        llmText('All done — anything else?'),
+      ];
+      const turn = await sendManaged(subscriberId, 'trigger then buttons', 'plan-life-btn-1');
+      await runWorkerFor(turn);
+      await waitUntil(() =>
+        collector.events.some(
+          (e) => e.type === 'conversation.message.updated' && (e.message as { buttons?: unknown })?.buttons !== undefined,
+        ),
+      );
+      const withButtons = collector.events.findLast(
+        (e) => e.type === 'conversation.message.updated' && (e.message as { buttons?: unknown })?.buttons,
+      )!;
+      expect((withButtons.message as { buttons: unknown }).buttons).toEqual([{ id: 'yes', label: 'Yes' }]);
+    } finally {
+      await collector.close();
+    }
+  });
+
+  test('retry recovery: re-driving the same job keeps one row and no new message id', async () => {
+    const subscriberId = 'plan-life-retry';
+    llmQueue = [
+      llmToolUse([{ id: 'toolu_pr1', name: 'trigger_workflow', input: { workflowKey: 'itest-workflow' } }]),
+      llmText('Handled once.'),
+    ];
+    const turn = await sendManaged(subscriberId, 'my order again', 'plan-life-retry-1');
+    await runWorkerFor(turn);
+
+    const collector = await subscribeCollector(inAppPubSubChannel(tenantId, subscriberId));
+    try {
+      // Re-run the SAME turn (crash-retry): the model re-requests the tool.
+      llmQueue = [
+        llmToolUse([{ id: 'toolu_pr2', name: 'trigger_workflow', input: { workflowKey: 'itest-workflow' } }]),
+        llmText('Handled once.'),
+      ];
+      await runWorkerFor(turn);
+      await waitUntil(() => collector.events.length > 0);
+
+      const { rows } = await pool.query(
+        `select id, content from conversation_messages where conversation_id = $1 and role = 'agent'`,
+        [turn.conversationId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].content).toBe('Handled once.');
+      // Any republished frame reuses the original row id — never a new message.
+      const ids = new Set(
+        collector.events
+          .filter((e) => e.type === 'conversation.message' || e.type === 'conversation.message.updated')
+          .map((e) => (e.message as { id: string }).id),
+      );
+      expect([...ids]).toEqual([rows[0].id]);
+    } finally {
+      await collector.close();
+    }
+  });
+
+  test('a PermanentError (bad key) finalizes the frozen card to the config-error note', async () => {
+    const subscriberId = 'plan-life-perm';
+    const collector = await subscribeCollector(inAppPubSubChannel(tenantId, subscriberId));
+    try {
+      // First round asks for a tool (posts the ⏳ card); the NEXT model call 401s.
+      llmQueue = [
+        llmToolUse([{ id: 'toolu_pp1', name: 'trigger_workflow', input: { workflowKey: 'itest-workflow' } }]),
+      ];
+      llmMode = 'auth';
+      const turn = await sendManaged(subscriberId, 'this will fail', 'plan-life-perm-1');
+      await runWorkerFor(turn); // PermanentError is swallowed into a transcript note
+      llmMode = 'ok';
+
+      const { rows } = await pool.query(
+        `select content, edited_at from conversation_messages where conversation_id = $1 and role = 'agent'`,
+        [turn.conversationId],
+      );
+      expect(rows).toHaveLength(1);
+      // The frozen ⏳ card was rewritten to the config-error message.
+      expect(String(rows[0].content)).toContain('brain config error');
+      expect(String(rows[0].content)).not.toContain('⏳');
+
+      const system = (
+        await pool.query(
+          `select content from conversation_messages where conversation_id = $1 and role = 'system' order by created_at desc limit 1`,
+          [turn.conversationId],
+        )
+      ).rows[0];
+      expect(String(system.content)).toContain('brain config error');
+    } finally {
+      await collector.close();
+    }
+  });
+
+  test('a no-tool turn posts NO early card: the first WS frame is the final message', async () => {
+    const subscriberId = 'plan-life-notool';
+    const collector = await subscribeCollector(inAppPubSubChannel(tenantId, subscriberId));
+    try {
+      llmQueue = [llmText('Just a plain reply, no tools.')];
+      const turn = await sendManaged(subscriberId, 'say hi', 'plan-life-notool-1');
+      await runWorkerFor(turn);
+      await waitUntil(() => collector.events.some((e) => e.type === 'conversation.message'));
+
+      // No progress updates were published — the reply is a single message frame.
+      expect(collector.events.some((e) => e.type === 'conversation.message.updated')).toBe(false);
+      const post = collector.events.find((e) => e.type === 'conversation.message')!;
+      expect((post.message as { text: string }).text).toBe('Just a plain reply, no tools.');
+      // And exactly one agent row.
+      const { rows } = await pool.query(
+        `select content from conversation_messages where conversation_id = $1 and role = 'agent'`,
+        [turn.conversationId],
+      );
+      expect(rows).toHaveLength(1);
+    } finally {
+      await collector.close();
+    }
   });
 });

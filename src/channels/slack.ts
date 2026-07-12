@@ -10,6 +10,8 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { logger } from '../shared/logger';
+import type { Card } from '../shared/cards';
 
 export interface SlackAuthTest {
   team_id: string;
@@ -49,8 +51,11 @@ function apiBase(): string {
 }
 
 class SlackError extends Error {
+  /** The raw Slack `error` code (e.g. 'invalid_blocks'), for branchable handling. */
+  readonly error: string;
   constructor(method: string, error: string) {
     super(`slack ${method}: ${error}`);
+    this.error = error;
   }
 }
 
@@ -70,50 +75,141 @@ async function call<T>(token: string, method: string, body?: Record<string, unkn
   return json as T;
 }
 
+/**
+ * Build the Block Kit blocks for a reply's interactive widget: an actions
+ * block for buttons, a static_select for a select card, or an input block for
+ * a text_input card. Returns undefined for a plain (text-only) reply — the
+ * caller then sends `text` alone.
+ */
+function messageBlocks(
+  text: string,
+  opts?: { buttons?: Array<{ id: string; label: string }>; card?: Card },
+): unknown[] | undefined {
+  if (opts?.buttons?.length) {
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+      {
+        type: 'actions',
+        elements: opts.buttons.map((b) => ({
+          type: 'button',
+          text: { type: 'plain_text', text: b.label },
+          action_id: b.id,
+          value: b.id,
+        })),
+      },
+    ];
+  }
+  const card = opts?.card;
+  if (card?.type === 'select') {
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+      ...(card.prompt ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: card.prompt }] }] : []),
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'static_select',
+            action_id: card.id,
+            placeholder: { type: 'plain_text', text: card.prompt?.slice(0, 150) ?? 'Choose…' },
+            options: card.options.map((o) => ({
+              text: { type: 'plain_text', text: o.label },
+              value: o.id,
+            })),
+          },
+        ],
+      },
+    ];
+  }
+  if (card?.type === 'text_input') {
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+      {
+        type: 'input',
+        dispatch_action: true,
+        block_id: card.id,
+        label: { type: 'plain_text', text: card.prompt ?? ' ' },
+        element: {
+          type: 'plain_text_input',
+          action_id: card.id,
+          ...(card.placeholder ? { placeholder: { type: 'plain_text', text: card.placeholder } } : {}),
+          dispatch_action_config: { trigger_actions_on: ['on_enter_pressed'] },
+        },
+      },
+    ];
+  }
+  return undefined;
+}
+
+/** Prose fallback when a card's blocks are rejected (the D15 invalid_blocks net). */
+function cardProse(text: string, card: Card): string {
+  const prompt = card.prompt ?? '';
+  if (card.type === 'select') {
+    const opts = card.options.map((o, i) => `${i + 1}) ${o.label}`).join('\n');
+    return `${text}\n\n${prompt}${prompt ? '\n' : ''}${opts}`;
+  }
+  return `${text}\n\n${prompt}${card.placeholder ? ` (e.g. ${card.placeholder})` : ''}`;
+}
+
 export const slack = {
   /** Validates the bot token and returns the workspace + bot identity. */
   authTest: (token: string) => call<SlackAuthTest>(token, 'auth.test'),
 
   /**
-   * Post a message. With buttons: a section block carries the text and an
-   * actions block carries the buttons (action_id + value = our button id);
-   * the plain `text` stays as the notification/accessibility fallback.
-   * Without buttons: `text` only. thread_ts threads the reply.
+   * Post a message. With buttons/card: a section block carries the text and a
+   * widget block carries the interaction; the plain `text` stays as the
+   * notification/accessibility fallback. Without either: `text` only.
+   * thread_ts threads the reply. If a card's blocks are rejected as
+   * invalid_blocks, retry once as plain prose so the reply still lands.
    */
-  postMessage: (
+  postMessage: async (
     token: string,
     channel: string,
     text: string,
-    opts?: { threadTs?: string; buttons?: Array<{ id: string; label: string }> },
-  ) =>
-    call<{ channel: string; ts: string }>(token, 'chat.postMessage', {
-      channel,
-      text,
-      ...(opts?.threadTs ? { thread_ts: opts.threadTs } : {}),
-      ...(opts?.buttons?.length
-        ? {
-            blocks: [
-              { type: 'section', text: { type: 'mrkdwn', text } },
-              {
-                type: 'actions',
-                elements: opts.buttons.map((b) => ({
-                  type: 'button',
-                  text: { type: 'plain_text', text: b.label },
-                  action_id: b.id,
-                  value: b.id,
-                })),
-              },
-            ],
-          }
-        : {}),
-    }),
+    opts?: { threadTs?: string; buttons?: Array<{ id: string; label: string }>; card?: Card },
+  ): Promise<{ channel: string; ts: string }> => {
+    const blocks = messageBlocks(text, opts);
+    try {
+      return await call<{ channel: string; ts: string }>(token, 'chat.postMessage', {
+        channel,
+        text,
+        ...(opts?.threadTs ? { thread_ts: opts.threadTs } : {}),
+        ...(blocks ? { blocks } : {}),
+      });
+    } catch (err) {
+      // D15 safety net: an in-message input block can be rejected on some
+      // surfaces — fall back to prose so the card degrades but the reply lands.
+      if (err instanceof SlackError && err.error === 'invalid_blocks' && opts?.card) {
+        logger.warn({ error: err.error }, 'slack card blocks rejected — falling back to prose');
+        return await call<{ channel: string; ts: string }>(token, 'chat.postMessage', {
+          channel,
+          text: cardProse(text, opts.card),
+          ...(opts?.threadTs ? { thread_ts: opts.threadTs } : {}),
+        });
+      }
+      throw err;
+    }
+  },
 
   /**
-   * Rewrite a sent message. text only — omitting blocks strips the actions
-   * block, which is how a button set retires after a click.
+   * Rewrite a sent message. With no opts: text only — omitting blocks strips
+   * the actions/input block, which is how a widget retires after a response.
+   * With buttons/card opts: re-attach the matching blocks.
    */
-  update: (token: string, channel: string, ts: string, text: string) =>
-    call<{ channel: string; ts: string }>(token, 'chat.update', { channel, ts, text }),
+  update: (
+    token: string,
+    channel: string,
+    ts: string,
+    text: string,
+    opts?: { buttons?: Array<{ id: string; label: string }>; card?: Card },
+  ) => {
+    const blocks = messageBlocks(text, opts);
+    return call<{ channel: string; ts: string }>(token, 'chat.update', {
+      channel,
+      ts,
+      text,
+      ...(blocks ? { blocks } : {}),
+    });
+  },
 
   deleteMessage: (token: string, channel: string, ts: string) =>
     call<{ channel: string; ts: string }>(token, 'chat.delete', { channel, ts }),

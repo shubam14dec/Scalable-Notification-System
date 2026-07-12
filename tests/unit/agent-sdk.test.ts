@@ -174,6 +174,75 @@ describe('handleEvent: resolved lifecycle events', () => {
   });
 });
 
+describe('cards (D14)', () => {
+  test('ctx.reply with a select card sets response.card, leaves buttons unset', async () => {
+    const agent = defineAgent({
+      onMessage(ctx) {
+        ctx.reply('Pick a size', {
+          card: {
+            type: 'select',
+            id: 'size',
+            options: [
+              { id: 's', label: 'Small' },
+              { id: 'l', label: 'Large' },
+            ],
+          },
+        });
+      },
+    });
+    const res = await handleEvent(agent, makeEvent('sizes'));
+    expect(res.reply).toBe('Pick a size');
+    expect(res.card).toEqual({
+      type: 'select',
+      id: 'size',
+      options: [
+        { id: 's', label: 'Small' },
+        { id: 'l', label: 'Large' },
+      ],
+    });
+    expect(res.buttons).toBeUndefined();
+  });
+
+  test('ctx.reply with a text_input card sets response.card', async () => {
+    const agent = defineAgent({
+      onMessage(ctx) {
+        ctx.reply('Your email?', {
+          card: { type: 'text_input', id: 'email', placeholder: 'you@example.com' },
+        });
+      },
+    });
+    const res = await handleEvent(agent, makeEvent('email please'));
+    expect(res.card).toEqual({ type: 'text_input', id: 'email', placeholder: 'you@example.com' });
+  });
+
+  test('ctx.reply throws when given both buttons and a card', async () => {
+    const agent = defineAgent({
+      onMessage(ctx) {
+        ctx.reply('nope', {
+          buttons: [{ id: 'a', label: 'A' }],
+          card: { type: 'text_input', id: 't' },
+        });
+      },
+    });
+    await expect(handleEvent(agent, makeEvent('both'))).rejects.toThrow(/buttons or a card/);
+  });
+
+  test('AgentAction.value passes through to onAction', async () => {
+    const agent = defineAgent({
+      onMessage: () => 'unused',
+      onAction(ctx) {
+        return `id=${ctx.action?.id} value=${ctx.action?.value}`;
+      },
+    });
+    const event = makeEvent('Small', {
+      type: 'action',
+      action: { id: 'size', label: 'Small', value: 's' },
+    });
+    const res = await handleEvent(agent, event);
+    expect(res.reply).toBe('id=size value=s');
+  });
+});
+
 describe('createHandler over real HTTP', () => {
   const agent = defineAgent({ onMessage: (ctx) => `pong: ${ctx.message.text}` });
   let server: Server;

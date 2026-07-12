@@ -6,6 +6,7 @@ import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
 import { listWorkflows } from '../db/repositories';
 import { internalTrigger } from './internal-trigger';
+import type { Card, CardOption } from '../shared/cards';
 import {
   insertConversationMessage,
   resolveConversation,
@@ -50,11 +51,16 @@ export interface TurnUsage {
   modelCalls: number;
 }
 
+/** A single tappable choice attached to a reply (present_buttons tool). */
+type ReplyButton = { id: string; label: string };
+
 export interface BrainTurnResult {
   /** The reply to deliver; null when the model refused or sent no text. */
   reply: string | null;
   /** Buttons the model presented for this reply (present_buttons tool). */
-  buttons?: Array<{ id: string; label: string }>;
+  buttons?: ReplyButton[];
+  /** A card the model presented (present_choices/request_input tool). */
+  card?: Card;
   /** True when the model resolved the conversation (caller publishes WS). */
   resolved: boolean;
   /** Transcript breadcrumb (refusal, truncation, loop cap) — visible. */
@@ -76,7 +82,13 @@ export async function runManagedTurn(
   subscriber: Subscriber,
   history: ConversationMessage[],
   inbound: ConversationMessage,
-  hooks?: { onModelCall?: () => void },
+  hooks?: {
+    onModelCall?: () => void;
+    /** Fired BEFORE each tool executes — drives the plan card's per-step post. */
+    onToolCall?: (tool: string, input: Record<string, unknown>) => void | Promise<void>;
+    /** Fired AFTER each tool executes — closes that step (done/error). */
+    onToolResult?: (tool: string, ok: boolean) => void | Promise<void>;
+  },
 ): Promise<BrainTurnResult> {
   if (!agent.llm_credentials) {
     throw new PermanentError(`managed agent ${agent.identifier} has no LLM credentials`);
@@ -133,6 +145,8 @@ export async function runManagedTurn(
     'a durable fact worth remembering -> call set_metadata; ' +
     'you are offering the user a small set of choices -> call present_buttons ' +
     'instead of listing them in text. ' +
+    'you need a structured answer: a pick-one list -> call present_choices, ' +
+    'a specific free-text value (email, order id) -> call request_input. ' +
     'Then reply. Never mention this reminder.</platform_reminder>';
 
   const messages: Anthropic.MessageParam[] = [
@@ -141,9 +155,11 @@ export async function runManagedTurn(
   ];
 
   let resolved = false;
-  // Presentation state, not an effect: the last present_buttons call wins,
-  // and the set only survives if the turn ends with reply text to carry it.
-  let buttons: Array<{ id: string; label: string }> | undefined;
+  // Presentation state, not an effect: ONE slot shared by all three
+  // presentation tools (buttons/choices/input), so the last call across ANY
+  // of them wins — a reply carries buttons XOR a card, never both. Survives
+  // only if the turn ends with reply text to carry it.
+  let presentation: { buttons?: ReplyButton[]; card?: Card } | undefined;
   const usage: TurnUsage = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
 
   for (let call = 1; call <= MAX_MODEL_CALLS; call += 1) {
@@ -209,14 +225,21 @@ export async function runManagedTurn(
       // (splitting them trains the model out of parallel calls).
       const results: Anthropic.ToolResultBlockParam[] = [];
       for (const use of toolUses) {
+        // Per-tool interleave (call → exec → result) so the plan card's
+        // "close the last pending step" always lands on THIS tool's step.
+        await hooks?.onToolCall?.(use.name, use.input as Record<string, unknown>);
         const outcome = await executeTool(use, agent, conversation, subscriber, inbound, {
           onResolve: () => {
             resolved = true;
           },
           onButtons: (presented) => {
-            buttons = presented;
+            presentation = { buttons: presented };
+          },
+          onCard: (presented) => {
+            presentation = { card: presented };
           },
         });
+        await hooks?.onToolResult?.(use.name, !outcome.isError);
         results.push({
           type: 'tool_result',
           tool_use_id: use.id,
@@ -246,8 +269,9 @@ export async function runManagedTurn(
 
     return {
       reply: reply.length > 0 ? reply : null,
-      // No reply text -> nothing to attach the buttons to; they drop here.
-      buttons: reply.length > 0 ? buttons : undefined,
+      // No reply text -> nothing to attach the presentation to; it drops here.
+      buttons: reply.length > 0 ? presentation?.buttons : undefined,
+      card: reply.length > 0 ? presentation?.card : undefined,
       resolved,
       note: notes.length > 0 ? notes.join(' · ') : undefined,
       usage,
@@ -303,6 +327,32 @@ function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] 
           result: `${btns.length} button(s) will be shown attached to your next reply text`,
         });
       }
+      // A reply that carried a card replays as the present_choices/request_input
+      // call that produced it — same honesty rule as buttons above.
+      const card = (m.raw as { card?: Card } | null)?.card;
+      if (card?.type === 'select') {
+        calls.push({
+          id: `hist_${m.id}c`,
+          tool: 'present_choices',
+          input: {
+            id: card.id,
+            ...(card.prompt ? { prompt: card.prompt } : {}),
+            options: card.options,
+          },
+          result: `a ${card.options.length}-option choice list will be shown attached to your next reply text`,
+        });
+      } else if (card?.type === 'text_input') {
+        calls.push({
+          id: `hist_${m.id}c`,
+          tool: 'request_input',
+          input: {
+            id: card.id,
+            ...(card.prompt ? { prompt: card.prompt } : {}),
+            ...(card.placeholder ? { placeholder: card.placeholder } : {}),
+          },
+          result: 'a text input field will be shown attached to your next reply text',
+        });
+      }
       if (calls.length > 0) {
         // The turn's real shape: assistant asks for tools, user returns
         // results, assistant speaks.
@@ -335,10 +385,11 @@ function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] 
   return messages;
 }
 
-/** Button clicks (user rows with raw.action) read naturally to an LLM. */
+/** Button clicks / card answers (user rows with raw.action) read naturally to an LLM. */
 function userText(m: ConversationMessage): string {
-  const action = (m.raw as { action?: { id: string } } | null)?.action;
-  return action ? `[user clicked: ${m.content}]` : m.content;
+  const action = (m.raw as { action?: { id: string; kind?: string } } | null)?.action;
+  if (!action) return m.content;
+  return action.kind === 'input' ? `[user entered: ${m.content}]` : `[user clicked: ${m.content}]`;
 }
 
 /**
@@ -454,6 +505,54 @@ function buildTools(workflowKeys: string[]): Anthropic.Tool[] {
         required: ['buttons'],
       },
     },
+    {
+      name: 'present_choices',
+      description:
+        'Offer the user a single-choice list attached to the reply you are about to ' +
+        'write. Call when the answer should be picked from known options (2-25). The ' +
+        'choices render as a native dropdown/keyboard attached to your reply. Do not ' +
+        'also enumerate the options in your reply text. Calling again replaces the ' +
+        'previous presentation — the last call wins.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', maxLength: 64, description: 'Stable machine id for this choice, e.g. "pick_size"' },
+          prompt: { type: 'string', maxLength: 200, description: 'Optional label shown above/inside the picker' },
+          options: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 25,
+            description: 'The choices to offer, in display order (2-25)',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', maxLength: 64, description: 'Stable machine id, e.g. "small"' },
+                label: { type: 'string', maxLength: 48, description: 'What the user sees for this option' },
+              },
+              required: ['id', 'label'],
+            },
+          },
+        },
+        required: ['id', 'options'],
+      },
+    },
+    {
+      name: 'request_input',
+      description:
+        'Ask the user for one short free-text value (an email, an order id…). Renders ' +
+        'as a native input field attached to your reply. Do not use for open-ended ' +
+        'conversation — only for a specific value you need. Calling again replaces the ' +
+        'previous presentation — the last call wins.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', maxLength: 64, description: 'Stable machine id for this input, e.g. "order_id"' },
+          prompt: { type: 'string', maxLength: 200, description: 'Optional label shown next to the field' },
+          placeholder: { type: 'string', maxLength: 64, description: 'Optional grey hint inside the empty field' },
+        },
+        required: ['id'],
+      },
+    },
   ];
 
   // No workflows -> no trigger tool; the enum stops hallucinated keys.
@@ -497,7 +596,8 @@ async function executeTool(
   inbound: ConversationMessage,
   hooks: {
     onResolve: () => void;
-    onButtons: (buttons: Array<{ id: string; label: string }>) => void;
+    onButtons: (buttons: ReplyButton[]) => void;
+    onCard: (card: Card) => void;
   },
 ): Promise<{ message: string; isError?: boolean }> {
   const input = use.input as Record<string, unknown>;
@@ -533,6 +633,68 @@ async function executeTool(
     return {
       message: `${cleaned.length} button(s) will be shown attached to your next reply text`,
     };
+  }
+
+  if (use.name === 'present_choices') {
+    // Presentation, not an effect: no txn, no breadcrumb — validation only,
+    // with is_error results the model can correct against.
+    const id = typeof input.id === 'string' ? input.id.trim() : '';
+    if (!id || id.length > 64) {
+      return { message: 'present_choices needs an id of 1-64 characters', isError: true };
+    }
+    const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : undefined;
+    if (prompt !== undefined && (prompt.length === 0 || prompt.length > 200)) {
+      return { message: 'prompt must be 1-200 characters', isError: true };
+    }
+    const rawOptions = input.options;
+    if (!Array.isArray(rawOptions) || rawOptions.length < 2 || rawOptions.length > 25) {
+      return { message: 'present_choices needs 2-25 options', isError: true };
+    }
+    const options: CardOption[] = [];
+    const ids = new Set<string>();
+    for (const o of rawOptions as Array<{ id?: unknown; label?: unknown }>) {
+      const oid = typeof o?.id === 'string' ? o.id.trim() : '';
+      const label = typeof o?.label === 'string' ? o.label.trim() : '';
+      if (!oid || oid.length > 64) {
+        return { message: 'every option needs an id of 1-64 characters', isError: true };
+      }
+      if (!label || label.length > 48) {
+        return { message: 'every option needs a label of 1-48 characters', isError: true };
+      }
+      if (ids.has(oid)) {
+        return { message: `duplicate option ids: ${oid}`, isError: true };
+      }
+      ids.add(oid);
+      options.push({ id: oid, label });
+    }
+    const card: Card = { type: 'select', id, ...(prompt ? { prompt } : {}), options };
+    hooks.onCard(card);
+    return {
+      message: `a ${options.length}-option choice list will be shown attached to your next reply text`,
+    };
+  }
+
+  if (use.name === 'request_input') {
+    const id = typeof input.id === 'string' ? input.id.trim() : '';
+    if (!id || id.length > 64) {
+      return { message: 'request_input needs an id of 1-64 characters', isError: true };
+    }
+    const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : undefined;
+    if (prompt !== undefined && (prompt.length === 0 || prompt.length > 200)) {
+      return { message: 'prompt must be 1-200 characters', isError: true };
+    }
+    const placeholder = typeof input.placeholder === 'string' ? input.placeholder.trim() : undefined;
+    if (placeholder !== undefined && (placeholder.length === 0 || placeholder.length > 64)) {
+      return { message: 'placeholder must be 64 chars or fewer', isError: true };
+    }
+    const card: Card = {
+      type: 'text_input',
+      id,
+      ...(prompt ? { prompt } : {}),
+      ...(placeholder ? { placeholder } : {}),
+    };
+    hooks.onCard(card);
+    return { message: 'a text input field will be shown attached to your next reply text' };
   }
 
   if (use.name === 'set_metadata') {

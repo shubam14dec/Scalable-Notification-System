@@ -59,7 +59,28 @@ export interface HistoryEntry {
 export interface AgentAction {
   id: string;
   label: string;
+  /**
+   * The structured answer behind the click. For a select card this is the
+   * chosen option's id; for a text-input card it's what the user typed. Plain
+   * buttons carry no value.
+   */
+  value?: string;
 }
+
+/** One choice in a select card. */
+export interface CardOption {
+  id: string;
+  label: string;
+}
+
+/**
+ * An interactive card rendered natively under a reply — a single-select list
+ * of choices, or a free-text input. The user's answer comes back as an
+ * onAction event carrying the structured `value`.
+ */
+export type Card =
+  | { type: 'select'; id: string; prompt?: string; options: CardOption[] }
+  | { type: 'text_input'; id: string; prompt?: string; placeholder?: string };
 
 /** Who or what resolved the conversation. */
 export type ResolvedBy = 'bridge' | 'operator' | 'sweep';
@@ -110,6 +131,8 @@ export interface BridgeResponse {
   reply?: string;
   /** Buttons rendered under the reply; clicks come back as onAction. */
   buttons?: ReplyButton[];
+  /** A card rendered under the reply (mutually exclusive with buttons). */
+  card?: Card;
   signals: Signal[];
 }
 
@@ -126,10 +149,11 @@ export interface AgentContext {
   action?: AgentAction;
   /**
    * Send a reply to the user (last call wins; returning a string does the
-   * same). `options.buttons` renders clickable buttons under the reply —
-   * clicks come back as onAction events.
+   * same). `options.buttons` renders clickable buttons under the reply;
+   * `options.card` renders a select or text-input card instead — pass one or
+   * the other, never both. Either way the user's answer arrives as onAction.
    */
-  reply(text: string, options?: { buttons?: ReplyButton[] }): void;
+  reply(text: string, options?: { buttons?: ReplyButton[]; card?: Card }): void;
   metadata: {
     /** Persist a key on the conversation (survives across turns, 64KB total). */
     set(key: string, value: unknown): void;
@@ -238,6 +262,7 @@ export async function handleEvent(
   const signals: Signal[] = [];
   let reply: string | undefined;
   let buttons: ReplyButton[] | undefined;
+  let card: Card | undefined;
   const metadata = { ...event.conversation.metadata };
 
   const ctx: AgentContext = {
@@ -247,8 +272,12 @@ export async function handleEvent(
     history: event.history,
     action: event.action,
     reply(text, options) {
+      if (options?.buttons && options?.card) {
+        throw new Error('a reply may carry buttons or a card, not both');
+      }
       reply = text;
       buttons = options?.buttons;
+      card = options?.card;
     },
     metadata: {
       set(key, value) {
@@ -278,7 +307,7 @@ export async function handleEvent(
   const returned = await handler(ctx);
   if (typeof returned === 'string') reply = returned;
 
-  return { reply, buttons, signals };
+  return { reply, buttons, card, signals };
 }
 
 // ---- plain Node HTTP handler (works in Express/Fastify/Next route shims) ----

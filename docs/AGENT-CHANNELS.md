@@ -356,11 +356,18 @@ On the dashboard, use the **Routes** button on the Slack connection's row.
 **Finding a channel id:** open the channel → **About** tab → it's at the very
 bottom.
 
-### Buttons
+### Buttons and cards
 
 When an agent replies with buttons (`present_buttons`), they render as native
 **Block Kit** buttons in Slack. A click posts back, the original message
 updates in place to **"✓ &lt;choice&gt;"**, and the agent continues the turn.
+
+A reply can instead carry a **card** — a `static_select` menu or a
+`plain_text_input` field (see [Cards and plan cards](#cards-and-plan-cards)).
+**Caveat:** in-message input blocks are a **newer Slack surface**; if a
+workspace rejects them the platform **automatically degrades** that reply to
+plain prose (numbered options / "reply with your answer") — nothing breaks
+and no action is needed. `static_select` menus are broadly supported.
 
 ### Edit / delete parity
 
@@ -404,6 +411,93 @@ and email. Per-channel routes are unaffected by a re-point.
 5. Agent **button** click → message updates to **"✓ …"**, agent continues.
 6. **Edit** your message → transcript reflects the edit, no re-answer.
 7. **Delete** your message → the row is **tombstoned**.
+
+## Cards and plan cards
+
+Buttons (`present_buttons`) are no longer the only interactive element an
+agent reply can carry. A reply may also carry a **card** — a single
+structured input rendered natively per channel. The rule is **one
+interactive element per reply**: a reply carries **buttons OR a card, never
+both**. For managed agents the **last presentation tool call wins**, so a
+turn that calls `present_choices` after `present_buttons` ships the card.
+
+### The two card types
+
+A card is exactly one of:
+
+- **Single-select** — `{type:'select', id, prompt?, options:[{id,label}]}`,
+  with **2–25** options. The user picks one.
+- **Text input** — `{type:'text_input', id, prompt?, placeholder?}`, where
+  `placeholder` is **≤64** chars. The user types free text (**≤3000** chars).
+
+Three ways to attach one, all carrying the same card shape:
+
+- **Bridge agents:** `ctx.reply(text, {card})`.
+- **Managed agents:** the `present_choices` tool (select) and the
+  `request_input` tool (text input) — the platform builds the card for you.
+- **Push API:** the `card` field on the reply body.
+
+### Answers come back as `action` events
+
+A card answer arrives as the **same `action` event** buttons already use —
+there is no new event type:
+
+```
+action: { id, label, value? }
+```
+
+- **Select:** `value` holds the **chosen option id**; `label` is its label.
+- **Text input:** `value` holds the **typed text** (≤3000 chars).
+
+Managed agents see the answer folded into the next turn as
+`[user clicked: …]` (select) or `[user entered: …]` (text input), so a
+prompt reacts to it exactly as it reacts to a button click.
+
+### Per-channel rendering matrix
+
+| Channel | Select card | Text-input card | Answer capture |
+|---|---|---|---|
+| **widget** | native dropdown under the reply | native input field under the reply | structured; active **only while the reply is the latest message** |
+| **slack** | `static_select` in an actions block | `plain_text_input` in an input block (dispatches on **Enter**) | structured; degrades to prose if the workspace rejects input blocks — see caveat |
+| **telegram** | inline keyboard, **one option per row** | `ForceReply` prompt (shows the placeholder) | structured **only via Telegram's reply affordance** — see reply-to contract |
+| **email** | numbered options in prose | prompt + `(e.g. placeholder)` in prose | **none** — email replies are normal turns, no structured capture |
+
+**Telegram reply-to contract (tell your end users).** A Telegram text-input
+card is a `ForceReply` prompt, and the user **must** answer using Telegram's
+**reply** affordance (the swipe / quoted-reply UI) so the platform can tie
+the text back to the card. A plain, non-reply message is treated as a
+**normal conversational turn** and the card **quietly expires** — the typed
+text is not captured as the card's answer. Select cards (inline keyboards)
+have no such constraint: tapping an option always registers.
+
+**Slack input-block degradation caveat.** In-message `plain_text_input`
+blocks are a **newer Slack surface**. If a workspace rejects them, the
+platform **automatically degrades** that reply to plain prose (numbered
+options / "reply with your answer") — **no action is needed**, and nothing
+is lost but the native widget. `static_select` menus are broadly supported
+and don't hit this path.
+
+### Plan cards (live "working…" streaming)
+
+When a **managed** agent's turn **calls tools** (`trigger_workflow`,
+`set_metadata`, …), it doesn't sit silent until the work finishes. It posts
+a single **"working…"** message that **edits itself live** as the steps run
+— `⏳ Triggering order-shipped…` → `✓` — and the **final edit becomes the
+reply**. One message, edited in place; never a stream of separate posts.
+
+- **Where it applies:** managed agents on **widget, Telegram, and Slack**.
+  **Not** email (replies are normal turns) and **not** bridge agents (they
+  own their own output).
+- **Zero configuration.** It's automatic. A turn that calls **no** tools
+  behaves exactly as before — one reply, no "working…" message.
+- **The step lines are the platform's, not the model's.** Each line comes
+  from the platform's **tool label**, so the visible progress is backed by
+  the **same breadcrumb audit trail** operators see in the dashboard — the
+  model can't invent a step that didn't run.
+- **Throttled ≥1s.** Edits are paced at least one second apart to stay under
+  channel rate limits.
+- **Crash-safe.** If the worker dies mid-turn, the retry **resumes editing
+  the same message** — no duplicate "working…" posts.
 
 ## Deprecated (still works): agent-scoped channel routes
 

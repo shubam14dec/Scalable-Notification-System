@@ -8,6 +8,7 @@ import { getQueue, QUEUE } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
 import { sealSecret, openSecret } from '../../auth/secret-box';
 import { telegram, type TelegramUpdate } from '../../channels/telegram';
+import type { Card } from '../../shared/cards';
 import { emailWebhookUrl } from './email-channel';
 import { slackWebhookUrls } from './slack';
 import { upsertSubscriber } from '../../db/repositories';
@@ -319,6 +320,60 @@ export function registerTelegramRoutes(app: FastifyInstance) {
         threadKey: String(message.chat.id),
       });
 
+      // A ForceReply answer to a text_input card is that card's value, not a
+      // fresh turn — thread it onto the card as an input action. The prompt is
+      // the agent reply the card rode on (its telegramMessageId). No match /
+      // not a text_input card -> falls through to the normal turn path.
+      if (message.reply_to_message) {
+        const sourceRow = await findMessageByTelegramId(
+          conversation.id,
+          message.reply_to_message.message_id,
+        );
+        const card = (sourceRow?.raw as { card?: Card } | null)?.card;
+        if (sourceRow && card?.type === 'text_input') {
+          const answered = await insertConversationMessage({
+            conversationId: conversation.id,
+            tenantId: connection.tenant_id,
+            role: 'user',
+            content: message.text,
+            dedupeKey: `tg-${update.update_id}`,
+            raw: {
+              telegramMessageId: message.message_id,
+              from: message.from.username ?? null,
+              action: { id: card.id, value: message.text, kind: 'input' },
+            },
+          });
+          if (!answered) return { ok: true, duplicate: true };
+          // Best-effort: mark the prompt answered (48h-old edits reject).
+          await telegram
+            .editMessageText(
+              credentials(connection).botToken,
+              message.chat.id,
+              message.reply_to_message.message_id,
+              `${sourceRow.content}\n\n✓ answered`,
+            )
+            .catch((err) =>
+              logger.warn({ err: (err as Error).message }, 'telegram card-answer retire failed'),
+            );
+          await getQueue(QUEUE.CONVERSATION).add(
+            answered.id,
+            {
+              tenantId: connection.tenant_id,
+              conversationId: conversation.id,
+              messageId: answered.id,
+            },
+            { jobId: `conv-${answered.id}`, attempts: 5 },
+          );
+          logExec({
+            tenantId: connection.tenant_id,
+            transactionId: `conv-${conversation.id}`,
+            level: 'info',
+            detail: `telegram card answer accepted: agent=${agent.identifier} card=${card.id}`,
+          });
+          return { ok: true };
+        }
+      }
+
       const row = await insertConversationMessage({
         conversationId: conversation.id,
         tenantId: connection.tenant_id,
@@ -451,11 +506,22 @@ async function handleCallback(
     threadKey: String(callback.message.chat.id),
   });
 
-  // Recover the human-readable label from the buttons we sent.
+  // Recover the human-readable label + shape the action. A select card keys
+  // the action on the card id (value = the picked option id); a plain button
+  // keys on the button id itself — byte-identical to the pre-card path.
   const sourceRow = await findMessageByTelegramId(conversation.id, callback.message.message_id);
-  const buttons = (sourceRow?.raw as { buttons?: Array<{ id: string; label: string }> } | null)
-    ?.buttons;
-  const label = buttons?.find((b) => b.id === callback.data)?.label ?? callback.data;
+  const card = (sourceRow?.raw as { card?: Card } | null)?.card;
+  let label: string;
+  let action: { id: string; value?: string; kind?: string };
+  if (card?.type === 'select') {
+    label = card.options.find((o) => o.id === callback.data)?.label ?? callback.data;
+    action = { id: card.id, value: callback.data, kind: 'select' };
+  } else {
+    const buttons = (sourceRow?.raw as { buttons?: Array<{ id: string; label: string }> } | null)
+      ?.buttons;
+    label = buttons?.find((b) => b.id === callback.data)?.label ?? callback.data;
+    action = { id: callback.data };
+  }
 
   const row = await insertConversationMessage({
     conversationId: conversation.id,
@@ -463,7 +529,7 @@ async function handleCallback(
     role: 'user',
     content: label,
     dedupeKey: `tgcb-${callback.id}`,
-    raw: { action: { id: callback.data } },
+    raw: { action },
   });
   if (!row) return { ok: true, duplicate: true };
 

@@ -7,13 +7,14 @@ import { internalTrigger } from '../../core/internal-trigger';
 import { signWebhook } from '../../api/webhook-signature';
 import { openSecret } from '../../auth/secret-box';
 import { telegram } from '../../channels/telegram';
-import { slack } from '../../channels/slack';
+import { slack, SlackError } from '../../channels/slack';
 import type { SlackCredentials } from '../../api/routes/slack';
 import { sendWithFailover } from '../../providers/registry';
 import { isSuppressed } from '../../db/repositories';
 import { runManagedTurn, type TurnUsage } from '../../core/managed-brain';
+import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
-import { PermanentError } from '../../shared/errors';
+import { PermanentError, TransientError } from '../../shared/errors';
 import { fetch as safeFetch } from 'undici';
 import {
   assertSafeOutboundUrl,
@@ -23,6 +24,7 @@ import {
 import {
   conversationHistoryBefore,
   conversationTranscriptBefore,
+  finalizeAgentMessage,
   getAgentById,
   getConnectionForConversation,
   getConversation,
@@ -32,6 +34,7 @@ import {
   insertConversationMessage,
   lastUserMessage,
   resolveConversation,
+  setAgentMessageContent,
   updateConversationMessageRaw,
   updateConversationMetadata,
   type Agent,
@@ -60,15 +63,22 @@ export interface ConversationJobData {
 
 const BRIDGE_TIMEOUT_MS = 10_000;
 const METADATA_MAX_BYTES = 64 * 1024;
+/** Minimum wall-clock gap between plan-card progress edits (throttle floor). */
+const PLAN_CARD_EDIT_SPACING_MS = 1000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** What a bridge may send back — one reply plus batched signals. */
-const BridgeResponseSchema = z.object({
+const BridgeResponseSchema = z
+  .object({
   reply: z.string().max(64 * 1024).optional(),
   /** Buttons under the reply; clicks come back as 'action' events. */
   buttons: z
     .array(z.object({ id: z.string().min(1).max(64), label: z.string().min(1).max(48) }))
     .max(6)
     .optional(),
+  /** A card under the reply (select/text_input); answers come back as 'action' events. */
+  card: CardSchema.optional(),
   signals: z
     .array(
       z.discriminatedUnion('type', [
@@ -84,7 +94,10 @@ const BridgeResponseSchema = z.object({
     )
     .max(20)
     .default([]),
-});
+  })
+  .refine((r) => !(r.buttons && r.card), {
+    message: 'a reply may carry buttons or a card, not both',
+  });
 
 /**
  * The two-way hop: take one inbound user turn, POST the normalized event to
@@ -133,20 +146,57 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // channel delivery, signals, breadcrumbs) is identical for both runtimes.
   let reply: string | undefined;
   let buttons: Array<{ id: string; label: string }> | undefined;
+  let card: Card | undefined;
   let signals: BridgeSignal[] = [];
   let turnUsage: TurnUsage | undefined;
+  // The streaming plan card (managed, non-email): posts ONE evolving agent
+  // message on the first labelable tool call and finalizes it as the reply.
+  let planCard: PlanCard | undefined;
 
   if (agent.runtime === 'managed') {
+    planCard =
+      conversation.channel !== 'email'
+        ? createPlanCard({
+            conversation,
+            agent,
+            subscriberExternalId: subscriber.external_id,
+            inboundMessageId: messageId,
+            inboundRow: message,
+          })
+        : undefined;
     try {
       // Richer history (incl. tool-action breadcrumbs) — the brain folds
       // them in so past tool-backed replies don't look like bare claims.
       const fullHistory = await conversationTranscriptBefore(conversationId, messageId);
       const turn = await runManagedTurn(agent, conversation, subscriber, fullHistory, message, {
-        onModelCall: emitTyping,
+        // Once the plan card is live it carries the "working" signal; keep the
+        // typing pulse only for the pre-card model rounds.
+        onModelCall: () => {
+          if (!planCard?.posted) emitTyping();
+        },
+        onToolCall: planCard?.onToolCall,
+        onToolResult: planCard?.onToolResult,
       });
       reply = turn.reply ?? undefined;
       buttons = turn.buttons;
+      card = turn.card;
       turnUsage = turn.usage;
+      // If a plan card was posted, its row IS the reply row — finalize it now
+      // (the final edit becomes the reply). turn.reply carries the extras; a
+      // no-reply turn (note/refusal/empty) finalizes to the same note string.
+      if (planCard?.posted) {
+        if (turn.reply) {
+          await planCard.finalize(turn.reply, {
+            buttons: turn.buttons,
+            card: turn.card,
+            usage: turn.usage,
+          });
+        } else {
+          await planCard.finalize(turn.note ?? 'the model produced no reply text', {
+            usage: turn.usage,
+          });
+        }
+      }
       // No reply row to carry the usage? The note breadcrumb carries it.
       if (turn.note) {
         await systemNote(conversation, messageId, 0, turn.note, reply ? undefined : { usage: turn.usage });
@@ -160,6 +210,16 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       if (err instanceof PermanentError) {
         // Bad key / model / endpoint: retrying can't fix it — make it
         // visible in the transcript and stop, instead of DLQ-ing blind.
+        // If a plan card is frozen mid-progress, best-effort finalize it to
+        // the breadcrumb so the user isn't left staring at a ⏳ (never mask
+        // the original flow).
+        if (planCard?.posted && !planCard.finalized) {
+          try {
+            await planCard.finalize(err.message, {});
+          } catch {
+            /* best-effort — the systemNote below is the durable record */
+          }
+        }
         await systemNote(conversation, messageId, 0, err.message);
         logExec({
           tenantId,
@@ -176,6 +236,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
       reply = dispatched.reply;
       buttons = dispatched.buttons;
+      card = dispatched.card;
       signals = dispatched.signals;
     } catch (err) {
       // Same doctrine as the managed branch: a config-shaped failure
@@ -196,24 +257,41 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   }
 
   if (reply !== undefined && reply.length > 0) {
-    // Retry-safe in two layers: the dedupe key stops a duplicate ROW, and
-    // deliverReply's send-once guard stops a duplicate SEND when a prior
-    // attempt crashed between inserting the row and delivering it.
-    const replyRow =
-      (await insertConversationMessage({
-        conversationId,
-        tenantId,
-        role: 'agent',
-        content: reply,
-        dedupeKey: `reply-${messageId}`,
-        // Usage from managed turns; buttons from either runtime.
-        raw:
-          turnUsage || buttons
-            ? { ...(turnUsage ? { usage: turnUsage } : {}), ...(buttons ? { buttons } : {}) }
-            : undefined,
-      })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
-    if (replyRow) {
-      await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
+    if (planCard?.finalized) {
+      // The plan-card row IS the reply row: finalize already set its content,
+      // merged raw (usage/buttons/card), and pushed the channel edit. Do NOT
+      // re-write raw (that would clobber finalize's merge) — just re-run the
+      // send-once delivery guard for retry safety (it no-ops sends already
+      // made; the inapp branch republishes conversation.message, which the
+      // widget drops as a known id).
+      const replyRow = await getConversationMessageByDedupe(conversationId, `reply-${messageId}`);
+      if (replyRow) {
+        await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
+      }
+    } else {
+      // Retry-safe in two layers: the dedupe key stops a duplicate ROW, and
+      // deliverReply's send-once guard stops a duplicate SEND when a prior
+      // attempt crashed between inserting the row and delivering it.
+      const replyRow =
+        (await insertConversationMessage({
+          conversationId,
+          tenantId,
+          role: 'agent',
+          content: reply,
+          dedupeKey: `reply-${messageId}`,
+          // Usage from managed turns; buttons/card from either runtime.
+          raw:
+            turnUsage || buttons || card
+              ? {
+                  ...(turnUsage ? { usage: turnUsage } : {}),
+                  ...(buttons ? { buttons } : {}),
+                  ...(card ? { card } : {}),
+                }
+              : undefined,
+        })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
+      if (replyRow) {
+        await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
+      }
     }
   }
   await applySignals(conversation, messageId, signals, subscriber, agent);
@@ -325,14 +403,25 @@ async function dispatchToBridge(
 ): Promise<{
   reply?: string;
   buttons?: Array<{ id: string; label: string }>;
+  card?: Card;
   signals: BridgeSignal[];
 }> {
-  // Button clicks arrive as user rows carrying raw.action — the bridge
-  // sees them as first-class 'action' events (label rides message.text).
-  const clicked = (message.raw as { action?: { id: string } } | null)?.action;
+  // Button clicks / card answers arrive as user rows carrying raw.action — the
+  // bridge sees them as first-class 'action' events (label rides message.text;
+  // value carries the select id / typed text when present).
+  const clicked = (message.raw as { action?: { id: string; value?: string; kind?: string } } | null)
+    ?.action;
   const rawBody = JSON.stringify({
     type: clicked ? 'action' : 'message',
-    ...(clicked ? { action: { id: clicked.id, label: message.content } } : {}),
+    ...(clicked
+      ? {
+          action: {
+            id: clicked.id,
+            label: message.content,
+            ...(clicked.value !== undefined ? { value: clicked.value } : {}),
+          },
+        }
+      : {}),
     agent: { identifier: agent.identifier, name: agent.name },
     conversation: {
       id: conversation.id,
@@ -567,6 +656,321 @@ function typingEmitter(
   return () => {};
 }
 
+// ---- plan-card streaming engine ----
+
+/** Presentation tools never post a step (a turn with only these posts no card). */
+const PLAN_CARD_PRESENTATION_TOOLS = new Set(['present_buttons', 'present_choices', 'request_input']);
+
+/** One tool call's progress line, or null for a tool that gets no step. */
+function planStepLabel(tool: string, input: Record<string, unknown>): string | null {
+  if (PLAN_CARD_PRESENTATION_TOOLS.has(tool)) return null;
+  switch (tool) {
+    case 'trigger_workflow':
+      return `Triggering ${(input.workflowKey as string | undefined) ?? 'workflow'}…`;
+    case 'set_metadata':
+      return 'Saving details…';
+    case 'resolve_conversation':
+      return 'Wrapping up…';
+    default:
+      return 'Working…';
+  }
+}
+
+type PlanStep = { label: string; status: 'pending' | 'done' | 'error' };
+
+/** Render the ledger as the plan card's current body (newline-joined). */
+function planProgressText(steps: PlanStep[]): string {
+  return steps
+    .map((s) => {
+      if (s.status === 'done') return `✓ ${s.label.replace(/…$/, '')}`;
+      if (s.status === 'error') return `✗ ${s.label} failed`;
+      return `⏳ ${s.label}`;
+    })
+    .join('\n');
+}
+
+/** Prose degrade for a card whose Slack blocks were rejected (invalid_blocks). */
+function planCardProse(text: string, card: Card): string {
+  const prompt = card.prompt ?? '';
+  if (card.type === 'select') {
+    const opts = card.options.map((o, i) => `${i + 1}) ${o.label}`).join('\n');
+    return `${text}\n\n${prompt}${prompt ? '\n' : ''}${opts}`;
+  }
+  return `${text}\n\n${prompt}${card.placeholder ? ` (e.g. ${card.placeholder})` : ''}`;
+}
+
+interface PlanCardExtras {
+  buttons?: Array<{ id: string; label: string }>;
+  card?: Card;
+  usage?: TurnUsage;
+}
+
+interface PlanCardChannelRaw {
+  telegramMessageId?: number;
+  slackTs?: string;
+  slackChannel?: string;
+}
+
+export interface PlanCard {
+  readonly posted: boolean;
+  readonly finalized: boolean;
+  onToolCall: (tool: string, input: Record<string, unknown>) => Promise<void>;
+  onToolResult: (tool: string, ok: boolean) => Promise<void>;
+  finalize: (text: string, extras: PlanCardExtras) => Promise<void>;
+}
+
+/**
+ * ONE evolving agent message during a tool-using managed turn: posted on the
+ * first labelable tool call, edited per step (⏳/✓/✗), the final edit BEING the
+ * reply. The plan-card row IS the reply row (dedupe `reply-<messageId>`), so
+ * finalize + the existing reply-insert path collapse to one durable message.
+ * Never created for email (no live surface to edit).
+ */
+function createPlanCard(args: {
+  conversation: Conversation;
+  agent: Agent;
+  subscriberExternalId: string;
+  inboundMessageId: string;
+  inboundRow: ConversationMessage;
+}): PlanCard {
+  const { conversation, agent, subscriberExternalId, inboundMessageId, inboundRow } = args;
+  const channel = conversation.channel;
+  const dedupeKey = `reply-${inboundMessageId}`;
+
+  let state: 'idle' | 'posted' | 'finalized' = 'idle';
+  const steps: PlanStep[] = [];
+  let row: ConversationMessage | null = null;
+
+  // Throttle state: a monotone seq + a single serialized promise chain.
+  let seq = 0;
+  let lastEditAt = 0;
+  let chain: Promise<void> = Promise.resolve();
+  let warnedProgressFailure = false;
+
+  // Lazily-memoized connection creds (typingEmitter pattern): telegram/slack
+  // progress + final edits need the bot token; a rejection makes edits no-ops.
+  let credsP: Promise<{ botToken: string } | null> | undefined;
+  function creds(): Promise<{ botToken: string } | null> {
+    if (!credsP) {
+      credsP = getConnectionForConversation(conversation).then((connection) =>
+        connection && connection.status === 'active'
+          ? (JSON.parse(openSecret(connection.credentials)) as { botToken: string })
+          : null,
+      );
+    }
+    return credsP;
+  }
+
+  function channelRaw(): PlanCardChannelRaw {
+    return (row?.raw ?? {}) as PlanCardChannelRaw;
+  }
+
+  /** Best-effort progress edit — NEVER fails the turn. */
+  async function progressEdit(text: string): Promise<void> {
+    try {
+      if (channel === 'inapp') {
+        await publishConversationEvent(conversation, subscriberExternalId, agent, {
+          type: 'conversation.message.updated',
+          message: { id: row!.id, text },
+        });
+        return;
+      }
+      const c = await creds();
+      if (!c) return;
+      const raw = channelRaw();
+      if (channel === 'telegram' && raw.telegramMessageId) {
+        await telegram.editMessageText(c.botToken, conversation.thread_key, raw.telegramMessageId, text);
+      } else if (channel === 'slack' && raw.slackTs && raw.slackChannel) {
+        await slack.update(c.botToken, raw.slackChannel, raw.slackTs, text);
+      }
+    } catch (err) {
+      // A telegram 429 gets ONE delayed retry; the client doesn't surface
+      // retry_after, so a bounded fixed wait stands in. Anything else drops.
+      const msg = (err as Error).message ?? '';
+      if (channel === 'telegram' && /429|too many requests/i.test(msg)) {
+        try {
+          await sleep(PLAN_CARD_EDIT_SPACING_MS);
+          const c = await creds();
+          const raw = channelRaw();
+          if (c && raw.telegramMessageId) {
+            await telegram.editMessageText(c.botToken, conversation.thread_key, raw.telegramMessageId, text);
+          }
+          return;
+        } catch {
+          /* fall through to the warn-once drop */
+        }
+      }
+      if (!warnedProgressFailure) {
+        warnedProgressFailure = true;
+        logger.warn({ err: msg, channel }, 'plan card progress edit failed (dropped)');
+      }
+    }
+  }
+
+  /**
+   * Trailing-edge coalesce, ≥1s spacing. Each call appends one step to the
+   * single serialized chain; a step sleeps for the spacing, then edits ONLY if
+   * no newer edit was queued while it slept (seq unchanged).
+   */
+  function scheduleEdit(): void {
+    const mySeq = ++seq;
+    chain = chain
+      .then(async () => {
+        const wait = Math.max(0, PLAN_CARD_EDIT_SPACING_MS - (Date.now() - lastEditAt));
+        if (wait > 0) await sleep(wait);
+        if (mySeq !== seq) return; // a newer edit is queued — let it win
+        await progressEdit(planProgressText(steps));
+        lastEditAt = Date.now();
+      })
+      .catch(() => {}); // progress edits never fail the turn
+  }
+
+  async function ensurePosted(): Promise<void> {
+    const text = planProgressText(steps);
+    const inserted =
+      (await insertConversationMessage({
+        conversationId: conversation.id,
+        tenantId: conversation.tenant_id,
+        role: 'agent',
+        content: text,
+        dedupeKey,
+      })) ?? (await getConversationMessageByDedupe(conversation.id, dedupeKey));
+    if (!inserted) return; // unreachable in practice (insert-or-recover)
+    row = inserted;
+    state = 'posted';
+    // Deliver through the EXISTING path: its send-once guards make retry
+    // recovery free, and it stamps the channel ids into raw.
+    await deliverReply(conversation, subscriberExternalId, agent, row, inboundRow);
+    // Re-read to capture the channel ids deliverReply just wrote.
+    row = (await getConversationMessage(row.id)) ?? row;
+  }
+
+  /** Forced final edit — failures propagate (as TransientError) so a retry re-finalizes. */
+  async function forcedEdit(text: string, extras: PlanCardExtras): Promise<void> {
+    try {
+      if (channel === 'inapp') {
+        await publishConversationEvent(conversation, subscriberExternalId, agent, {
+          type: 'conversation.message.updated',
+          message: {
+            id: row!.id,
+            text,
+            ...(extras.buttons ? { buttons: extras.buttons } : {}),
+            ...(extras.card ? { card: extras.card } : {}),
+          },
+        });
+        return;
+      }
+      const c = await creds();
+      if (!c) return; // channel disconnected — deliverReply already logged the drop
+      const raw = channelRaw();
+      if (channel === 'telegram') {
+        if (!raw.telegramMessageId) return;
+        if (extras.card?.type === 'text_input') {
+          // D14: editMessageText can't carry a ForceReply, so edit the plain
+          // text then send the ForceReply prompt as its own message.
+          await telegram.editMessageText(c.botToken, conversation.thread_key, raw.telegramMessageId, text);
+          const sent = await telegram.sendMessage(
+            c.botToken,
+            conversation.thread_key,
+            extras.card.prompt ?? 'Reply with your answer:',
+            { card: extras.card },
+          );
+          const merged = ((await getConversationMessage(row!.id))?.raw ?? row!.raw ?? {}) as Record<
+            string,
+            unknown
+          >;
+          await updateConversationMessageRaw(row!.id, {
+            ...merged,
+            cardPromptTelegramMessageId: sent.message_id,
+          });
+          row = (await getConversationMessage(row!.id)) ?? row;
+        } else {
+          await telegram.editMessageText(c.botToken, conversation.thread_key, raw.telegramMessageId, text, {
+            buttons: extras.buttons,
+            card: extras.card,
+          });
+        }
+        return;
+      }
+      if (channel === 'slack') {
+        if (!raw.slackTs || !raw.slackChannel) return;
+        try {
+          await slack.update(c.botToken, raw.slackChannel, raw.slackTs, text, {
+            buttons: extras.buttons,
+            card: extras.card,
+          });
+        } catch (err) {
+          // slice A's invalid_blocks prose fallback lives on postMessage only;
+          // mirror it here for update so a rejected card still lands as prose.
+          if (err instanceof SlackError && err.error === 'invalid_blocks' && extras.card) {
+            await slack.update(c.botToken, raw.slackChannel, raw.slackTs, planCardProse(text, extras.card));
+            return; // fallback succeeded — not a finalize failure
+          }
+          throw err;
+        }
+        return;
+      }
+    } catch (err) {
+      throw new TransientError(`plan card finalize channel edit failed: ${(err as Error).message}`, err);
+    }
+  }
+
+  return {
+    get posted() {
+      return state !== 'idle';
+    },
+    get finalized() {
+      return state === 'finalized';
+    },
+
+    async onToolCall(tool, input) {
+      const label = planStepLabel(tool, input);
+      if (label === null) return;
+      steps.push({ label, status: 'pending' });
+      if (state === 'idle') await ensurePosted();
+      else await setAgentMessageContent(row!.id, planProgressText(steps));
+      scheduleEdit();
+    },
+
+    async onToolResult(tool, ok) {
+      if (PLAN_CARD_PRESENTATION_TOOLS.has(tool)) return;
+      // Close THIS tool's step (the last still-pending one; calls run serially).
+      for (let i = steps.length - 1; i >= 0; i -= 1) {
+        if (steps[i].status === 'pending') {
+          steps[i].status = ok ? 'done' : 'error';
+          break;
+        }
+      }
+      if (state === 'posted') {
+        await setAgentMessageContent(row!.id, planProgressText(steps));
+        scheduleEdit();
+      }
+    },
+
+    async finalize(text, extras) {
+      if (state !== 'posted') return; // never posted, or already finalized
+      // Final write bumps created_at: the row was inserted at the first tool
+      // call, BEFORE this turn's breadcrumbs — the bump re-sorts it after
+      // them, so replay pairing folds the breadcrumbs into THIS reply.
+      await finalizeAgentMessage(row!.id, text);
+      // Merge the fresh raw (channel ids deliverReply wrote) with the reply extras.
+      const freshRaw = ((await getConversationMessage(row!.id))?.raw ?? {}) as Record<string, unknown>;
+      await updateConversationMessageRaw(row!.id, {
+        ...freshRaw,
+        ...(extras.usage ? { usage: extras.usage } : {}),
+        ...(extras.buttons ? { buttons: extras.buttons } : {}),
+        ...(extras.card ? { card: extras.card } : {}),
+      });
+      row = (await getConversationMessage(row!.id)) ?? row;
+      // Supersede any pending progress edits, then drain the throttle chain.
+      seq += 1;
+      await chain.catch(() => {});
+      await forcedEdit(text, extras);
+      state = 'finalized';
+    },
+  };
+}
+
 /**
  * Channel-aware reply delivery. in-app: publish on the subscriber's WS
  * pub/sub channel (the row is already the durable inbox copy). telegram:
@@ -581,8 +985,10 @@ async function deliverReply(
   inboundRow: ConversationMessage | null,
 ): Promise<void> {
   if (conversation.channel === 'inapp') {
-    const buttons = (replyRow.raw as { buttons?: Array<{ id: string; label: string }> } | null)
-      ?.buttons;
+    const raw = (replyRow.raw ?? {}) as {
+      buttons?: Array<{ id: string; label: string }>;
+      card?: Card;
+    };
     await publishConversationEvent(conversation, subscriberExternalId, agent, {
       type: 'conversation.message',
       message: {
@@ -590,7 +996,8 @@ async function deliverReply(
         role: 'agent',
         text: replyRow.content,
         createdAt: replyRow.created_at,
-        ...(buttons ? { buttons } : {}),
+        ...(raw.buttons ? { buttons: raw.buttons } : {}),
+        ...(raw.card ? { card: raw.card } : {}),
       },
     });
     return;
@@ -600,6 +1007,7 @@ async function deliverReply(
     const raw = (replyRow.raw ?? {}) as {
       telegramMessageId?: number;
       buttons?: Array<{ id: string; label: string }>;
+      card?: Card;
     };
     if (raw.telegramMessageId) return; // already delivered on a prior attempt
     const connection = await getConnectionForConversation(conversation);
@@ -608,14 +1016,12 @@ async function deliverReply(
       return;
     }
     const { botToken } = JSON.parse(openSecret(connection.credentials)) as { botToken: string };
-    // Buttons render as an inline keyboard; presses come back as
-    // callback_query updates on the webhook.
-    const sent = await telegram.sendMessage(
-      botToken,
-      conversation.thread_key,
-      replyRow.content,
-      raw.buttons,
-    );
+    // Buttons/select render as an inline keyboard; a text_input card as a
+    // ForceReply prompt. Answers come back as callback_query / reply updates.
+    const sent = await telegram.sendMessage(botToken, conversation.thread_key, replyRow.content, {
+      buttons: raw.buttons,
+      card: raw.card,
+    });
     await updateConversationMessageRaw(replyRow.id, { ...raw, telegramMessageId: sent.message_id });
     return;
   }
@@ -645,13 +1051,30 @@ async function deliverReply(
     const subject = inboundRaw.subject
       ? `Re: ${inboundRaw.subject.replace(/^(re:\s*)+/i, '')}`
       : `Message from ${agent.name}`;
-    // Email has no buttons — degrade to a numbered options list the user
-    // can answer in a plain reply.
-    const emailButtons = (replyRow.raw as { buttons?: Array<{ label: string }> } | null)?.buttons;
-    const body = emailButtons?.length
-      ? `${replyRow.content}\n\nOptions (just reply with your choice):\n` +
-        emailButtons.map((b, i) => `${i + 1}) ${b.label}`).join('\n')
-      : replyRow.content;
+    // Email has no interactive widgets — degrade buttons and cards to prose
+    // the user can answer in a plain reply.
+    const emailRaw = (replyRow.raw ?? {}) as {
+      buttons?: Array<{ label: string }>;
+      card?: Card;
+    };
+    let body = replyRow.content;
+    if (emailRaw.buttons?.length) {
+      body =
+        `${replyRow.content}\n\nOptions (just reply with your choice):\n` +
+        emailRaw.buttons.map((b, i) => `${i + 1}) ${b.label}`).join('\n');
+    } else if (emailRaw.card?.type === 'select') {
+      const card = emailRaw.card;
+      body =
+        `${replyRow.content}` +
+        (card.prompt ? `\n\n${card.prompt}` : '') +
+        `\n\nOptions (just reply with your choice):\n` +
+        card.options.map((o, i) => `${i + 1}) ${o.label}`).join('\n');
+    } else if (emailRaw.card?.type === 'text_input') {
+      const card = emailRaw.card;
+      body =
+        `${replyRow.content}\n\n${card.prompt ?? 'Just reply with your answer.'}` +
+        (card.placeholder ? ` (e.g. ${card.placeholder})` : '');
+    }
 
     // The tenant's normal integration chain: breakers + failover included.
     const sent = await sendWithFailover('email', {
@@ -678,6 +1101,7 @@ async function deliverReply(
       slackTs?: string;
       slackChannel?: string;
       buttons?: Array<{ id: string; label: string }>;
+      card?: Card;
     };
     if (raw.slackTs) return; // already delivered on a prior attempt
     const connection = await getConnectionForConversation(conversation);
@@ -692,11 +1116,12 @@ async function deliverReply(
     const channel =
       colon === -1 ? conversation.thread_key : conversation.thread_key.slice(0, colon);
     const threadTs = colon === -1 ? undefined : conversation.thread_key.slice(colon + 1);
-    // Buttons render as an actions block; clicks come back on the
-    // interactivity webhook.
+    // Buttons/select render as blocks; a text_input card as an input block.
+    // Answers come back on the interactivity webhook.
     const sent = await slack.postMessage(botToken, channel, replyRow.content, {
       threadTs,
       buttons: raw.buttons,
+      card: raw.card,
     });
     await updateConversationMessageRaw(replyRow.id, {
       ...raw,
@@ -727,6 +1152,32 @@ async function systemNote(
   });
 }
 
+/** Best-effort plain-text edit of a stale plan card on a dead turn (all channels). */
+async function staleCardChannelEdit(
+  conversation: Conversation,
+  subscriberExternalId: string,
+  agent: Agent,
+  row: ConversationMessage,
+  text: string,
+): Promise<void> {
+  if (conversation.channel === 'inapp') {
+    await publishConversationEvent(conversation, subscriberExternalId, agent, {
+      type: 'conversation.message.updated',
+      message: { id: row.id, text },
+    });
+    return;
+  }
+  const raw = (row.raw ?? {}) as PlanCardChannelRaw;
+  const connection = await getConnectionForConversation(conversation);
+  if (!connection || connection.status !== 'active') return;
+  const { botToken } = JSON.parse(openSecret(connection.credentials)) as { botToken: string };
+  if (conversation.channel === 'telegram' && raw.telegramMessageId) {
+    await telegram.editMessageText(botToken, conversation.thread_key, raw.telegramMessageId, text);
+  } else if (conversation.channel === 'slack' && raw.slackTs && raw.slackChannel) {
+    await slack.update(botToken, raw.slackChannel, raw.slackTs, text);
+  }
+}
+
 /** DLQ hook: retries exhausted — leave the failure visible in the transcript. */
 export async function onConversationDead(job: Job): Promise<void> {
   const data = job.data as Partial<ConversationJobData>;
@@ -743,14 +1194,43 @@ export async function onConversationDead(job: Job): Promise<void> {
     return;
   }
   if (!data.tenantId || !data.conversationId || !data.messageId) return;
+
+  const deadNote =
+    data.kind === 'deliver'
+      ? 'agent message could not be delivered'
+      : 'agent unreachable — this message was not answered';
+
+  // Turn-ish dead job: the plan-card reply row may be frozen mid-progress
+  // (⏳/✓/✗). Best-effort rewrite it to the dead note so the user isn't left
+  // staring at a spinner. Fully guarded — the system row below is the record.
+  if (data.kind !== 'deliver') {
+    try {
+      const stale = await getConversationMessageByDedupe(data.conversationId, `reply-${data.messageId}`);
+      if (stale && stale.role === 'agent' && !stale.deleted_at && /^[⏳✓✗]/.test(stale.content)) {
+        // Same created_at bump as a normal finalize: the dead note replaces
+        // the reply and must sort after the turn's breadcrumbs in replay.
+        await finalizeAgentMessage(stale.id, deadNote);
+        const conversation = await getConversation(data.tenantId, data.conversationId);
+        if (conversation) {
+          const [agent, subscriber] = await Promise.all([
+            getAgentById(conversation.agent_id),
+            getSubscriberById(conversation.subscriber_id),
+          ]);
+          if (agent && subscriber) {
+            await staleCardChannelEdit(conversation, subscriber.external_id, agent, stale, deadNote);
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'failed to finalize stale plan card on dead turn');
+    }
+  }
+
   await insertConversationMessage({
     conversationId: data.conversationId,
     tenantId: data.tenantId,
     role: 'system',
-    content:
-      data.kind === 'deliver'
-        ? 'agent message could not be delivered'
-        : 'agent unreachable — this message was not answered',
+    content: deadNote,
     dedupeKey: `dead-${data.messageId}`,
   }).catch((err) => logger.warn({ err }, 'failed to record dead conversation turn'));
 }

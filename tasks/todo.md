@@ -84,6 +84,62 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+### Conversations / Agents — Phase 14: Cards v2 + plan-card streaming — COMPLETE
+(user-verified 2026-07-12 on ALL THREE surfaces in one storyline
+(order → dropdown → Resend → email input → plan card → resolve):
+widget, telegram (keyboard + ForceReply capture), slack #support
+channel THREADED — and the smoke came back best-case: SLACK RENDERS
+NATIVE IN-MESSAGE TEXT INPUTS (no prose fallback needed). DB evidence:
+raw.card select/text_input on agent rows, raw.action.kind
+select/input on answers, trigger breadcrumbs BEFORE final replies
+(the replay-ordering invariant live), zero edited markers (D7).
+Delegation: 5 Opus slices + 1 revision-gate return — slice B's OWN
+honest flag exposed the replay-pairing shift (plan-card row inserted
+early sorted before its breadcrumbs → tool pairs would attach to the
+NEXT reply); fixed via finalizeAgentMessage created_at bump,
+empirically verified. 306 tests. COMMITTED LOCALLY ONLY per user
+no-push directive.)
+
+### (original Phase 14 plan)
+(plan approved 2026-07-12; full plan in
+`~/.claude/plans/tranquil-swimming-acorn.md`. ONE evolving message
+(plan card row IS the reply row, dedupe reply-<msgId>, marker-free
+setAgentMessageContent, finalize rides .updated); cards on all
+channels w/ graceful degrade (tg: keyboard/ForceReply; email prose);
+two named tools present_choices + request_input (GLM rule); answers
+ride the action pipeline w/ raw.action.value/kind; slack text-input =
+live-smoke risk w/ prose fallback; NO new dedupe keys. ALL COMMITS
+LOCAL — NO PUSH until user says. All subagents Opus.)
+
+- [x] A. Cards v2 backend: shared/cards.ts, bridge+push schemas,
+      managed tools + reminder + replay + userText, actions value,
+      tg/slack ingestion branches, channel card params, email prose
+      (Opus, audited; 269 green; deferred-to-B: cardPromptTelegramMessageId
+      alternate match)
+- [x] B. Plan-card engine: onToolCall/onToolResult hooks,
+      PlanCardController (post/throttle ≥1s/finalize/error+DLQ
+      finalizes), setAgentMessageContent + finalizeAgentMessage,
+      typing gate (Opus, audited; 269 green 2x. Revision gate: agent's
+      own honest flag exposed replay-pairing shift — plan-card row
+      inserted early sorted before its breadcrumbs → tool pairs would
+      attach to the NEXT reply; fixed via created_at bump on finalize,
+      empirically verified both DB ordering + replay folding)
+- [x] C. Widget+dashboard+SDK: react card UI + .updated extras + value
+      POST, agent SDK card/value, dashboard chips, 2 minor changesets
+      (Opus, audited; both package builds + dashboard tsc/vite green)
+- [x] D. Tests: 37 new across 4 integration suites + sdk unit incl.
+      the pinned replay-ordering invariant + invalid_blocks fallback;
+      306/306 2x + manager re-run (Opus, audited; zero suspected bugs)
+- [x] E. Docs: Cards and plan cards section (matrix, tg reply-to
+      contract, slack degradation caveat, plan-card explainer) +
+      README one-liner (Opus, audited; scrub clean)
+- [x] F. Manual E2E all three channels, one storyline; slack native
+      input CONFIRMED; retry drill skipped (RAM caution) — covered by
+      the retry-recovery integration test; review + single LOCAL
+      commit + memory
+
+## Recently finished
+
 ### Conversations / Agents — Phase 13: Slack channel — COMPLETE
 (user-verified 2026-07-12 on a real workspace (user's own asyncify-dev,
 created for the test — company workspace correctly avoided): DM

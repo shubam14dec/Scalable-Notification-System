@@ -32,6 +32,10 @@ import { createHandler, defineAgent } from '../../packages/agent/src/index';
 // connect route validates this shape before ever calling Slack).
 const TOKEN_MAIN = 'xoxb-itestmain-0123456789ABCDEFGH';
 const SIGNING_SECRET = 'itest-slack-signing-secret-abcdef';
+// A second workspace (distinct team id, derived from the token) for a MANAGED
+// agent's slack connection — used by the plan-card streaming tests.
+const TOKEN_MANAGED = 'xoxb-itestmanaged-0123456789ABCDEFGH';
+const SIGNING_SECRET_MANAGED = 'itest-slack-managed-secret-abcdef';
 
 let app: FastifyInstance;
 let apiKey = '';
@@ -56,6 +60,9 @@ let tsCounter = 0;
 // Per-test toggles for the two responses that vary by scenario.
 const authTest = { ok: true };
 const usersInfo = { mode: 'ok' as 'ok' | 'not_found' | 'error', email: null as string | null };
+// When set, the next blocks-carrying chat.postMessage is rejected once as
+// invalid_blocks (exercises the prose fallback), then the flag clears itself.
+let invalidBlocksOnce = false;
 
 /** Deterministic workspace id per token — same token = same team, always. */
 function teamIdForToken(token: string): string {
@@ -86,6 +93,10 @@ function startSlackStub(): Promise<void> {
         );
       }
       if (method === 'chat.postMessage') {
+        if (invalidBlocksOnce && body.blocks) {
+          invalidBlocksOnce = false;
+          return res.end(JSON.stringify({ ok: false, error: 'invalid_blocks' }));
+        }
         return res.end(
           JSON.stringify({ ok: true, channel: body.channel, ts: `1720000000.${++tsCounter}` }),
         );
@@ -177,6 +188,26 @@ const brain = defineAgent({
           { id: 'opt_a', label: 'Option A' },
           { id: 'opt_b', label: 'Option B' },
         ],
+      });
+      return;
+    }
+    if (ctx.message.text.includes('select card')) {
+      ctx.reply('Choose:', {
+        card: {
+          type: 'select',
+          id: 'pick',
+          prompt: 'Pick one',
+          options: [
+            { id: 'a', label: 'Option A' },
+            { id: 'b', label: 'Option B' },
+          ],
+        },
+      });
+      return;
+    }
+    if (ctx.message.text.includes('text field')) {
+      ctx.reply('Type it:', {
+        card: { type: 'text_input', id: 'note', prompt: 'Your note', placeholder: 'hint' },
       });
       return;
     }
@@ -276,9 +307,49 @@ const postMessagesTo = (channel: string) =>
 const updatesTo = (channel: string) =>
   slackCalls.filter((c) => c.method === 'chat.update' && c.body.channel === channel);
 
+async function actionRowByActionId(conversationId: string, actionId: string) {
+  const { rows } = await pool.query(
+    `select content, raw from conversation_messages
+      where conversation_id = $1 and raw->'action'->>'id' = $2 limit 1`,
+    [conversationId, actionId],
+  );
+  return rows[0] as { content: string; raw: { action: { id: string; value?: string; kind?: string } } };
+}
+
+// ---- stub Anthropic-compatible server (for the managed plan-card tests) ----
+let llmStub: Server;
+let llmBaseUrl = '';
+let llmQueue: unknown[] = [];
+const llmEnvelope = (content: unknown[], stopReason: string) => ({
+  id: 'msg_stub',
+  type: 'message',
+  role: 'assistant',
+  model: 'glm-4-test',
+  content,
+  stop_reason: stopReason,
+  stop_sequence: null,
+  usage: { input_tokens: 10, output_tokens: 5 },
+});
+const llmToolUse = (uses: Array<{ id: string; name: string; input: unknown }>) =>
+  llmEnvelope(uses.map((u) => ({ type: 'tool_use', ...u })), 'tool_use');
+const llmText = (text: string) => llmEnvelope([{ type: 'text', text }], 'end_turn');
+function startLlmStub(): Promise<void> {
+  llmStub = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(llmQueue.length > 0 ? llmQueue.shift() : llmText('managed reply')));
+    });
+  });
+  return new Promise((r) => llmStub.listen(0, () => r()));
+}
+
 beforeAll(async () => {
   await startSlackStub();
   process.env.SLACK_API_BASE = `http://localhost:${(slackStub.address() as AddressInfo).port}`;
+  await startLlmStub();
+  llmBaseUrl = `http://localhost:${(llmStub.address() as AddressInfo).port}`;
 
   app = await buildApp();
   const email = `slack-${Date.now()}-${Math.floor(Math.random() * 1e6)}@itest.local`;
@@ -299,11 +370,37 @@ beforeAll(async () => {
   await createAgent('slack-default');
   await createAgent('slack-billing');
   await createAgent('slack-disabled');
+
+  // A managed agent + workflow for the plan-card streaming tests.
+  await app.inject({
+    method: 'PUT',
+    url: '/v1/workflows',
+    headers: headers(),
+    payload: {
+      key: 'slack-wf',
+      name: 'Slack workflow',
+      steps: [{ channel: 'inapp', subject: 'Hi', body: 'Replacement' }],
+    },
+  });
+  const managed = await app.inject({
+    method: 'POST',
+    url: '/v1/agents',
+    headers: headers(),
+    payload: {
+      identifier: 'slack-managed',
+      name: 'Slack Managed',
+      runtime: 'managed',
+      model: 'glm-4-test',
+      llm: { apiKey: 'managed-key', baseUrl: llmBaseUrl },
+    },
+  });
+  expect(managed.statusCode).toBe(201);
 });
 
 afterAll(async () => {
   delete process.env.SLACK_API_BASE;
   slackStub?.close();
+  llmStub?.close();
   for (const b of bridges) b.close();
   await app.close();
   await closeQueues();
@@ -915,5 +1012,201 @@ describe('13. reconnect is a static 400', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(String(json(res).error)).toContain('static');
+  });
+});
+
+async function convByThreadOn(
+  connId: string,
+  threadKey: string,
+): Promise<{ id: string } | undefined> {
+  const { rows } = await pool.query(
+    'select id from conversations where connection_id = $1 and thread_key = $2',
+    [connId, threadKey],
+  );
+  return rows[0];
+}
+
+describe('14. cards (bridge)', () => {
+  let selectConvId = '';
+  let inputConvId = '';
+
+  test('a select card posts a static_select block (options carry the option ids)', async () => {
+    const chan = 'D0CARD01';
+    await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0CARD01', text: 'select card', ts: newTs() }),
+    );
+    const conv = await convByThread(chan);
+    selectConvId = conv!.id;
+    await driveLatestTurn(conv!.id);
+
+    const pm = postMessagesTo(chan).at(-1)!;
+    const blocks = pm.body.blocks as Array<{
+      type: string;
+      elements?: Array<{ type: string; action_id: string; options: Array<{ value: string }> }>;
+    }>;
+    const actions = blocks.find((b) => b.type === 'actions')!;
+    const sel = actions.elements![0];
+    expect(sel.type).toBe('static_select');
+    expect(sel.action_id).toBe('pick');
+    expect(sel.options.map((o) => o.value)).toEqual(['a', 'b']);
+  });
+
+  test('a text_input card posts an input block with dispatch_action on_enter_pressed', async () => {
+    const chan = 'D0CARD02';
+    await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0CARD02', text: 'text field', ts: newTs() }),
+    );
+    const conv = await convByThread(chan);
+    inputConvId = conv!.id;
+    await driveLatestTurn(conv!.id);
+
+    const pm = postMessagesTo(chan).at(-1)!;
+    const blocks = pm.body.blocks as Array<{
+      type: string;
+      block_id?: string;
+      dispatch_action?: boolean;
+      element?: { type: string; action_id: string; dispatch_action_config?: { trigger_actions_on: string[] } };
+    }>;
+    const input = blocks.find((b) => b.type === 'input')!;
+    expect(input.dispatch_action).toBe(true);
+    expect(input.block_id).toBe('note');
+    expect(input.element!.type).toBe('plain_text_input');
+    expect(input.element!.dispatch_action_config!.trigger_actions_on).toEqual(['on_enter_pressed']);
+  });
+
+  test('a static_select submission ingests a {kind:select} action and retires the widget', async () => {
+    const reply = await latestAgentRow(selectConvId);
+    const payload = {
+      type: 'block_actions',
+      user: { id: 'U0CARD01' },
+      channel: { id: 'D0CARD01' },
+      message: { ts: reply.raw.slackTs as string, text: reply.content },
+      actions: [
+        {
+          action_id: 'pick',
+          action_ts: '1720000200.111',
+          type: 'static_select',
+          selected_option: { value: 'a', text: { type: 'plain_text', text: 'Option A' } },
+        },
+      ],
+    };
+    const res = await postInteractivity(payload);
+    expect(json(res).ok).toBe(true);
+
+    const row = await actionRowByActionId(selectConvId, 'pick');
+    expect(row.content).toBe('Option A');
+    expect(row.raw.action).toEqual({ id: 'pick', value: 'a', kind: 'select' });
+
+    const upd = updatesTo('D0CARD01');
+    expect(String(upd.at(-1)!.body.text)).toContain('✓ Option A');
+  });
+
+  test('a plain_text_input submission ingests a {kind:input} action', async () => {
+    const reply = await latestAgentRow(inputConvId);
+    const payload = {
+      type: 'block_actions',
+      user: { id: 'U0CARD02' },
+      channel: { id: 'D0CARD02' },
+      message: { ts: reply.raw.slackTs as string, text: reply.content },
+      actions: [
+        { action_id: 'note', action_ts: '1720000201.222', type: 'plain_text_input', value: 'my typed note' },
+      ],
+    };
+    const res = await postInteractivity(payload);
+    expect(json(res).ok).toBe(true);
+
+    const row = await actionRowByActionId(inputConvId, 'note');
+    expect(row.content).toBe('my typed note');
+    expect(row.raw.action).toEqual({ id: 'note', value: 'my typed note', kind: 'input' });
+  });
+
+  test('invalid_blocks on a card postMessage falls back to prose (still one delivered row)', async () => {
+    invalidBlocksOnce = true;
+    const chan = 'D0CARD05';
+    await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0CARD05', text: 'select card', ts: newTs() }),
+    );
+    const conv = await convByThread(chan);
+    await driveLatestTurn(conv!.id);
+
+    const pms = postMessagesTo(chan);
+    expect(pms.length).toBe(2); // rejected blocks attempt, then the prose retry
+    expect(pms[0].body.blocks).toBeDefined();
+    expect(pms[1].body.blocks).toBeUndefined();
+    expect(String(pms[1].body.text)).toContain('Option A'); // prose lists the options
+
+    // Still exactly one delivered agent row, carrying the (undegraded) card.
+    const reply = await latestAgentRow(conv!.id);
+    expect(reply.content).toBe('Choose:');
+    expect((reply.raw as { card?: { type: string } }).card?.type).toBe('select');
+    expect(reply.raw.slackTs).toBeTruthy();
+  });
+});
+
+describe('15. plan-card streaming (managed)', () => {
+  let connId2 = '';
+
+  beforeAll(async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/connections/slack',
+      headers: headers(),
+      payload: {
+        botToken: TOKEN_MANAGED,
+        signingSecret: SIGNING_SECRET_MANAGED,
+        agentIdentifier: 'slack-managed',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    connId2 = json(res).eventsUrl.match(/\/webhooks\/slack\/([0-9a-f-]{36})\/events/)![1];
+    usersInfo.mode = 'ok';
+    usersInfo.email = null;
+  });
+
+  test('posts a ⏳ message then updates it, the final update being the reply', async () => {
+    llmQueue = [
+      llmToolUse([{ id: 'sp1', name: 'trigger_workflow', input: { workflowKey: 'slack-wf' } }]),
+      llmText('All handled!'),
+    ];
+    const chan = 'D0MANAGED1';
+    await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0MAN01', text: 'my order help', ts: newTs() }),
+      { secret: SIGNING_SECRET_MANAGED, connId: connId2 },
+    );
+    const conv = await convByThreadOn(connId2, chan);
+    await driveLatestTurn(conv!.id);
+
+    const posts = postMessagesTo(chan);
+    expect(posts.length).toBe(1);
+    expect(String(posts[0].body.text)).toContain('⏳');
+
+    const updates = updatesTo(chan);
+    expect(updates.length).toBeGreaterThanOrEqual(1);
+    expect(String(updates.at(-1)!.body.text)).toBe('All handled!');
+    expect(updates.at(-1)!.body.blocks).toBeUndefined(); // plain final, no widget
+  });
+
+  test('the final update carries blocks when the turn presents buttons', async () => {
+    llmQueue = [
+      llmToolUse([{ id: 'sp2', name: 'trigger_workflow', input: { workflowKey: 'slack-wf' } }]),
+      llmToolUse([{ id: 'sp3', name: 'present_buttons', input: { buttons: [{ id: 'yes', label: 'Yes' }] } }]),
+      llmText('Anything else?'),
+    ];
+    const chan = 'D0MANAGED2';
+    await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0MAN02', text: 'trigger then buttons', ts: newTs() }),
+      { secret: SIGNING_SECRET_MANAGED, connId: connId2 },
+    );
+    const conv = await convByThreadOn(connId2, chan);
+    await driveLatestTurn(conv!.id);
+
+    const finalUpdate = updatesTo(chan).at(-1)!;
+    expect(String(finalUpdate.body.text)).toBe('Anything else?');
+    const blocks = finalUpdate.body.blocks as Array<{
+      type: string;
+      elements?: Array<{ action_id: string }>;
+    }>;
+    const actions = blocks.find((b) => b.type === 'actions')!;
+    expect(actions.elements!.map((e) => e.action_id)).toEqual(['yes']);
   });
 });

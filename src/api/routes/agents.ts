@@ -26,6 +26,7 @@ import {
   type Agent,
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
+import { CardSchema } from '../../shared/cards';
 import { logExec } from '../../core/execution-log';
 import { tenantRateLimit } from '../rate-limit';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
@@ -105,27 +106,37 @@ const InboundMessageSchema = z.object({
   messageId: z.string().min(1).max(255).optional(),
 });
 
-const InboundActionSchema = z.object({
-  subscriberId: z.string().min(1).max(255),
-  /** The clicked button, as offered on the agent reply. */
-  actionId: z.string().min(1).max(64),
-  label: z.string().min(1).max(48),
-  /** Client-supplied id: a double-click can never become two actions. */
-  actionEventId: z.string().min(1).max(255).optional(),
-});
+const InboundActionSchema = z
+  .object({
+    subscriberId: z.string().min(1).max(255),
+    /** The clicked button / answered card, as offered on the agent reply. */
+    actionId: z.string().min(1).max(64),
+    /** A button/select label (human-readable); absent for a raw text_input answer. */
+    label: z.string().min(1).max(48).optional(),
+    /** The select option id or typed text_input value. */
+    value: z.string().min(1).max(3000).optional(),
+    /** Client-supplied id: a double-click can never become two actions. */
+    actionEventId: z.string().min(1).max(255).optional(),
+  })
+  .refine((d) => d.label || d.value, { message: 'label or value required' });
 
 /** An operator/API push of an agent message into an existing conversation. */
-const PushMessageSchema = z.object({
-  text: z.string().min(1).max(8192),
-  /** Client-supplied id makes retries idempotent (same doctrine as messages). */
-  messageId: z.string().min(1).max(255).optional(),
-  buttons: z
-    .array(z.object({ id: z.string().min(1).max(64), label: z.string().min(1).max(48) }))
-    .max(6)
-    .optional(),
-  /** Push onto a resolved thread only reopens it when this is set. */
-  reopen: z.boolean().optional(),
-});
+const PushMessageSchema = z
+  .object({
+    text: z.string().min(1).max(8192),
+    /** Client-supplied id makes retries idempotent (same doctrine as messages). */
+    messageId: z.string().min(1).max(255).optional(),
+    buttons: z
+      .array(z.object({ id: z.string().min(1).max(64), label: z.string().min(1).max(48) }))
+      .max(6)
+      .optional(),
+    card: CardSchema.optional(),
+    /** Push onto a resolved thread only reopens it when this is set. */
+    reopen: z.boolean().optional(),
+  })
+  .refine((d) => !(d.buttons && d.card), {
+    message: 'a reply may carry buttons or a card, not both',
+  });
 
 /** Public shape — sealed secrets (signing, LLM key) never leave the API. */
 function agentView(agent: Agent) {
@@ -409,15 +420,24 @@ export function registerAgentRoutes(app: FastifyInstance) {
         threadKey: parsed.data.subscriberId,
       });
 
-      // Stored as a user row whose text is the label — transcripts read
-      // naturally everywhere; raw.action marks it as a click for the brain.
+      // Stored as a user row whose text is the label (or the raw value for a
+      // text_input answer) — transcripts read naturally everywhere; raw.action
+      // marks it for the brain. kind distinguishes button / select / input.
+      const { actionId, label, value } = parsed.data;
+      const content = label ?? value!;
+      const action =
+        label && value
+          ? { id: actionId, value, kind: 'select' }
+          : value
+            ? { id: actionId, value, kind: 'input' }
+            : { id: actionId };
       const row = await insertConversationMessage({
         conversationId: conversation.id,
         tenantId: req.tenant.id,
         role: 'user',
-        content: parsed.data.label,
+        content,
         dedupeKey: parsed.data.actionEventId ?? `action-${crypto.randomUUID()}`,
-        raw: { action: { id: parsed.data.actionId } },
+        raw: { action },
       });
       if (!row) {
         return reply.code(200).send({ conversationId: conversation.id, duplicate: true });
@@ -469,6 +489,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
             editedAt: m.edited_at,
             deletedAt: m.deleted_at,
             buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
+            card: (m.raw as { card?: unknown } | null)?.card,
           })),
       };
     },
@@ -625,7 +646,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
         dedupeKey: parsed.data.messageId
           ? `push-${parsed.data.messageId}`
           : `push-${crypto.randomUUID()}`,
-        raw: parsed.data.buttons ? { buttons: parsed.data.buttons } : undefined,
+        raw:
+          parsed.data.buttons || parsed.data.card
+            ? {
+                ...(parsed.data.buttons ? { buttons: parsed.data.buttons } : {}),
+                ...(parsed.data.card ? { card: parsed.data.card } : {}),
+              }
+            : undefined,
       });
       if (!row) {
         // Same client messageId seen before — accepted once, never twice.

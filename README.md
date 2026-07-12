@@ -188,7 +188,10 @@ base URL), and the platform runs the model loop itself. Managed agents
 get four tools automatically: `trigger_workflow`, `set_metadata`,
 `resolve_conversation`, and `present_buttons` (tappable choices —
 rendered natively in the widget, as Telegram inline keyboards, and as
-a numbered options list in email).
+a numbered options list in email). Beyond buttons, a reply can carry a
+single **card** — a select menu or a text-input field, via
+`present_choices` / `request_input` — rendered natively per channel; see
+[docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md#cards-and-plan-cards).
 
 **The house rule for managed-agent prompts — explicit instruction beats
 implied judgment.** Especially on smaller/compat models, a behavior you

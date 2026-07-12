@@ -11,6 +11,7 @@ import {
   type SlackEventEnvelope,
   type SlackMessageEvent,
 } from '../../channels/slack';
+import type { Card } from '../../shared/cards';
 import { upsertSubscriber, type Subscriber } from '../../db/repositories';
 import {
   findSubscriberByEmail,
@@ -127,7 +128,18 @@ interface SlackInteractivityPayload {
   user?: { id?: string };
   channel?: { id?: string };
   message?: { ts?: string; text?: string; thread_ts?: string };
-  actions?: Array<{ action_id: string; action_ts: string; text?: { text?: string } }>;
+  actions?: Array<{
+    action_id: string;
+    action_ts: string;
+    /** 'button' | 'static_select' | 'plain_text_input' (absent on legacy buttons). */
+    type?: string;
+    /** A button's own label. */
+    text?: { text?: string };
+    /** A plain_text_input's typed value. */
+    value?: string;
+    /** A static_select's chosen option. */
+    selected_option?: { value?: string; text?: { text?: string } };
+  }>;
 }
 
 export function registerSlackRoutes(app: FastifyInstance) {
@@ -333,40 +345,60 @@ export function registerSlackRoutes(app: FastifyInstance) {
         threadKey,
       });
 
-      // Label: the button's own text, else the stored source row's button
-      // label (matched by action_id), else the bare action_id.
+      // Shape content + action by the interaction type. A static_select carries
+      // the chosen option; a plain_text_input carries typed text; a button (or
+      // no type) is byte-identical to the pre-card path. The card id (when the
+      // source row carried one) keys the action, else the bare action_id.
       const sourceRow = await findMessageBySlackTs(conversation.id, payload.message.ts);
-      const buttons = (sourceRow?.raw as { buttons?: Array<{ id: string; label: string }> } | null)
-        ?.buttons;
-      const label =
-        action.text?.text ??
-        buttons?.find((b) => b.id === action.action_id)?.label ??
-        action.action_id;
+      const sourceCard = (sourceRow?.raw as { card?: Card } | null)?.card;
+      let content: string;
+      let storedAction: { id: string; value?: string; kind?: string };
+      if (action.type === 'static_select') {
+        const optionLabel = action.selected_option?.text?.text ?? '';
+        const value = action.selected_option?.value;
+        content = optionLabel || value || '';
+        storedAction = { id: sourceCard?.id ?? action.action_id, value, kind: 'select' };
+      } else if (action.type === 'plain_text_input') {
+        const value = action.value;
+        // An empty submission is not an answer — ack without a turn.
+        if (!value) return { ok: true, skipped: true };
+        content = value;
+        storedAction = { id: sourceCard?.id ?? action.action_id, value, kind: 'input' };
+      } else {
+        const buttons = (
+          sourceRow?.raw as { buttons?: Array<{ id: string; label: string }> } | null
+        )?.buttons;
+        content =
+          action.text?.text ??
+          buttons?.find((b) => b.id === action.action_id)?.label ??
+          action.action_id;
+        storedAction = { id: action.action_id };
+      }
 
       const row = await insertConversationMessage({
         conversationId: conversation.id,
         tenantId: connection.tenant_id,
         role: 'user',
-        content: label,
+        content,
         // Slack re-delivers until acked; the action_ts is the natural wall.
         dedupeKey: `slackcb-${action.action_ts}`,
-        raw: { action: { id: action.action_id } },
+        raw: { action: storedAction },
       });
       // A duplicate click: already ingested — ack without retiring again.
       if (!row) return { ok: true, duplicate: true };
 
-      // Retire the button set best-effort: rewrite the source message with the
-      // choice appended (omitting blocks strips the actions). Never fails the ack.
+      // Retire the widget best-effort: rewrite the source message with the
+      // response appended (omitting blocks strips the widget). Never fails the ack.
       const text = sourceRow?.content ?? payload.message.text ?? '';
       try {
         await slack.update(
           creds.botToken,
           payload.channel.id,
           payload.message.ts,
-          `${text}\n\n✓ ${label}`,
+          `${text}\n\n✓ ${content}`,
         );
       } catch (err) {
-        logger.warn({ err: (err as Error).message }, 'slack update failed retiring buttons');
+        logger.warn({ err: (err as Error).message }, 'slack update failed retiring widget');
       }
 
       await getQueue(QUEUE.CONVERSATION).add(

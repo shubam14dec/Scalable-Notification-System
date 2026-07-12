@@ -157,6 +157,20 @@ export interface ChatButton {
   label: string;
 }
 
+/** One choice in a select card. */
+export interface CardOption {
+  id: string;
+  label: string;
+}
+
+/**
+ * An interactive card under an agent reply — a single-select list of choices
+ * or a free-text field. The answer posts an action, same as a button click.
+ */
+export type Card =
+  | { type: 'select'; id: string; prompt?: string; options: CardOption[] }
+  | { type: 'text_input'; id: string; prompt?: string; placeholder?: string };
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'agent';
@@ -164,6 +178,8 @@ export interface ChatMessage {
   createdAt: string;
   /** Buttons offered under an agent reply; a click posts an action. */
   buttons?: ChatButton[];
+  /** A card (select / text input) offered under an agent reply. */
+  card?: Card;
   /** True while the optimistic copy waits for the server's 202. */
   pending?: boolean;
   /** Set when the message was edited; drives the "(edited)" marker. */
@@ -246,6 +262,7 @@ export function useAgentChat({
             text: string;
             createdAt: string;
             buttons?: ChatButton[];
+            card?: Card;
             editedAt?: string | null;
             deletedAt?: string | null;
           };
@@ -266,15 +283,29 @@ export function useAgentChat({
             content: msg.message.text,
             createdAt: msg.message.createdAt,
             buttons: msg.message.buttons,
+            card: msg.message.card,
           };
           setMessages((prev) =>
             prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming],
           );
           setStatus('active');
         } else if (msg.type === 'conversation.message.updated' && msg.message) {
-          const { id, text, editedAt } = msg.message;
+          // Plan-card finalize rides .updated: it carries the reply text and
+          // its presentation (buttons/card) but no editedAt — remap those
+          // only when present, and never fabricate an "(edited)" marker.
+          const { id, text, editedAt, buttons, card } = msg.message;
           setMessages((prev) =>
-            prev.map((m) => (m.id === id ? { ...m, content: text, editedAt: editedAt ?? null } : m)),
+            prev.map((m) =>
+              m.id === id
+                ? {
+                    ...m,
+                    content: text,
+                    editedAt: editedAt ?? null,
+                    ...(buttons !== undefined ? { buttons } : {}),
+                    ...(card !== undefined ? { card } : {}),
+                  }
+                : m,
+            ),
           );
         } else if (msg.type === 'conversation.message.deleted' && msg.message) {
           const { id, deletedAt } = msg.message;
@@ -334,16 +365,22 @@ export function useAgentChat({
     [apiUrl, agentIdentifier, subscriberId, headers],
   );
 
-  /** A button click. Appears in the transcript as the label, like a typed reply. */
+  /**
+   * Answer an interactive element — a button click, a card select, or a card
+   * text input. Appears in the transcript as the label (or the typed value),
+   * like a normal reply. `label` rides plain buttons and select answers;
+   * `value` rides select (the option id) and text-input (the typed text).
+   */
   const sendAction = useCallback(
-    async (button: ChatButton) => {
+    async (action: { id: string; label?: string; value?: string }) => {
       const actionEventId =
         typeof crypto !== 'undefined' && 'randomUUID' in crypto
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const bubble = action.label ?? action.value ?? '';
       setMessages((prev) => [
         ...prev,
-        { id: actionEventId, role: 'user', content: button.label, createdAt: new Date().toISOString(), pending: true },
+        { id: actionEventId, role: 'user', content: bubble, createdAt: new Date().toISOString(), pending: true },
       ]);
       setStatus('active');
       try {
@@ -352,7 +389,13 @@ export function useAgentChat({
           {
             method: 'POST',
             headers: headers(),
-            body: JSON.stringify({ subscriberId, actionId: button.id, label: button.label, actionEventId }),
+            body: JSON.stringify({
+              subscriberId,
+              actionId: action.id,
+              ...(action.label !== undefined ? { label: action.label } : {}),
+              ...(action.value !== undefined ? { value: action.value } : {}),
+              actionEventId,
+            }),
           },
         );
         if (!res.ok) throw new Error(`action failed (${res.status})`);
@@ -441,6 +484,8 @@ export function AgentChat(props: AgentChatProps) {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
   const [clicking, setClicking] = useState(false);
+  // One draft suffices: only the last message's text-input card is ever live.
+  const [cardDraft, setCardDraft] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -497,6 +542,30 @@ export function AgentChat(props: AgentChatProps) {
     }
   };
 
+  // A card select answer — same optimistic/revert flow a button click uses.
+  const answerSelect = (action: { id: string; label: string; value: string }) => {
+    setError('');
+    setClicking(true);
+    sendAction(action)
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setClicking(false));
+  };
+
+  // A card text-input answer — clear the field optimistically, restore on fail.
+  const submitCard = (cardId: string) => {
+    const value = cardDraft.trim();
+    if (!value) return;
+    setCardDraft('');
+    setError('');
+    setClicking(true);
+    sendAction({ id: cardId, value })
+      .catch((err) => {
+        setCardDraft(value);
+        setError((err as Error).message);
+      })
+      .finally(() => setClicking(false));
+  };
+
   return (
     <div
       style={{
@@ -538,6 +607,9 @@ export function AgentChat(props: AgentChatProps) {
             // any newer message (a click included) retires them to context.
             const buttonsLive =
               m.role === 'agent' && !!m.buttons?.length && i === messages.length - 1 && !clicking;
+            // Cards follow the same gating: interactive only while last, else inert.
+            const card = m.role === 'agent' ? m.card : undefined;
+            const cardLive = !!card && i === messages.length - 1 && !clicking;
             const isDeleted = !!m.deletedAt;
             const isEditing = editingId === m.id;
             const canControl = m.role === 'user' && !m.pending && !isDeleted;
@@ -663,6 +735,78 @@ export function AgentChat(props: AgentChatProps) {
                             {b.label}
                           </button>
                         ))}
+                      </div>
+                    )}
+                    {card?.type === 'select' && (
+                      <select
+                        aria-label={card.prompt ?? 'Choose an option'}
+                        disabled={!cardLive}
+                        defaultValue=""
+                        onChange={(e) => {
+                          const opt = card.options.find((o) => o.id === e.target.value);
+                          if (opt) answerSelect({ id: card.id, label: opt.label, value: opt.id });
+                        }}
+                        style={{
+                          marginTop: 6,
+                          maxWidth: '80%',
+                          height: 30,
+                          padding: '0 8px',
+                          borderRadius: 8,
+                          border: `1px solid ${c.border}`,
+                          background: 'transparent',
+                          color: cardLive ? c.text : c.text2,
+                          fontSize: 13,
+                          fontFamily: font,
+                          outline: 'none',
+                          cursor: cardLive ? 'pointer' : 'default',
+                          opacity: cardLive ? 1 : 0.55,
+                        }}
+                      >
+                        <option value="" disabled>
+                          {card.prompt ?? 'Choose…'}
+                        </option>
+                        {card.options.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {card?.type === 'text_input' && cardLive && (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 6, width: '80%' }}>
+                        <input
+                          value={cardDraft}
+                          onChange={(e) => setCardDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              submitCard(card.id);
+                            }
+                          }}
+                          placeholder={card.placeholder ?? ''}
+                          maxLength={3000}
+                          aria-label={card.prompt ?? 'Your answer'}
+                          style={{
+                            flex: 1,
+                            height: 30,
+                            padding: '0 10px',
+                            borderRadius: 8,
+                            border: `1px solid ${c.border}`,
+                            background: 'transparent',
+                            color: c.text,
+                            fontSize: 13,
+                            fontFamily: font,
+                            outline: 'none',
+                          }}
+                        />
+                        <button
+                          type="button"
+                          style={ctrlBtn}
+                          disabled={!cardDraft.trim()}
+                          onClick={() => submitCard(card.id)}
+                        >
+                          send
+                        </button>
                       </div>
                     )}
                     {canControl && (
