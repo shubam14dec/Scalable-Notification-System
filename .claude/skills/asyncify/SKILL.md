@@ -247,6 +247,13 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   answering 200 from the OLD code. Before restarting api/worker/ws, free
   the port: `Get-NetTCPConnection -LocalPort <p> -State Listen` →
   `Stop-Process` the owning pid.
+- **Server enum widened → grep packages/* for the same union** (user-found
+  after Phase 13, 2026-07-12): identities unlink gained 'slack' server-side
+  but @asyncify-hq/node still typed `'telegram' | 'email'` — SDK consumers
+  would hit a type error on a legal API call. Phase plans verify the runtime
+  path is channel-agnostic; the published SDKs' TYPE surfaces need their own
+  check. `git grep -n "'telegram' |" packages/` (and analogs) before closing
+  any enum-widening phase.
 - **Optimistic UI rows must adopt the server's durable id** (proven in
   Phase 10 E2E, 2026-07-12): the widget kept its client-generated uuid
   after the 202, so PATCH/DELETE on a freshly-sent message 404'd
