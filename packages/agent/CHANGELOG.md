@@ -1,5 +1,11 @@
 # @asyncify-hq/agent
 
+## 0.3.0
+
+### Minor Changes
+
+- a35c0a2: Adds `resolved` lifecycle events: `onResolve(ctx)` now fires when a conversation is resolved (by the agent, an operator, or the inactivity sweep), with a read-only ResolveContext carrying the conversation summary and metadata. Also fixes unknown event types incorrectly falling through to onMessage.
+
 ## 0.2.1
 
 ### Patch Changes
