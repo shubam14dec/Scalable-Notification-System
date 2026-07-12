@@ -91,8 +91,12 @@ second send, operator resolve + bridge resolve both printed RESOLVED
 lines in agent-demo (job records show first-attempt delivery in
 ~150ms — bridge was up throughout; an earlier "delivered through
 bridge downtime" claim here was a manager inference error from paste
-ordering, corrected against Redis job timestamps + execution logs;
-the retry path itself is test-covered, not live-proven). 224 tests. Delegation: 2 Opus + 1 Sonnet
+ordering, corrected against Redis job timestamps + execution logs).
+Downtime recovery then LIVE-PROVEN deliberately (user-driven drill,
+same day): resolve fired with the bridge stopped → Redis job atm=4,
+failedReason 'fetch failed', delivered 15.1s after enqueue on the 4th
+backoff attempt, 40ms after bridge restart — exactly once.
+224 tests. Delegation: 2 Opus + 1 Sonnet
 slices, zero revision-gate retries. E2E friction noted for backlog:
 Fastify 415 content-type errors surface as 500 'internal error' —
 map FST_ERR_CTP_* to clean 4xx; PS5.1 bodyless POST needs -Body '{}'.)
