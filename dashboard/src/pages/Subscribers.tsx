@@ -32,7 +32,7 @@ interface SubscriberRow {
  */
 function LinkChannelsModal({ subscriberId, onClose }: { subscriberId: string; onClose: () => void }) {
   const queryClient = useQueryClient();
-  const [agent, setAgent] = useState('');
+  const [connId, setConnId] = useState('');
   const [deepLink, setDeepLink] = useState('');
   const [error, setError] = useState('');
 
@@ -43,19 +43,29 @@ function LinkChannelsModal({ subscriberId, onClose }: { subscriberId: string; on
         `/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`,
       ),
   });
-  const { data: agents } = useQuery({
-    queryKey: ['agents'],
-    queryFn: () => api<{ agents: Array<{ identifier: string; status: string }> }>('/v1/agents'),
+  const { data: connections } = useQuery({
+    queryKey: ['connections'],
+    queryFn: () =>
+      api<{
+        connections: Array<{
+          id: string;
+          channel: string;
+          status: string;
+          config: { botUsername?: string };
+          agent: { identifier: string; name: string };
+        }>;
+      }>('/v1/connections'),
   });
-  const active = agents?.agents.filter((a) => a.status === 'active') ?? [];
-  const chosen = agent || active[0]?.identifier;
+  const bots =
+    connections?.connections.filter((c) => c.channel === 'telegram' && c.status === 'active') ?? [];
+  const chosen = connId || bots[0]?.id;
 
   const mint = useMutation({
     mutationFn: () =>
-      api<{ deepLink: string }>(
-        `/v1/agents/${encodeURIComponent(chosen!)}/subscribers/${encodeURIComponent(subscriberId)}/link-token`,
-        { method: 'POST' },
-      ),
+      api<{ deepLink: string }>(`/v1/connections/${encodeURIComponent(chosen!)}/link-tokens`, {
+        method: 'POST',
+        body: { subscriberId },
+      }),
     onSuccess: (res) => {
       setDeepLink(res.deepLink);
       setError('');
@@ -110,31 +120,39 @@ function LinkChannelsModal({ subscriberId, onClose }: { subscriberId: string; on
             Start, their Telegram merges into this subscriber — history, triggers, and
             notifications included.
           </p>
-          <div className="flex items-center gap-2">
-            {active.length > 1 && (
-              <select
-                aria-label="Agent bot"
-                className="h-8 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1"
-                value={chosen ?? ''}
-                onChange={(e) => setAgent(e.target.value)}
-              >
-                {active.map((a) => (
-                  <option key={a.identifier} value={a.identifier} className="bg-surface">
-                    {a.identifier}
-                  </option>
-                ))}
-              </select>
-            )}
-            <Button variant="primary" onClick={() => mint.mutate()} disabled={!chosen || mint.isPending}>
-              {mint.isPending ? 'Generating…' : 'Generate link'}
-            </Button>
-          </div>
-          {deepLink && (
-            <div className="mt-3">
-              <CopyField value={deepLink} />
-            </div>
+          {bots.length === 0 ? (
+            <p className="text-[12px] text-t3">
+              No Telegram bot connected — add one on the Connections page.
+            </p>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                {bots.length > 1 && (
+                  <select
+                    aria-label="Telegram bot"
+                    className="h-8 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1"
+                    value={chosen ?? ''}
+                    onChange={(e) => setConnId(e.target.value)}
+                  >
+                    {bots.map((b) => (
+                      <option key={b.id} value={b.id} className="bg-surface">
+                        @{b.config.botUsername ?? '—'} — answered by {b.agent.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <Button variant="primary" onClick={() => mint.mutate()} disabled={!chosen || mint.isPending}>
+                  {mint.isPending ? 'Generating…' : 'Generate link'}
+                </Button>
+              </div>
+              {deepLink && (
+                <div className="mt-3">
+                  <CopyField value={deepLink} />
+                </div>
+              )}
+              {error && <p className="mt-2 text-[12px] text-err">{error}</p>}
+            </>
           )}
-          {error && <p className="mt-2 text-[12px] text-err">{error}</p>}
         </div>
 
         <div className="flex justify-end">

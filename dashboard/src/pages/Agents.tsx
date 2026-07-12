@@ -61,242 +61,62 @@ interface ChannelInfo {
   } | null;
 }
 
-/** Email: user brings a provider inbound address, we hand back the webhook URL. */
-function EmailChannelSection({
-  agent,
-  connection,
-  onChange,
-}: {
-  agent: Agent;
-  connection: ChannelInfo | undefined;
-  onChange: () => void;
-}) {
-  const [error, setError] = useState('');
-
-  const connect = useMutation({
-    mutationFn: (address: string) =>
-      api(`/v1/agents/${agent.identifier}/channels/email`, { method: 'POST', body: { address } }),
-    onSuccess: () => {
-      setError('');
-      onChange();
-    },
-    onError: (err) => setError(err.message),
-  });
-
-  const disconnect = useMutation({
-    mutationFn: () => api(`/v1/agents/${agent.identifier}/channels/email`, { method: 'DELETE' }),
-    onSuccess: onChange,
-  });
-
-  if (connection) {
-    return (
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[13px] text-t1">Email</span>
-          <StatusBadge status="active" />
-        </div>
-        <dl className="space-y-2 text-[12px]">
-          <div className="flex items-center justify-between gap-2">
-            <dt className="text-t3">Agent address</dt>
-            <dd><Mono className="break-all">{connection.config.address}</Mono></dd>
-          </div>
-          <div>
-            <dt className="mb-1 text-t3">
-              Webhook URL — paste into your provider's inbound settings (Postmark: Servers →
-              Default Inbound Stream → Settings → Webhook)
-            </dt>
-            <dd>{connection.webhook?.url && <CopyField value={connection.webhook.url} />}</dd>
-          </div>
-        </dl>
-        <p className="text-[11px] text-t3">
-          Emails sent to the address arrive here as conversations; the agent's replies go out
-          through this environment's email integrations.
-        </p>
-        <div className="flex justify-end">
-          <Button variant="danger" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
-            Disconnect
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <form
-      className="space-y-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const address = String(new FormData(e.currentTarget).get('address') ?? '');
-        if (address) connect.mutate(address);
-      }}
-    >
-      <p className="text-[12px] text-t2">
-        Give this agent an email address. No DNS needed: a free Postmark account includes an
-        inbound address (Servers → Default Inbound Stream) like{' '}
-        <Mono>hash@inbound.postmarkapp.com</Mono> — paste it below, then paste the webhook URL
-        we generate back into Postmark.
-      </p>
-      <Field label="Inbound address">
-        <Input
-          name="address"
-          required
-          type="email"
-          placeholder="hash@inbound.postmarkapp.com"
-          className="font-mono"
-        />
-      </Field>
-      {error && <p className="text-[12px] text-err">{error}</p>}
-      <div className="flex justify-end">
-        <Button variant="primary" type="submit" disabled={connect.isPending}>
-          {connect.isPending ? 'Connecting…' : 'Connect email'}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
 /**
- * Per-agent channel connections (v1: Telegram). Paste a bot token, we
- * validate it with Telegram and register the webhook against PUBLIC_URL;
- * the modal shows what Telegram actually has registered, so a stale
- * tunnel URL is visible and one click away from fixed.
+ * Per-agent channel connections, read-only. Shows what's wired to this agent;
+ * connecting, re-pointing, and disconnecting all live on the Connections page.
  */
 function ChannelsModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
-  const queryClient = useQueryClient();
-  const [error, setError] = useState('');
-  const invalidate = () =>
-    void queryClient.invalidateQueries({ queryKey: ['agent-channels', agent.identifier] });
+  const navigate = useNavigate();
 
   const { data, isLoading } = useQuery({
     queryKey: ['agent-channels', agent.identifier],
     queryFn: () => api<{ channels: ChannelInfo[] }>(`/v1/agents/${agent.identifier}/channels`),
   });
-  const telegram = data?.channels.find((c) => c.channel === 'telegram');
-
-  const connect = useMutation({
-    mutationFn: (botToken: string) =>
-      api(`/v1/agents/${agent.identifier}/channels/telegram`, { method: 'POST', body: { botToken } }),
-    onSuccess: () => {
-      setError('');
-      invalidate();
-    },
-    onError: (err) => setError(err.message),
-  });
-
-  const reconnect = useMutation({
-    mutationFn: () =>
-      api(`/v1/agents/${agent.identifier}/channels/telegram/reconnect`, { method: 'POST' }),
-    onSuccess: () => {
-      setError('');
-      invalidate();
-    },
-    onError: (err) => setError(err.message),
-  });
-
-  const disconnect = useMutation({
-    mutationFn: () => api(`/v1/agents/${agent.identifier}/channels/telegram`, { method: 'DELETE' }),
-    onSuccess: invalidate,
-  });
-
-  const email = data?.channels.find((c) => c.channel === 'email');
-  const webhookHealthy =
-    telegram?.webhook?.url && telegram.webhook.url === telegram.webhook.expectedUrl;
-
-  const telegramSection = isLoading ? (
-    <Skeleton className="h-24 w-full" />
-  ) : telegram ? (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] text-t1">Telegram</span>
-            <StatusBadge status={webhookHealthy ? 'active' : 'failed'} />
-          </div>
-          <dl className="space-y-2 text-[12px]">
-            <div className="flex items-center justify-between gap-2">
-              <dt className="text-t3">Bot</dt>
-              <dd><Mono>@{telegram.config.botUsername ?? '—'}</Mono></dd>
-            </div>
-            <div>
-              <dt className="mb-1 text-t3">Webhook registered with Telegram</dt>
-              <dd><Mono className="break-all text-t2">{telegram.webhook?.url || 'none'}</Mono></dd>
-            </div>
-            {!webhookHealthy && telegram.webhook?.expectedUrl && (
-              <div>
-                <dt className="mb-1 text-t3">Expected (current PUBLIC_URL)</dt>
-                <dd><Mono className="break-all text-t2">{telegram.webhook.expectedUrl}</Mono></dd>
-              </div>
-            )}
-            {telegram.webhook?.lastError && (
-              <div>
-                <dt className="mb-1 text-t3">Last delivery error from Telegram</dt>
-                <dd className="text-err">{telegram.webhook.lastError}</dd>
-              </div>
-            )}
-          </dl>
-          {!webhookHealthy && (
-            <p className="text-[12px] text-t3">
-              The registered webhook doesn't match this server's public URL — if your tunnel
-              or domain changed, re-register it.
-            </p>
-          )}
-          {error && <p className="text-[12px] text-err">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <Button variant="danger" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
-              Disconnect
-            </Button>
-            <Button variant="primary" onClick={() => reconnect.mutate()} disabled={reconnect.isPending}>
-              {reconnect.isPending ? 'Registering…' : 'Re-register webhook'}
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <form
-          className="space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const token = String(new FormData(e.currentTarget).get('botToken') ?? '');
-            if (token) connect.mutate(token);
-          }}
-        >
-          <p className="text-[12px] text-t2">
-            Create a bot with <Mono>@BotFather</Mono> on Telegram (<Mono>/newbot</Mono>), then
-            paste its token here. We validate it, register the webhook, and messages to the bot
-            flow to this agent. Requires this server to be reachable from the internet
-            (PUBLIC_URL) — locally, run a tunnel.
-          </p>
-          <Field label="Bot token">
-            <Input
-              name="botToken"
-              required
-              autoFocus
-              placeholder="7000000000:AA..."
-              className="font-mono"
-              type="password"
-              autoComplete="off"
-            />
-          </Field>
-          {error && <p className="text-[12px] text-err">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <Button type="button" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button variant="primary" type="submit" disabled={connect.isPending}>
-              {connect.isPending ? 'Connecting…' : 'Connect Telegram'}
-            </Button>
-          </div>
-        </form>
-  );
 
   return (
     <Modal open onClose={onClose} title={`Channels — ${agent.identifier}`}>
-      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-t3">Telegram</p>
-      {telegramSection}
-      <div className="my-4 border-t border-bd" />
-      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-t3">Email</p>
       {isLoading ? (
         <Skeleton className="h-24 w-full" />
+      ) : data && data.channels.length > 0 ? (
+        <ul className="space-y-3">
+          {data.channels.map((c) => {
+            const identity =
+              c.channel === 'telegram' ? `@${c.config.botUsername ?? '—'}` : c.config.address ?? '—';
+            const webhookHealthy =
+              c.webhook?.url && c.webhook.url === c.webhook.expectedUrl;
+            return (
+              <li
+                key={c.channel}
+                className="flex items-center justify-between gap-2 border-b border-bd pb-3 last:border-0 last:pb-0"
+              >
+                <span className="min-w-0">
+                  <span className="text-[13px] text-t1 capitalize">{c.channel}</span>{' '}
+                  <Mono className="break-all text-t2">{identity}</Mono>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <StatusBadge status={c.status} />
+                  {c.channel === 'telegram' && (
+                    <StatusBadge status={webhookHealthy ? 'active' : 'failed'} />
+                  )}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       ) : (
-        <EmailChannelSection agent={agent} connection={email} onChange={invalidate} />
+        <p className="text-[12px] text-t3">No channels connected to this agent yet.</p>
       )}
+      <div className="mt-4 flex justify-end border-t border-bd pt-4">
+        <Button
+          variant="ghost"
+          onClick={() => {
+            onClose();
+            navigate('/connections');
+          }}
+        >
+          Manage on the Connections page →
+        </Button>
+      </div>
     </Modal>
   );
 }
@@ -523,6 +343,9 @@ export default function AgentsPage() {
   const [channelsFor, setChannelsFor] = useState<Agent | null>(null);
   const [secret, setSecret] = useState('');
   const [error, setError] = useState('');
+  // Delete failures (e.g. 409: agent still has routed connections) surface
+  // here, since the delete action has no modal of its own to show them in.
+  const [deleteError, setDeleteError] = useState('');
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['agents'] });
 
@@ -562,7 +385,11 @@ export default function AgentsPage() {
 
   const remove = useMutation({
     mutationFn: (identifier: string) => api(`/v1/agents/${identifier}`, { method: 'DELETE' }),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      setDeleteError('');
+      invalidate();
+    },
+    onError: (err, identifier) => setDeleteError(`Couldn't delete "${identifier}" — ${err.message}`),
   });
 
   return (
@@ -580,6 +407,19 @@ export default function AgentsPage() {
         and every message a subscriber sends arrives there as one signed event. Replies and
         workflow triggers come back in the response — see <Mono>@asyncify-hq/agent</Mono>.
       </p>
+
+      {deleteError && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-bd bg-elevated px-3 py-2">
+          <span className="text-[12px] text-err">{deleteError}</span>
+          <button
+            className="shrink-0 text-[12px] text-t3 transition-colors hover:text-t1"
+            onClick={() => setDeleteError('')}
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {isLoading ? (
         <Skeleton className="h-40 w-full" />

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { authenticate } from '../auth';
@@ -14,15 +14,17 @@ import {
   resolveChannelIdentity,
   upsertChannelIdentity,
 } from '../../db/identities.repo';
+import { resolveAgentForInbound } from '../../core/inbound-routing';
 import {
   deleteConnection,
   getAgent,
-  getAgentById,
   getConnectionById,
   getConnectionForAgent,
   insertConversationMessage,
-  openConversation,
-  upsertConnection,
+  openChannelConversation,
+  updateConnectionAgent,
+  upsertEmailConnection,
+  type Agent,
 } from '../../db/conversations.repo';
 
 interface EmailCredentials {
@@ -33,6 +35,49 @@ function secretsMatch(a: string, b: string): boolean {
   const ab = Buffer.from(a);
   const bb = Buffer.from(b);
   return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+/** The inbound address a connect body must carry, shared by both connect routes. */
+export const emailAddressSchema = z.string().trim().email().max(320);
+
+/**
+ * The core email connect flow, shared by the legacy per-agent route and the
+ * standalone /v1/connections/email route. Upserts the connection (re-pointing
+ * its live threads onto the current agent when the identity-upsert hit an
+ * existing row) and returns the pasteable inbound webhook URL. Mirrors the
+ * historical response so the legacy shim stays byte-identical.
+ */
+export async function handleEmailConnect(
+  reply: FastifyReply,
+  tenantId: string,
+  agent: Agent,
+  address: string,
+): Promise<FastifyReply> {
+  const connection = await upsertEmailConnection({
+    tenantId,
+    agentId: agent.id,
+    sealedCredentials: sealSecret(
+      JSON.stringify({
+        webhookSecret: randomBytes(24).toString('hex'),
+      } satisfies EmailCredentials),
+    ),
+    config: { address: address.toLowerCase() },
+  });
+
+  // Re-connecting the same inbound address may be re-pointing it at a
+  // different agent: move its live threads onto the current agent.
+  // Idempotent — an unchanged agent moves zero rows.
+  if (connection.refreshed) {
+    await updateConnectionAgent(tenantId, connection.id, agent.id);
+  }
+
+  return reply.code(201).send({
+    channel: 'email',
+    address: address.toLowerCase(),
+    // The credential the user pastes into the provider's inbound settings —
+    // retrievable again from the channels listing.
+    webhookUrl: emailWebhookUrl(connection.id, connection.credentials),
+  });
 }
 
 export function registerEmailChannelRoutes(app: FastifyInstance) {
@@ -46,34 +91,15 @@ export function registerEmailChannelRoutes(app: FastifyInstance) {
     '/v1/agents/:identifier/channels/email',
     { preHandler: [authenticate] },
     async (req, reply) => {
-      const parsed = z
-        .object({ address: z.string().trim().email().max(320) })
-        .safeParse(req.body);
+      const parsed = z.object({ address: emailAddressSchema }).safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
       }
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
-
-      const connection = await upsertConnection({
-        tenantId: req.tenant.id,
-        agentId: agent.id,
-        channel: 'email',
-        sealedCredentials: sealSecret(
-          JSON.stringify({
-            webhookSecret: randomBytes(24).toString('hex'),
-          } satisfies EmailCredentials),
-        ),
-        config: { address: parsed.data.address.toLowerCase() },
-      });
-
-      return reply.code(201).send({
-        channel: 'email',
-        address: parsed.data.address.toLowerCase(),
-        // The credential the user pastes into the provider's inbound
-        // settings — retrievable again from the channels listing.
-        webhookUrl: emailWebhookUrl(connection.id, connection.credentials),
-      });
+      // Legacy shim: same core flow as POST /v1/connections/email, agent
+      // resolved from the path instead of the body.
+      return handleEmailConnect(reply, req.tenant.id, agent, parsed.data.address);
     },
   );
 
@@ -111,13 +137,14 @@ export function registerEmailChannelRoutes(app: FastifyInstance) {
 
       const inbound = parsePostmarkInbound((req.body ?? {}) as PostmarkInbound);
       // 200-ack what we can't use — a retry won't make it parseable.
-      if (!inbound || connection.status !== 'active') return { ok: true, skipped: true };
-      const agent = await getAgentById(connection.agent_id);
-      if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
+      if (!inbound) return { ok: true, skipped: true };
+      const agent = await resolveAgentForInbound(connection);
+      if (!agent) return { ok: true, skipped: true };
 
       const subscriber = await resolveEmailSubscriber(connection.tenant_id, inbound.fromEmail);
-      const conversation = await openConversation({
+      const conversation = await openChannelConversation({
         tenantId: connection.tenant_id,
+        connectionId: connection.id,
         agentId: agent.id,
         subscriberId: subscriber.id,
         channel: 'email',

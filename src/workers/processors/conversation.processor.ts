@@ -22,7 +22,7 @@ import {
   conversationHistoryBefore,
   conversationTranscriptBefore,
   getAgentById,
-  getConnectionForAgent,
+  getConnectionForConversation,
   getConversation,
   getConversationMessage,
   getConversationMessageByDedupe,
@@ -550,7 +550,7 @@ function typingEmitter(
     let creds: Promise<{ botToken: string } | null> | undefined;
     return () => {
       if (!creds) {
-        creds = getConnectionForAgent(conversation.agent_id, 'telegram').then((connection) =>
+        creds = getConnectionForConversation(conversation).then((connection) =>
           connection && connection.status === 'active'
             ? (JSON.parse(openSecret(connection.credentials)) as { botToken: string })
             : null,
@@ -599,7 +599,7 @@ async function deliverReply(
       buttons?: Array<{ id: string; label: string }>;
     };
     if (raw.telegramMessageId) return; // already delivered on a prior attempt
-    const connection = await getConnectionForAgent(agent.id, 'telegram');
+    const connection = await getConnectionForConversation(conversation);
     if (!connection || connection.status !== 'active') {
       logger.warn({ agent: agent.identifier }, 'telegram reply dropped: channel not connected');
       return;
@@ -633,7 +633,7 @@ async function deliverReply(
       });
       return;
     }
-    const connection = await getConnectionForAgent(agent.id, 'email');
+    const connection = await getConnectionForConversation(conversation);
     const address = (connection?.config as { address?: string } | null)?.address;
     const inboundRaw = (inboundRow?.raw ?? {}) as { subject?: string; rfcMessageId?: string | null };
     // A reply to an inbound email keeps the thread (Re: + In-Reply-To). A push

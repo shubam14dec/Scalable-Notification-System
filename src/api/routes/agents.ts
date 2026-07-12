@@ -16,6 +16,7 @@ import {
   getConversation,
   insertConversationMessage,
   listAgents,
+  listConnectionsForAgent,
   listConversations,
   openConversation,
   reopenConversation,
@@ -296,7 +297,28 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.delete<{ Params: { identifier: string } }>(
     '/v1/agents/:identifier',
     { preHandler: [authenticate] },
-    async (req) => ({ deleted: (await deleteAgent(req.tenant.id, req.params.identifier)) > 0 }),
+    async (req, reply) => {
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return { deleted: false };
+      // Friendly guard over the DB's restrict FK: a routed connection must be
+      // re-pointed or disconnected first, so deleting an agent never silently
+      // orphans a live bot / inbound address.
+      const connections = await listConnectionsForAgent(agent.id);
+      if (connections.length > 0) {
+        return reply.code(409).send({
+          error: 'agent has routed connections — re-point or disconnect them first',
+          connections: connections.map((c) => ({
+            id: c.id,
+            channel: c.channel,
+            identity:
+              (c.config as { botUsername?: string; address?: string } | null)?.botUsername ??
+              (c.config as { botUsername?: string; address?: string } | null)?.address ??
+              '',
+          })),
+        });
+      }
+      return { deleted: (await deleteAgent(req.tenant.id, req.params.identifier)) > 0 };
+    },
   );
 
   // ---- inbound turns (the widget's send button) ----

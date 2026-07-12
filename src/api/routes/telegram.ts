@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { authenticate } from '../auth';
@@ -17,45 +17,157 @@ import {
   resolveChannelIdentity,
   upsertChannelIdentity,
 } from '../../db/identities.repo';
+import { resolveAgentForInbound } from '../../core/inbound-routing';
 import {
   deleteConnection,
   editConversationMessage,
-  findConversationByThread,
+  findConversationByConnectionThread,
   findMessageByTelegramId,
   getAgent,
-  getAgentById,
   getConnectionById,
   getConnectionForAgent,
   getSubscriberById,
   insertConversationMessage,
   listConnectionsForAgent,
-  openConversation,
-  upsertConnection,
+  openChannelConversation,
+  updateConnectionAgent,
+  upsertTelegramConnection,
+  type Agent,
   type AgentConnection,
 } from '../../db/conversations.repo';
 
-interface TelegramCredentials {
+export interface TelegramCredentials {
   botToken: string;
   webhookSecret: string;
 }
 
-function credentials(connection: AgentConnection): TelegramCredentials {
+export function credentials(connection: AgentConnection): TelegramCredentials {
   return JSON.parse(openSecret(connection.credentials)) as TelegramCredentials;
 }
 
-function webhookUrl(connectionId: string): string {
+export function webhookUrl(connectionId: string): string {
   return `${env.publicUrl}/webhooks/telegram/${connectionId}`;
 }
+
+/**
+ * The bot-token shape BotFather sends: "<digits>:<30+ of [A-Za-z0-9_-]>".
+ * Trimmed first — tokens copied from the BotFather message often carry
+ * whitespace, and a malformed token 404s at Telegram confusingly. Shared by
+ * the legacy per-agent connect and the standalone /v1/connections/telegram.
+ */
+export const telegramBotTokenSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^\d+:[A-Za-z0-9_-]{30,}$/,
+    'not a bot token — expected the "<digits>:<letters/digits>" string BotFather sent',
+  );
 
 /**
  * Register (or re-register) the webhook with Telegram. Separate step so a
  * changed PUBLIC_URL (tunnel restarts, domain moves) is one reconnect away.
  */
-async function registerWebhook(connection: AgentConnection): Promise<string> {
+export async function registerWebhook(connection: AgentConnection): Promise<string> {
   const creds = credentials(connection);
   const url = webhookUrl(connection.id);
   await telegram.setWebhook(creds.botToken, url, creds.webhookSecret);
   return url;
+}
+
+/**
+ * The core telegram connect flow, shared by the legacy per-agent route and
+ * the standalone /v1/connections/telegram route. Validates the token against
+ * Telegram, seals credentials, upserts the connection (re-pointing its live
+ * threads onto the current agent when the identity-upsert hit an existing
+ * row), then registers the webhook. Status codes are the historical ones so
+ * the legacy shim stays byte-identical: 201 ok, 422 token rejected, 502
+ * saved-but-webhook-failed. The sealed token never leaves this function.
+ */
+export async function handleTelegramConnect(
+  reply: FastifyReply,
+  tenantId: string,
+  agent: Agent,
+  botToken: string,
+): Promise<FastifyReply> {
+  let bot;
+  try {
+    bot = await telegram.getMe(botToken);
+  } catch (err) {
+    return reply.code(422).send({ error: `telegram rejected the token: ${(err as Error).message}` });
+  }
+
+  const connection = await upsertTelegramConnection({
+    tenantId,
+    agentId: agent.id,
+    sealedCredentials: sealSecret(
+      JSON.stringify({
+        botToken,
+        // Telegram echoes this on every push; 1-256 chars of [A-Za-z0-9_-].
+        webhookSecret: randomBytes(24).toString('hex'),
+      } satisfies TelegramCredentials),
+    ),
+    config: { botId: bot.id, botUsername: bot.username },
+  });
+
+  // Re-connecting an existing bot (identity-upsert hit a live row) may be
+  // re-pointing it at a different agent: move its live channel threads onto
+  // the current agent. Idempotent — an unchanged agent moves zero rows.
+  if (connection.refreshed) {
+    await updateConnectionAgent(tenantId, connection.id, agent.id);
+  }
+
+  try {
+    const url = await registerWebhook(connection);
+    return reply.code(201).send({
+      channel: 'telegram',
+      botUsername: bot.username,
+      webhookUrl: url,
+    });
+  } catch (err) {
+    // Connection saved, webhook not live (e.g. PUBLIC_URL not reachable by
+    // Telegram). Surface it — reconnect retries the registration.
+    return reply.code(502).send({
+      error: `token accepted but webhook registration failed: ${(err as Error).message}`,
+      channel: 'telegram',
+      botUsername: bot.username,
+    });
+  }
+}
+
+/**
+ * One connection's channel-listing row: its config plus the live webhook
+ * state. Telegram rows call getWebhookInfo (the truth lives at Telegram);
+ * email rows rebuild the static inbound URL the user pasted into the
+ * provider. Extracted so the legacy GET /channels and the new GET
+ * /v1/connections assemble identical rows. Never surfaces the sealed token.
+ */
+export async function connectionWebhookState(c: AgentConnection): Promise<{
+  channel: string;
+  status: string;
+  config: Record<string, unknown>;
+  webhook: unknown;
+  createdAt: string;
+}> {
+  let webhook: unknown = null;
+  if (c.channel === 'telegram') {
+    try {
+      const info = await telegram.getWebhookInfo(credentials(c).botToken);
+      webhook = {
+        url: info.url,
+        pendingUpdates: info.pending_update_count,
+        lastError: info.last_error_message ?? null,
+        expectedUrl: webhookUrl(c.id),
+      };
+    } catch (err) {
+      webhook = { error: (err as Error).message };
+    }
+  } else if (c.channel === 'email') {
+    // Unlike telegram (we register the webhook), the USER pastes this URL
+    // into their provider — so it stays retrievable here. It is our minted
+    // inbound credential, tenant-admin scoped.
+    webhook = { url: emailWebhookUrl(c.id, c.credentials) };
+  }
+  return { channel: c.channel, status: c.status, config: c.config, webhook, createdAt: c.created_at };
 }
 
 export function registerTelegramRoutes(app: FastifyInstance) {
@@ -65,63 +177,15 @@ export function registerTelegramRoutes(app: FastifyInstance) {
     '/v1/agents/:identifier/channels/telegram',
     { preHandler: [authenticate] },
     async (req, reply) => {
-      // Trim first: tokens copied from the BotFather message often carry
-      // whitespace, and a malformed token 404s at Telegram confusingly.
-      const parsed = z
-        .object({
-          botToken: z
-            .string()
-            .trim()
-            .regex(
-              /^\d+:[A-Za-z0-9_-]{30,}$/,
-              'not a bot token — expected the "<digits>:<letters/digits>" string BotFather sent',
-            ),
-        })
-        .safeParse(req.body);
+      const parsed = z.object({ botToken: telegramBotTokenSchema }).safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
       }
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
-
-      // Validate the token against Telegram before storing anything.
-      let bot;
-      try {
-        bot = await telegram.getMe(parsed.data.botToken);
-      } catch (err) {
-        return reply.code(422).send({ error: `telegram rejected the token: ${(err as Error).message}` });
-      }
-
-      const connection = await upsertConnection({
-        tenantId: req.tenant.id,
-        agentId: agent.id,
-        channel: 'telegram',
-        sealedCredentials: sealSecret(
-          JSON.stringify({
-            botToken: parsed.data.botToken,
-            // Telegram echoes this on every push; 1-256 chars of [A-Za-z0-9_-].
-            webhookSecret: randomBytes(24).toString('hex'),
-          } satisfies TelegramCredentials),
-        ),
-        config: { botId: bot.id, botUsername: bot.username },
-      });
-
-      try {
-        const url = await registerWebhook(connection);
-        return reply.code(201).send({
-          channel: 'telegram',
-          botUsername: bot.username,
-          webhookUrl: url,
-        });
-      } catch (err) {
-        // Connection saved, webhook not live (e.g. PUBLIC_URL not reachable
-        // by Telegram). Surface it — reconnect retries the registration.
-        return reply.code(502).send({
-          error: `token accepted but webhook registration failed: ${(err as Error).message}`,
-          channel: 'telegram',
-          botUsername: bot.username,
-        });
-      }
+      // Legacy shim: same core flow as POST /v1/connections/telegram, agent
+      // resolved from the path instead of the body.
+      return handleTelegramConnect(reply, req.tenant.id, agent, parsed.data.botToken);
     },
   );
 
@@ -131,7 +195,21 @@ export function registerTelegramRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
-      const connection = await getConnectionForAgent(agent.id, 'telegram');
+      const telegrams = (await listConnectionsForAgent(agent.id)).filter(
+        (c) => c.channel === 'telegram' && c.status === 'active',
+      );
+      // Post-split an agent can carry more than one telegram identity; a
+      // path-scoped reconnect can't say which — steer to the id-scoped route.
+      if (telegrams.length > 1) {
+        return reply.code(409).send({
+          error: 'multiple telegram connections — use /v1/connections/:id/reconnect',
+          connections: telegrams.map((c) => ({
+            id: c.id,
+            botUsername: (c.config as { botUsername?: string } | null)?.botUsername ?? null,
+          })),
+        });
+      }
+      const connection = telegrams[0];
       if (!connection) return reply.code(404).send({ error: 'telegram is not connected' });
       try {
         const url = await registerWebhook(connection);
@@ -152,26 +230,7 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       const connections = await listConnectionsForAgent(agent.id);
       const out = [];
       for (const c of connections) {
-        let webhook: unknown = null;
-        if (c.channel === 'telegram') {
-          try {
-            const info = await telegram.getWebhookInfo(credentials(c).botToken);
-            webhook = {
-              url: info.url,
-              pendingUpdates: info.pending_update_count,
-              lastError: info.last_error_message ?? null,
-              expectedUrl: webhookUrl(c.id),
-            };
-          } catch (err) {
-            webhook = { error: (err as Error).message };
-          }
-        } else if (c.channel === 'email') {
-          // Unlike telegram (we register the webhook), the USER pastes this
-          // URL into their provider — so it stays retrievable here. It is
-          // our minted inbound credential, tenant-admin scoped.
-          webhook = { url: emailWebhookUrl(c.id, c.credentials) };
-        }
-        out.push({ channel: c.channel, status: c.status, config: c.config, webhook, createdAt: c.created_at });
+        out.push(await connectionWebhookState(c));
       }
       return { channels: out };
     },
@@ -230,13 +289,12 @@ export function registerTelegramRoutes(app: FastifyInstance) {
         !message?.text ||
         !message.from ||
         message.from.is_bot ||
-        message.chat.type !== 'private' ||
-        connection.status !== 'active'
+        message.chat.type !== 'private'
       ) {
         return { ok: true, skipped: true };
       }
-      const agent = await getAgentById(connection.agent_id);
-      if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
+      const agent = await resolveAgentForInbound(connection);
+      if (!agent) return { ok: true, skipped: true };
 
       // A deep-link tap arrives as `/start <token>` — the linking handshake,
       // not a conversation turn. Bare /start (or non-token payloads) falls
@@ -247,8 +305,9 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       }
 
       const subscriber = await resolveTelegramSubscriber(connection.tenant_id, message.from.id);
-      const conversation = await openConversation({
+      const conversation = await openChannelConversation({
         tenantId: connection.tenant_id,
+        connectionId: connection.id,
         agentId: agent.id,
         subscriberId: subscriber.id,
         channel: 'telegram',
@@ -366,16 +425,11 @@ async function handleCallback(
   connection: AgentConnection,
   callback: NonNullable<TelegramUpdate['callback_query']>,
 ): Promise<unknown> {
-  if (
-    !callback.data ||
-    !callback.message ||
-    callback.from.is_bot ||
-    connection.status !== 'active'
-  ) {
+  if (!callback.data || !callback.message || callback.from.is_bot) {
     return { ok: true, skipped: true };
   }
-  const agent = await getAgentById(connection.agent_id);
-  if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
+  const agent = await resolveAgentForInbound(connection);
+  if (!agent) return { ok: true, skipped: true };
 
   // Clear the client-side spinner regardless of what happens next.
   await telegram
@@ -383,8 +437,9 @@ async function handleCallback(
     .catch((err) => logger.warn({ err: (err as Error).message }, 'answerCallbackQuery failed'));
 
   const subscriber = await resolveTelegramSubscriber(connection.tenant_id, callback.from.id);
-  const conversation = await openConversation({
+  const conversation = await openChannelConversation({
     tenantId: connection.tenant_id,
+    connectionId: connection.id,
     agentId: agent.id,
     subscriberId: subscriber.id,
     channel: 'telegram',
@@ -454,18 +509,20 @@ async function handleEditedMessage(
     !edited.text ||
     !edited.from ||
     edited.from.is_bot ||
-    edited.chat.type !== 'private' ||
-    connection.status !== 'active'
+    edited.chat.type !== 'private'
   ) {
     return { ok: true, skipped: true };
   }
-  const agent = await getAgentById(connection.agent_id);
-  if (!agent || agent.status !== 'active') return { ok: true, skipped: true };
+  const agent = await resolveAgentForInbound(connection);
+  if (!agent) return { ok: true, skipped: true };
 
   await resolveTelegramSubscriber(connection.tenant_id, edited.from.id);
-  // An edit must never CREATE a conversation — findConversationByThread, not
-  // openConversation. No thread yet means there is nothing to edit.
-  const conversation = await findConversationByThread(agent.id, 'telegram', String(edited.chat.id));
+  // An edit must never CREATE a conversation — find-not-create by the
+  // connection's thread. No thread yet means there is nothing to edit.
+  const conversation = await findConversationByConnectionThread(
+    connection.id,
+    String(edited.chat.id),
+  );
   if (!conversation) return { ok: true, skipped: true };
 
   // Only the user's own live rows are editable; agent/system rows and

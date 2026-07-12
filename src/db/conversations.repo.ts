@@ -33,6 +33,8 @@ export interface Conversation {
   id: string;
   tenant_id: string;
   agent_id: string;
+  /** The channel connection this thread belongs to (null for inapp/legacy). */
+  connection_id: string | null;
   subscriber_id: string;
   channel: string;
   thread_key: string;
@@ -214,24 +216,51 @@ export interface AgentConnection {
   updated_at: string;
 }
 
-/** Connect (or re-connect) a channel: one connection per (agent, channel). */
-export async function upsertConnection(c: {
+/**
+ * Connect (or re-connect) telegram: identity-upsert keyed by the bot's id
+ * within the tenant, NOT by agent — the same bot re-pointed at a new agent
+ * updates the existing connection in place (agent_id = excluded.agent_id).
+ * `refreshed` (Postgres's xmax trick) is true when this hit an existing row.
+ */
+export async function upsertTelegramConnection(c: {
   tenantId: string;
   agentId: string;
-  channel: string;
   sealedCredentials: string;
   config: Record<string, unknown>;
-}): Promise<AgentConnection> {
+}): Promise<AgentConnection & { refreshed: boolean }> {
   const { rows } = await pool.query(
     `insert into agent_connections (tenant_id, agent_id, channel, credentials, config)
-     values ($1, $2, $3, $4, $5)
-     on conflict (agent_id, channel) do update set
-       credentials = excluded.credentials,
-       config      = excluded.config,
-       status      = 'active',
-       updated_at  = now()
-     returning *`,
-    [c.tenantId, c.agentId, c.channel, c.sealedCredentials, JSON.stringify(c.config)],
+     values ($1, $2, 'telegram', $3, $4)
+     on conflict (tenant_id, (config->>'botId')) where channel = 'telegram' and status = 'active'
+       do update set
+         credentials = excluded.credentials,
+         config      = excluded.config,
+         agent_id    = excluded.agent_id,
+         updated_at  = now()
+     returning *, (xmax <> 0) as refreshed`,
+    [c.tenantId, c.agentId, c.sealedCredentials, JSON.stringify(c.config)],
+  );
+  return rows[0];
+}
+
+/** Connect (or re-connect) email: identity-upsert keyed by the inbound address. */
+export async function upsertEmailConnection(c: {
+  tenantId: string;
+  agentId: string;
+  sealedCredentials: string;
+  config: Record<string, unknown>;
+}): Promise<AgentConnection & { refreshed: boolean }> {
+  const { rows } = await pool.query(
+    `insert into agent_connections (tenant_id, agent_id, channel, credentials, config)
+     values ($1, $2, 'email', $3, $4)
+     on conflict (tenant_id, (config->>'address')) where channel = 'email' and status = 'active'
+       do update set
+         credentials = excluded.credentials,
+         config      = excluded.config,
+         agent_id    = excluded.agent_id,
+         updated_at  = now()
+     returning *, (xmax <> 0) as refreshed`,
+    [c.tenantId, c.agentId, c.sealedCredentials, JSON.stringify(c.config)],
   );
   return rows[0];
 }
@@ -241,12 +270,23 @@ export async function getConnectionById(id: string): Promise<AgentConnection | n
   return rows[0] ?? null;
 }
 
+/** Tenant-scoped connection fetch (the connection-as-endpoint API surface). */
+export async function getConnection(tenantId: string, id: string): Promise<AgentConnection | null> {
+  const { rows } = await pool.query(
+    'select * from agent_connections where tenant_id = $1 and id = $2',
+    [tenantId, id],
+  );
+  return rows[0] ?? null;
+}
+
+/** The active connection for an agent+channel (v1: one live identity per pair). */
 export async function getConnectionForAgent(
   agentId: string,
   channel: string,
 ): Promise<AgentConnection | null> {
   const { rows } = await pool.query(
-    'select * from agent_connections where agent_id = $1 and channel = $2',
+    `select * from agent_connections where agent_id = $1 and channel = $2
+       and status = 'active' order by created_at asc limit 1`,
     [agentId, channel],
   );
   return rows[0] ?? null;
@@ -260,6 +300,75 @@ export async function listConnectionsForAgent(agentId: string): Promise<AgentCon
   return rows;
 }
 
+export interface ConnectionListRow extends AgentConnection {
+  agent_identifier: string;
+  agent_name: string;
+}
+
+/** Every connection in the tenant, with its current agent (the routing view). */
+export async function listConnectionsForTenant(tenantId: string): Promise<ConnectionListRow[]> {
+  const { rows } = await pool.query(
+    `select c.*, a.identifier as agent_identifier, a.name as agent_name
+       from agent_connections c
+       join agents a on a.id = c.agent_id
+      where c.tenant_id = $1
+      order by c.channel, c.created_at`,
+    [tenantId],
+  );
+  return rows;
+}
+
+/**
+ * Re-point a connection at a different agent, moving its channel conversations
+ * along in the SAME transaction so no inbound turn lands on the old agent
+ * mid-move. Returns null when the connection doesn't exist in this tenant.
+ */
+export async function updateConnectionAgent(
+  tenantId: string,
+  connectionId: string,
+  newAgentId: string,
+): Promise<{ connection: AgentConnection; movedConversations: number } | null> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `update agent_connections set agent_id = $3, updated_at = now()
+       where id = $2 and tenant_id = $1
+       returning *`,
+      [tenantId, connectionId, newAgentId],
+    );
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const moved = await client.query(
+      'update conversations set agent_id = $3 where tenant_id = $1 and connection_id = $2 and agent_id <> $3',
+      [tenantId, connectionId, newAgentId],
+    );
+    await client.query('COMMIT');
+    return { connection: rows[0], movedConversations: moved.rowCount ?? 0 };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Tenant-scoped delete by connection id (the endpoint-model delete path). */
+export async function deleteConnectionById(tenantId: string, id: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    'delete from agent_connections where tenant_id = $1 and id = $2',
+    [tenantId, id],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * Legacy shim: delete an agent's connection(s) for a channel. Post-split this
+ * may delete MORE than one row (parked duplicates) — that's fine, they're all
+ * this agent's identity on the channel.
+ */
 export async function deleteConnection(agentId: string, channel: string): Promise<number> {
   const { rowCount } = await pool.query(
     'delete from agent_connections where agent_id = $1 and channel = $2',
@@ -299,13 +408,68 @@ export async function openConversation(c: {
   const { rows } = await pool.query(
     `insert into conversations (tenant_id, agent_id, subscriber_id, channel, thread_key)
      values ($1, $2, $3, $4, $5)
-     on conflict (agent_id, channel, thread_key) do update set
+     on conflict (agent_id, channel, thread_key) where connection_id is null do update set
        status = 'active',
        last_message_at = now()
      returning *`,
     [c.tenantId, c.agentId, c.subscriberId, c.channel, c.threadKey],
   );
   return rows[0];
+}
+
+/**
+ * Find-or-create a CHANNEL conversation, keyed by (connection_id, thread_key).
+ * agent_id self-heals to the connection's current agent on every inbound turn,
+ * closing the race where a re-point lands between openings.
+ */
+export async function openChannelConversation(c: {
+  tenantId: string;
+  connectionId: string;
+  agentId: string;
+  subscriberId: string;
+  channel: string;
+  threadKey: string;
+}): Promise<Conversation> {
+  const { rows } = await pool.query(
+    `insert into conversations
+       (tenant_id, agent_id, connection_id, subscriber_id, channel, thread_key)
+     values ($1, $2, $3, $4, $5, $6)
+     on conflict (connection_id, thread_key) where connection_id is not null do update set
+       status = 'active',
+       last_message_at = now(),
+       agent_id = excluded.agent_id
+     returning *`,
+    [c.tenantId, c.agentId, c.connectionId, c.subscriberId, c.channel, c.threadKey],
+  );
+  return rows[0];
+}
+
+/** Channel lookup by (connection, thread) — the edit path's find-not-create. */
+export async function findConversationByConnectionThread(
+  connectionId: string,
+  threadKey: string,
+): Promise<Conversation | null> {
+  const { rows } = await pool.query(
+    'select * from conversations where connection_id = $1 and thread_key = $2',
+    [connectionId, threadKey],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * The connection an outbound reply should be sent through. Channel rows carry
+ * connection_id directly; legacy/inapp rows fall back to the agent's active
+ * connection for the channel. The fallback is intentionally silent to keep
+ * this data layer log-free (see file style) — a null connection_id on a
+ * channel row means pre-split legacy data or a disconnected channel.
+ */
+export async function getConnectionForConversation(
+  conversation: Conversation,
+): Promise<AgentConnection | null> {
+  if (conversation.connection_id) {
+    return getConnectionById(conversation.connection_id);
+  }
+  return getConnectionForAgent(conversation.agent_id, conversation.channel);
 }
 
 /** The widget's lookup: the one conversation for this agent+channel+thread. */

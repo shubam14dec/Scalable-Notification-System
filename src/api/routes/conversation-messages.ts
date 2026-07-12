@@ -11,7 +11,7 @@ import {
   findConversationByThread,
   getAgent,
   getAgentById,
-  getConnectionForAgent,
+  getConnectionForConversation,
   getConversation,
   getConversationMessage,
   getSubscriberById,
@@ -152,7 +152,7 @@ export function registerConversationMessageRoutes(app: FastifyInstance) {
           Date.now() - new Date(deleted.created_at).getTime() < TELEGRAM_DELETE_WINDOW_MS;
         if (raw.telegramMessageId && withinWindow) {
           try {
-            const connection = await getConnectionForAgent(conversation.agent_id, 'telegram');
+            const connection = await getConnectionForConversation(conversation);
             if (connection && connection.status === 'active') {
               const { botToken } = JSON.parse(openSecret(connection.credentials)) as {
                 botToken: string;

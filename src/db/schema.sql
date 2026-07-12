@@ -285,8 +285,7 @@ create table if not exists agent_connections (
   config      jsonb not null default '{}', -- {botId, botUsername}
   status      text not null default 'active',
   created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now(),
-  unique (agent_id, channel)
+  updated_at  timestamptz not null default now()
 );
 
 create table if not exists conversations (
@@ -294,6 +293,9 @@ create table if not exists conversations (
   tenant_id       uuid not null references tenants(id),
   agent_id        uuid not null references agents(id) on delete cascade,
   subscriber_id   uuid not null references subscribers(id),
+  -- The channel connection this thread belongs to (channel conversations key
+  -- by connection; inapp + legacy rows stay null and key by agent+channel).
+  connection_id   uuid references agent_connections(id) on delete set null,
   channel         text not null default 'inapp',
   -- One conversation per (agent, channel, thread): for in-app the thread IS
   -- the subscriber; external channels (Phase 2) put their thread id here.
@@ -303,8 +305,7 @@ create table if not exists conversations (
   summary         text,
   message_count   int not null default 0,
   last_message_at timestamptz not null default now(),
-  created_at      timestamptz not null default now(),
-  unique (agent_id, channel, thread_key)
+  created_at      timestamptz not null default now()
 );
 
 create index if not exists conversations_tenant_recent_idx
@@ -314,6 +315,82 @@ create index if not exists conversations_tenant_recent_idx
 -- conversations (the matches), never with total table size.
 create index if not exists conversations_active_stale_idx
   on conversations (last_message_at) where status = 'active';
+
+-- ---- Phase 12 Slice A: connection/endpoint model split ----
+-- Connections become re-pointable (mutable agent_id = v1 routing table) and
+-- channel conversations re-key to (connection_id, thread_key). Idempotent:
+-- each step is gated on the old shape still existing, so a second run no-ops.
+alter table conversations add column if not exists connection_id
+  uuid references agent_connections(id) on delete set null;
+
+-- Phase 12 split: runs exactly once, gated on the old weld still existing —
+-- which is also what makes the backfill join unambiguous (1:1 by constraint).
+do $$
+declare c text;
+begin
+  select conname into c from pg_constraint
+   where conrelid = 'conversations'::regclass and contype = 'u'
+     and cardinality(conkey) = 3;
+  if c is not null then
+    update conversations cv
+       set connection_id = ac.id
+      from agent_connections ac
+     where cv.connection_id is null
+       and cv.channel <> 'inapp'
+       and ac.agent_id = cv.agent_id
+       and ac.channel  = cv.channel;
+    execute format('alter table conversations drop constraint %I', c);
+  end if;
+end $$;
+
+do $$
+declare c text;
+begin
+  select conname into c from pg_constraint
+   where conrelid = 'agent_connections'::regclass and contype = 'u';
+  if c is not null then
+    execute format('alter table agent_connections drop constraint %I', c);
+  end if;
+end $$;
+
+-- Deleting an agent must not silently destroy a live channel identity:
+-- the API 409s first (next slice); this is the raw-SQL backstop.
+do $$
+declare c text;
+begin
+  select conname into c from pg_constraint
+   where conrelid = 'agent_connections'::regclass
+     and contype = 'f' and confdeltype = 'c';
+  if c is not null then
+    execute format('alter table agent_connections drop constraint %I', c);
+    alter table agent_connections
+      add constraint agent_connections_agent_id_fkey
+      foreign key (agent_id) references agents(id) on delete restrict;
+  end if;
+end $$;
+
+-- Same bot/mailbox twice per tenant: older duplicates are already dead
+-- (telegram honors only the latest setWebhook) — park, don't delete.
+update agent_connections a set status = 'disabled'
+ where a.status = 'active' and a.channel in ('telegram','email')
+   and exists (select 1 from agent_connections b
+                where b.tenant_id = a.tenant_id and b.channel = a.channel
+                  and b.status = 'active' and b.created_at > a.created_at
+                  and ((a.channel='telegram' and b.config->>'botId' = a.config->>'botId')
+                    or (a.channel='email' and b.config->>'address' = a.config->>'address')));
+
+create unique index if not exists agent_connections_tg_identity_uq
+  on agent_connections (tenant_id, (config->>'botId'))
+  where channel = 'telegram' and status = 'active';
+create unique index if not exists agent_connections_email_identity_uq
+  on agent_connections (tenant_id, (config->>'address'))
+  where channel = 'email' and status = 'active';
+
+-- Channel threads key by connection; inapp (and legacy nulls) stay agent-keyed.
+create unique index if not exists conversations_conn_thread_uq
+  on conversations (connection_id, thread_key) where connection_id is not null;
+create unique index if not exists conversations_agent_thread_uq
+  on conversations (agent_id, channel, thread_key) where connection_id is null;
 
 -- One human, many channel identities. Inbound resolution consults this
 -- mapping FIRST (one unique-index hit per message); a miss falls back to

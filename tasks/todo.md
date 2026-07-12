@@ -84,6 +84,74 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+### Conversations / Agents — Phase 12: connection/endpoint model split — COMPLETE
+(user-verified 2026-07-12, review: the switchboard is real — one bot
+served three brains in one afternoon with zero webhook re-registration,
+including through a live tunnel rotation AND an OOM crash recovery
+mid-E2E. The forcing fact held up: connection-keyed threads are
+REQUIRED, not nice-to-have (tg chat.id collides across bots — test
+case 3 proves it). Delegation scorecard: 4 Opus slices + 2 revision-
+gate returns, both first-retry fixes — (1) test slice caught
+updateConnectionAgent never referencing $1/tenantId (42P18; every
+re-point would have 500'd; ZERO pre-existing coverage on that path —
+adversarial tests earn their cost), (2) user found the agent-delete
+409 rendered nowhere in the UI. Live model finding documented in
+AGENT-CHANNELS.md §9: weak models (GLM) imitate the inherited thread
+persona over their system prompt after a re-point — fresh-thread
+haiku proof isolated platform from model. Docs agent honestly flagged
+its one inference (auth header) — it was wrong, manager fixed.
+234 tests.)
+
+### (original Phase 12 plan)
+(plan approved 2026-07-12; full plan in
+`~/.claude/plans/tranquil-swimming-acorn.md`. Semantics: connections
+standalone, credentials + mutable agent_id = v1 routing; re-point
+moves ALL conversations, history rides; channel threads re-key to
+(connection_id, thread_key) — REQUIRED, tg chat.id collides across
+bots; connect = identity-upsert, id stable, webhooks never re-register
+on re-point; resolveAgentForInbound seam for Phase 13 Slack matchers;
+top-level Connections page. All subagents = Opus per CLAUDE.md
+directive.)
+
+- [x] A. Model + rewire: schema DO-blocks (backfill, constraint drops,
+      restrict FK, dupe demotion, 4 partial uniques), repo (identity
+      upserts, openChannelConversation, getConnectionForConversation,
+      mandatory ON CONFLICT fixes), inbound-routing.ts seam, outbound
+      swap (Opus, audited; 224 green, migrate 2x idempotent on dev DB,
+      backfill 145/188 — 43 nulls all orphaned-connection legacy rows)
+- [x] B. New API: connections.ts (list/connect tg+email/repoint/
+      reconnect/disconnect/link-tokens), agents delete-409, legacy
+      shims delegate, identities 0/1/many (Opus, audited; 224 green,
+      acyclic imports; kept legacy 422 on getMe failure — spec had an
+      internal contradiction, byte-identical shims won)
+- [x] C. Dashboard: Connections page (switchboard), nav/route, Agents
+      modal shrink to read-only, Subscribers Link modal fix
+      (Opus, audited; dashboard tsc + vite build green, zero raw colors)
+- [x] D. Tests: connections.test.ts (10 cases; zero telegram retargets
+      needed); suite 234/234 2x. FOUND REAL BUG: updateConnectionAgent
+      second UPDATE never referenced $1 (tenantId) → 42P18 → every
+      re-point would have 500'd; zero pre-existing coverage on that
+      path. Revision gate: same Slice-A agent fixed it (one line,
+      + tenant scoping), first retry.
+- [x] E2E user-verified 2026-07-12 on the real bot: re-point moved
+      conversations (history intact through TWO brain swaps + memory
+      of order 55555 across them); same bot token served 3 brains with
+      ZERO webhook re-registration incl. through a real tunnel
+      rotation (Re-register now lives on Connections page — dogfooded
+      during an OOM+tunnel-death recovery); delete guard 409 while
+      routed (UI gap found live → fixed: visible dismissible error;
+      ApiError doesn't expose response bodies — noted as polish) then
+      delete succeeded once un-routed; fresh-thread haiku proof
+      isolated platform (correct) from model behavior: GLM imitates
+      inherited thread persona over its system prompt — documented as
+      a product consideration in AGENT-CHANNELS.md
+- [x] E. Docs: AGENT-CHANNELS.md rewritten around standalone
+      connections (14 sections, deprecated flows isolated, persona
+      finding in §9; auth-header inference corrected to x-api-key);
+      single verified commit + push + memory
+
+## Recently finished
+
 ### Conversations / Agents — Phase 11: send-agent-reply API + onResolve — COMPLETE
 (user-verified 2026-07-12 on real Telegram: proactive push landed in
 the TG chat unprompted, same-messageId repeat → duplicate:true with no
