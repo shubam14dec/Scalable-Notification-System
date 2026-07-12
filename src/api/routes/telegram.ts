@@ -9,6 +9,7 @@ import { logExec } from '../../core/execution-log';
 import { sealSecret, openSecret } from '../../auth/secret-box';
 import { telegram, type TelegramUpdate } from '../../channels/telegram';
 import { emailWebhookUrl } from './email-channel';
+import { slackWebhookUrls } from './slack';
 import { upsertSubscriber } from '../../db/repositories';
 import { hashLinkToken } from './identities';
 import {
@@ -166,6 +167,10 @@ export async function connectionWebhookState(c: AgentConnection): Promise<{
     // into their provider — so it stays retrievable here. It is our minted
     // inbound credential, tenant-admin scoped.
     webhook = { url: emailWebhookUrl(c.id, c.credentials) };
+  } else if (c.channel === 'slack') {
+    // Like email: the USER pastes these into the Slack app config, so they
+    // stay statically rebuildable here (no secret in them — routing is by id).
+    webhook = slackWebhookUrls(c.id);
   }
   return { channel: c.channel, status: c.status, config: c.config, webhook, createdAt: c.created_at };
 }

@@ -84,6 +84,54 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+### Conversations / Agents — Phase 13: Slack channel — COMPLETE
+(user-verified 2026-07-12 on a real workspace (user's own asyncify-dev,
+created for the test — company workspace correctly avoided): DM
+answered by default agent; #billing mention → haiku agent IN THREAD
+via routing rule while #support + DM stayed support-demo — the
+switchboard demo, DB-verified (rule row C0BGAURDCQ7→haiku, thread
+agents match); thread-following without mention; top-level unmentioned
+silence; Block Kit buttons + ✓ retire; edit → edited marker, delete →
+user tombstone, operator delete → vanished from Slack (deleted_by
+rows evidence). FOUR channels live. Delegation: 5 Opus slices, ZERO
+revision-gate returns — first clean phase. E2E friction: manifest
+lacked app_home messages_tab settings → DMs disabled ("sending
+messages turned off"); fixed in docs manifest (messages_tab_enabled +
+read_only false = the checkbox). 269 tests.)
+
+### (original Phase 13 plan)
+(plan approved 2026-07-12; full plan in
+`~/.claude/plans/tranquil-swimming-acorn.md`. Token-paste v1 w/
+manifest; routing rules table → resolveAgentForInbound scope param;
+DMs always / channels @mention-to-start + thread-follows; dedupe on
+slack-<channel>-<ts> — mentions fire TWO envelopes, event_id dedupe
+would double-ingest; bot-echo guard first; Block Kit buttons ride
+existing pipeline; edit+DELETE parity (Slack notifies deletions);
+typing = documented no-op. All subagents Opus.)
+
+- [x] A. Backend core: schema (rules table + slack identity index),
+      channels/slack.ts (client + v0 verify), app.ts form parser,
+      routes/slack.ts (connect + events + subscriber resolution +
+      edit/delete handlers), inbound-routing scope param, repo adds,
+      webhookState branch (Opus, audited; 234 green, migrate 2x,
+      acyclic imports, no secret leakage)
+- [x] B. Interactivity + outbound: block_actions route, deliverReply/
+      typing/operator-delete branches, /v1/connections/slack + routes
+      CRUD, identities enum (Opus, audited; 234 green)
+- [x] C. Dashboard: slack tab + dual-URL panel + RoutesModal
+      (Opus, audited; dashboard tsc + build green, zero raw colors)
+- [x] D. Tests: slack.test.ts (33 cases) + connections additions;
+      269/269 2x no-flake; zero suspected bugs — first slice with no
+      revision-gate returns (Opus, audited + manager re-run)
+- [x] E. Docs: AGENT-CHANNELS.md slack section w/ manifest YAML +
+      README (Opus, audited; scrub clean; rotation runbook +
+      enumeration coherence included)
+- [x] F. Manual E2E (own workspace, manifest app creation, DM +
+      routing demo + parity — all behaved; DB-evidence-verified) +
+      single verified commit + push + memory
+
+## Recently finished
+
 ### Conversations / Agents — Phase 12: connection/endpoint model split — COMPLETE
 (user-verified 2026-07-12, review: the switchboard is real — one bot
 served three brains in one afternoon with zero webhook re-registration,

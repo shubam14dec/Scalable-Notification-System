@@ -20,6 +20,7 @@ import { registerAgentRoutes } from './routes/agents';
 import { registerConversationMessageRoutes } from './routes/conversation-messages';
 import { registerTelegramRoutes } from './routes/telegram';
 import { registerEmailChannelRoutes } from './routes/email-channel';
+import { registerSlackRoutes } from './routes/slack';
 import { registerIdentityRoutes } from './routes/identities';
 import { registerConnectionRoutes } from './routes/connections';
 
@@ -48,6 +49,17 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
   });
 
+  // Slack interactivity posts application/x-www-form-urlencoded; keep the raw
+  // body for its HMAC signature and expose the decoded form as the parsed body.
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (req, payload, done) => {
+      req.rawBody = payload as string;
+      done(null, Object.fromEntries(new URLSearchParams(payload as string)));
+    },
+  );
+
   await app.register(fastifyJwt, { secret: env.jwtSecret });
 
   registerAuthRoutes(app);
@@ -60,6 +72,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerConversationMessageRoutes(app);
   registerTelegramRoutes(app);
   registerEmailChannelRoutes(app);
+  registerSlackRoutes(app);
   registerIdentityRoutes(app);
   registerConnectionRoutes(app);
   registerTriggerRoutes(app);

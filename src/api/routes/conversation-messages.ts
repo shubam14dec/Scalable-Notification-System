@@ -5,12 +5,15 @@ import { authenticateSender } from './agents';
 import { logger } from '../../shared/logger';
 import { openSecret } from '../../auth/secret-box';
 import { telegram } from '../../channels/telegram';
+import { slack } from '../../channels/slack';
+import type { SlackCredentials } from './slack';
 import { publishConversationEvent } from '../../core/conversation-events';
 import {
   editConversationMessage,
   findConversationByThread,
   getAgent,
   getAgentById,
+  getConnectionById,
   getConnectionForConversation,
   getConversation,
   getConversationMessage,
@@ -163,6 +166,25 @@ export function registerConversationMessageRoutes(app: FastifyInstance) {
             logger.warn(
               { err: (err as Error).message },
               'telegram deleteMessage failed on operator delete',
+            );
+          }
+        }
+      } else if (conversation.channel === 'slack') {
+        // Best effort: an unreachable bot must never fail the request — the
+        // durable tombstone is already written. No time window (Slack lets a
+        // bot delete its own posts indefinitely).
+        const raw = (deleted.raw ?? {}) as { slackTs?: string; slackChannel?: string };
+        if (raw.slackTs && raw.slackChannel && conversation.connection_id) {
+          try {
+            const connection = await getConnectionById(conversation.connection_id);
+            if (connection && connection.status === 'active') {
+              const { botToken } = JSON.parse(openSecret(connection.credentials)) as SlackCredentials;
+              await slack.deleteMessage(botToken, raw.slackChannel, raw.slackTs);
+            }
+          } catch (err) {
+            logger.warn(
+              { err: (err as Error).message },
+              'slack deleteMessage failed on operator delete',
             );
           }
         }

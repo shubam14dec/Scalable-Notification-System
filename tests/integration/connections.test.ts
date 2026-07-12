@@ -16,6 +16,7 @@
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createHash } from 'node:crypto';
 import type { Job } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -97,6 +98,44 @@ function startTelegramStub(): Promise<void> {
 
 const sends = () => tgCalls.filter((c) => c.method === 'sendMessage');
 const setWebhooks = () => tgCalls.filter((c) => c.method === 'setWebhook');
+
+// ---- Slack stub: only auth.test is needed for the connect surface ----
+let slackStub: Server;
+function startSlackStub(): Promise<void> {
+  slackStub = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const method = String(req.url).split('/').pop() ?? '';
+      const token = String(req.headers.authorization ?? '').replace(/^Bearer\s+/, '');
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      if (method === 'auth.test') {
+        const teamId = 'T' + createHash('sha1').update(token).digest('hex').slice(0, 8).toUpperCase();
+        return res.end(
+          JSON.stringify({ ok: true, team_id: teamId, team: 'Conn Team', user_id: 'UBOT001', bot_id: 'B001' }),
+        );
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ ok: false, error: 'unknown_method' }));
+    });
+  });
+  return new Promise((r) => slackStub.listen(0, () => r()));
+}
+
+async function connectSlack(
+  agentIdentifier: string,
+  botToken: string,
+): Promise<{ connectionId: string; status: number; body: Record<string, unknown> }> {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/v1/connections/slack',
+    headers: headers(),
+    payload: { botToken, signingSecret: 'conn-slack-signing-secret-0123', agentIdentifier },
+  });
+  const body = json(res);
+  const connectionId = String(body.eventsUrl ?? '').match(/\/webhooks\/slack\/([0-9a-f-]{36})\/events/)?.[1] ?? '';
+  return { connectionId, status: res.statusCode, body };
+}
 
 /** Which webhook secret Telegram would echo for this connection's pushes. */
 function secretFor(connectionId: string): string {
@@ -224,7 +263,9 @@ async function driveTurn(conversationId: string): Promise<void> {
 
 beforeAll(async () => {
   await startTelegramStub();
+  await startSlackStub();
   process.env.TELEGRAM_API_BASE = `http://localhost:${(tgStub.address() as AddressInfo).port}`;
+  process.env.SLACK_API_BASE = `http://localhost:${(slackStub.address() as AddressInfo).port}`;
 
   app = await buildApp();
   const email = `conn-${Date.now()}-${Math.floor(Math.random() * 1e6)}@itest.local`;
@@ -240,7 +281,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   delete process.env.TELEGRAM_API_BASE;
+  delete process.env.SLACK_API_BASE;
   tgStub?.close();
+  slackStub?.close();
   for (const b of bridges) b.close();
   await app.close();
   await closeQueues();
@@ -274,16 +317,6 @@ describe('1. connect + list', () => {
   });
 });
 
-// SKIPPED pending a suspected src bug (report, not fixed here).
-// updateConnectionAgent (src/db/conversations.repo.ts:344-347) runs
-//   `update conversations set agent_id = $3 where connection_id = $2 and agent_id <> $3`
-// with params [tenantId, connectionId, newAgentId] — $1 (tenantId) is passed
-// but never referenced, so Postgres raises 42P18 "could not determine data
-// type of parameter $1" and EVERY re-point 500s. This is the first coverage of
-// the re-point path (no existing test re-connects a bot or calls PATCH
-// /v1/connections/:id), which is why 224 tests stayed green over the bug.
-// One-line fix: add `tenant_id = $1 and` to the WHERE (verified: unskipping
-// then applying that makes tests 2 and 4 pass). Un-skip once src is corrected.
 describe('2. identity-upsert re-points the same bot', () => {
   test('re-connecting a bot to a different agent keeps the connection id and moves live threads', async () => {
     await createAgent('c2-a');
@@ -333,8 +366,6 @@ describe('3. two bots, one agent, colliding chat id', () => {
   });
 });
 
-// SKIPPED for the same updateConnectionAgent bug as describe #2 (see note there).
-// The PATCH /v1/connections/:id path 500s until the WHERE clause references $1.
 describe('4. re-point end to end', () => {
   test('PATCH moves every thread (incl. resolved), self-heals new turns, and replies via the same bot', async () => {
     await createAgent('c4-a');
@@ -637,5 +668,53 @@ describe('10. reconnect', () => {
       headers: headers(),
     });
     expect(emailRe.statusCode).toBe(400);
+  });
+});
+
+describe('11. slack connect + list', () => {
+  test('a slack connection is created and listed with both paste-in webhook URLs', async () => {
+    await createAgent('c11-agent');
+    const sl = await connectSlack('c11-agent', 'xoxb-conn11-0123456789ABCDEFGHIJ');
+    expect(sl.status).toBe(201);
+    expect(sl.body.channel).toBe('slack');
+    expect(String(sl.body.eventsUrl)).toContain(`/webhooks/slack/${sl.connectionId}/events`);
+    expect(String(sl.body.interactivityUrl)).toContain(`/webhooks/slack/${sl.connectionId}/interactivity`);
+
+    const list = json(
+      await app.inject({ method: 'GET', url: '/v1/connections', headers: headers() }),
+    );
+    const row = list.connections.find((c: { id: string }) => c.id === sl.connectionId);
+    expect(row.channel).toBe('slack');
+    expect(row.status).toBe('active');
+    expect(row.agent).toEqual({ identifier: 'c11-agent', name: 'c11-agent' });
+    expect(row.webhook.eventsUrl).toContain(`/webhooks/slack/${sl.connectionId}/events`);
+    expect(row.webhook.interactivityUrl).toContain(
+      `/webhooks/slack/${sl.connectionId}/interactivity`,
+    );
+  });
+});
+
+describe('12. slack re-point via PATCH', () => {
+  test('PATCH re-points a slack connection at a different agent', async () => {
+    await createAgent('c12-a');
+    await createAgent('c12-b');
+    const sl = await connectSlack('c12-a', 'xoxb-conn12-0123456789ABCDEFGHIJ');
+    expect(sl.status).toBe(201);
+
+    const patch = json(
+      await app.inject({
+        method: 'PATCH',
+        url: `/v1/connections/${sl.connectionId}`,
+        headers: headers(),
+        payload: { agentIdentifier: 'c12-b' },
+      }),
+    );
+    expect(patch.agent).toEqual({ identifier: 'c12-b', name: 'c12-b' });
+
+    const list = json(
+      await app.inject({ method: 'GET', url: '/v1/connections', headers: headers() }),
+    );
+    const row = list.connections.find((c: { id: string }) => c.id === sl.connectionId);
+    expect(row.agent.identifier).toBe('c12-b');
   });
 });

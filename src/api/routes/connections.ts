@@ -11,13 +11,21 @@ import {
   telegramBotTokenSchema,
 } from './telegram';
 import { emailAddressSchema, handleEmailConnect } from './email-channel';
+import {
+  handleSlackConnect,
+  slackBotTokenSchema,
+  slackSigningSecretSchema,
+} from './slack';
 import { mintLinkToken } from './identities';
 import {
   deleteConnectionById,
+  deleteRoutingRule,
   getAgent,
   getConnection,
   listConnectionsForTenant,
+  listRoutingRules,
   updateConnectionAgent,
+  upsertRoutingRule,
 } from '../../db/conversations.repo';
 
 /**
@@ -74,6 +82,29 @@ export function registerConnectionRoutes(app: FastifyInstance) {
     return handleEmailConnect(reply, req.tenant.id, agent, parsed.data.address);
   });
 
+  /** Connect a Slack workspace (bot token + signing secret) and route it to an agent. */
+  app.post('/v1/connections/slack', { preHandler: [authenticate] }, async (req, reply) => {
+    const parsed = z
+      .object({
+        botToken: slackBotTokenSchema,
+        signingSecret: slackSigningSecretSchema,
+        agentIdentifier: z.string().min(1),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+    }
+    const agent = await getAgent(req.tenant.id, parsed.data.agentIdentifier);
+    if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+    return handleSlackConnect(
+      reply,
+      req.tenant.id,
+      agent,
+      parsed.data.botToken,
+      parsed.data.signingSecret,
+    );
+  });
+
   /** Re-point a connection at a different agent, moving its live threads along. */
   app.patch<{ Params: { id: string } }>(
     '/v1/connections/:id',
@@ -109,9 +140,13 @@ export function registerConnectionRoutes(app: FastifyInstance) {
       const connection = await getConnection(req.tenant.id, req.params.id);
       if (!connection) return reply.code(404).send({ error: 'unknown connection' });
       if (connection.channel !== 'telegram') {
-        return reply
-          .code(400)
-          .send({ error: 'nothing to re-register — the email webhook URL is static' });
+        // Non-telegram channels register no webhook (email's inbound address
+        // and slack's paste-in URLs are both static) — nothing to re-issue.
+        const msg =
+          connection.channel === 'slack'
+            ? 'nothing to re-register — the slack webhook URLs are static'
+            : 'nothing to re-register — the email webhook URL is static';
+        return reply.code(400).send({ error: msg });
       }
       try {
         const url = await registerWebhook(connection);
@@ -167,6 +202,90 @@ export function registerConnectionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'no active telegram connection' });
       }
       return mintLinkToken(reply, req.tenant.id, connection, parsed.data.subscriberId);
+    },
+  );
+
+  // ---- slack scope routing rules (a slack-only feature) ----
+
+  /** List a slack connection's scope routing rules. */
+  app.get<{ Params: { id: string } }>(
+    '/v1/connections/:id/routes',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      if (!z.string().uuid().safeParse(req.params.id).success) {
+        return reply.code(404).send({ error: 'unknown connection' });
+      }
+      const connection = await getConnection(req.tenant.id, req.params.id);
+      if (!connection) return reply.code(404).send({ error: 'unknown connection' });
+      if (connection.channel !== 'slack') {
+        return reply.code(400).send({ error: 'routing rules are a slack feature' });
+      }
+      const rules = await listRoutingRules(req.tenant.id, connection.id);
+      return {
+        routes: rules.map((r) => ({
+          scopeKey: r.scope_key,
+          agent: { identifier: r.agent_identifier, name: r.agent_name },
+          createdAt: r.created_at,
+        })),
+      };
+    },
+  );
+
+  /** Set (or re-point) the rule for a scope — a slack channel/group id. */
+  app.put<{ Params: { id: string } }>(
+    '/v1/connections/:id/routes',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      if (!z.string().uuid().safeParse(req.params.id).success) {
+        return reply.code(404).send({ error: 'unknown connection' });
+      }
+      const connection = await getConnection(req.tenant.id, req.params.id);
+      if (!connection) return reply.code(404).send({ error: 'unknown connection' });
+      if (connection.channel !== 'slack') {
+        return reply.code(400).send({ error: 'routing rules are a slack feature' });
+      }
+      const parsed = z
+        .object({
+          scopeKey: z
+            .string()
+            .trim()
+            .regex(/^[CG][A-Z0-9]{6,}$/i, 'that does not look like a slack channel id'),
+          agentIdentifier: z.string().min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+      }
+      const agent = await getAgent(req.tenant.id, parsed.data.agentIdentifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      await upsertRoutingRule({
+        tenantId: req.tenant.id,
+        connectionId: connection.id,
+        scopeKey: parsed.data.scopeKey,
+        agentId: agent.id,
+      });
+      return {
+        scopeKey: parsed.data.scopeKey,
+        agent: { identifier: agent.identifier, name: agent.name },
+      };
+    },
+  );
+
+  /** Remove a scope routing rule. */
+  app.delete<{ Params: { id: string; scopeKey: string } }>(
+    '/v1/connections/:id/routes/:scopeKey',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      if (!z.string().uuid().safeParse(req.params.id).success) {
+        return reply.code(404).send({ error: 'unknown connection' });
+      }
+      const connection = await getConnection(req.tenant.id, req.params.id);
+      if (!connection) return reply.code(404).send({ error: 'unknown connection' });
+      if (connection.channel !== 'slack') {
+        return reply.code(400).send({ error: 'routing rules are a slack feature' });
+      }
+      const deleted = await deleteRoutingRule(req.tenant.id, connection.id, req.params.scopeKey);
+      return { deleted };
     },
   );
 }

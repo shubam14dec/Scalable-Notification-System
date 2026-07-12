@@ -265,6 +265,33 @@ export async function upsertEmailConnection(c: {
   return rows[0];
 }
 
+/**
+ * Connect (or re-connect) slack: identity-upsert keyed by the workspace's
+ * team id within the tenant — the same workspace re-pointed at a new default
+ * agent updates the existing connection in place. `refreshed` (the xmax
+ * trick) is true when this hit an existing row.
+ */
+export async function upsertSlackConnection(c: {
+  tenantId: string;
+  agentId: string;
+  sealedCredentials: string;
+  config: Record<string, unknown>;
+}): Promise<AgentConnection & { refreshed: boolean }> {
+  const { rows } = await pool.query(
+    `insert into agent_connections (tenant_id, agent_id, channel, credentials, config)
+     values ($1, $2, 'slack', $3, $4)
+     on conflict (tenant_id, (config->>'teamId')) where channel = 'slack' and status = 'active'
+       do update set
+         credentials = excluded.credentials,
+         config      = excluded.config,
+         agent_id    = excluded.agent_id,
+         updated_at  = now()
+     returning *, (xmax <> 0) as refreshed`,
+    [c.tenantId, c.agentId, c.sealedCredentials, JSON.stringify(c.config)],
+  );
+  return rows[0];
+}
+
 export async function getConnectionById(id: string): Promise<AgentConnection | null> {
   const { rows } = await pool.query('select * from agent_connections where id = $1', [id]);
   return rows[0] ?? null;
@@ -375,6 +402,79 @@ export async function deleteConnection(agentId: string, channel: string): Promis
     [agentId, channel],
   );
   return rowCount ?? 0;
+}
+
+// ---- per-scope routing rules (slack: channel id -> agent within one workspace) ----
+
+export interface RoutingRule {
+  id: string;
+  tenant_id: string;
+  connection_id: string;
+  scope_key: string;
+  agent_id: string;
+  created_at: string;
+}
+
+/** The rule for one scope inside a connection — the inbound routing lookup. */
+export async function getRoutingRule(
+  connectionId: string,
+  scopeKey: string,
+): Promise<RoutingRule | null> {
+  const { rows } = await pool.query(
+    'select * from connection_routing_rules where connection_id = $1 and scope_key = $2',
+    [connectionId, scopeKey],
+  );
+  return rows[0] ?? null;
+}
+
+export interface RoutingRuleListRow extends RoutingRule {
+  agent_identifier: string;
+  agent_name: string;
+}
+
+/** Every scope rule on a connection, with its target agent (the management view). */
+export async function listRoutingRules(
+  tenantId: string,
+  connectionId: string,
+): Promise<RoutingRuleListRow[]> {
+  const { rows } = await pool.query(
+    `select r.*, a.identifier as agent_identifier, a.name as agent_name
+       from connection_routing_rules r
+       join agents a on a.id = r.agent_id
+      where r.tenant_id = $1 and r.connection_id = $2
+      order by r.scope_key`,
+    [tenantId, connectionId],
+  );
+  return rows;
+}
+
+/** Set (or re-point) the rule for a scope: last write wins. */
+export async function upsertRoutingRule(r: {
+  tenantId: string;
+  connectionId: string;
+  scopeKey: string;
+  agentId: string;
+}): Promise<RoutingRule> {
+  const { rows } = await pool.query(
+    `insert into connection_routing_rules (tenant_id, connection_id, scope_key, agent_id)
+     values ($1, $2, $3, $4)
+     on conflict (connection_id, scope_key) do update set agent_id = excluded.agent_id
+     returning *`,
+    [r.tenantId, r.connectionId, r.scopeKey, r.agentId],
+  );
+  return rows[0];
+}
+
+export async function deleteRoutingRule(
+  tenantId: string,
+  connectionId: string,
+  scopeKey: string,
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    'delete from connection_routing_rules where tenant_id = $1 and connection_id = $2 and scope_key = $3',
+    [tenantId, connectionId, scopeKey],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 /** Subscriber row by primary key (conversations store the uuid). */
@@ -722,6 +822,20 @@ export async function findMessageByTelegramId(
      where conversation_id = $1 and raw->>'telegramMessageId' = $2
      limit 1`,
     [conversationId, String(telegramMessageId)],
+  );
+  return rows[0] ?? null;
+}
+
+/** The row a Slack edit/delete event references, matched by its stored ts. */
+export async function findMessageBySlackTs(
+  conversationId: string,
+  ts: string,
+): Promise<ConversationMessage | null> {
+  const { rows } = await pool.query(
+    `select * from conversation_messages
+     where conversation_id = $1 and raw->>'slackTs' = $2
+     limit 1`,
+    [conversationId, ts],
   );
   return rows[0] ?? null;
 }

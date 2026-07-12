@@ -20,15 +20,24 @@ import { timeAgo } from './Activity';
 
 interface Connection {
   id: string;
-  channel: 'telegram' | 'email';
+  channel: 'telegram' | 'email' | 'slack';
   status: 'active' | 'disabled';
-  config: { botUsername?: string; botId?: string; address?: string };
+  config: {
+    botUsername?: string;
+    botId?: string;
+    address?: string;
+    teamId?: string;
+    teamName?: string;
+    botUserId?: string;
+  };
   agent: { identifier: string; name: string };
   webhook: {
     url?: string;
     expectedUrl?: string;
     pendingUpdates?: number;
     lastError?: string | null;
+    eventsUrl?: string;
+    interactivityUrl?: string;
   } | null;
   createdAt: string;
 }
@@ -39,9 +48,17 @@ interface AgentOption {
   status: string;
 }
 
-/** The identity a connection answers on — a telegram @handle or an inbox address. */
+/** The identity a connection answers on — a telegram @handle, an inbox address, or a Slack workspace. */
 function identityLabel(c: Connection): string {
-  return c.channel === 'telegram' ? `@${c.config.botUsername ?? '—'}` : c.config.address ?? '—';
+  if (c.channel === 'telegram') return `@${c.config.botUsername ?? '—'}`;
+  if (c.channel === 'slack') return c.config.teamName ?? c.config.teamId ?? '—';
+  return c.config.address ?? '—';
+}
+
+interface Route {
+  scopeKey: string;
+  agent: { identifier: string; name: string };
+  createdAt: string;
 }
 
 /**
@@ -57,9 +74,10 @@ function ConnectModal({
   onClose: () => void;
   onConnected: () => void;
 }) {
-  const [channel, setChannel] = useState<'telegram' | 'email'>('telegram');
+  const [channel, setChannel] = useState<'telegram' | 'email' | 'slack'>('telegram');
   const [error, setError] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
+  const [slack, setSlack] = useState<{ eventsUrl: string; interactivityUrl: string } | null>(null);
 
   const connect = useMutation({
     mutationFn: (body: Record<string, string>) =>
@@ -67,6 +85,20 @@ function ConnectModal({
     onSuccess: (res) => {
       setError('');
       setWebhookUrl(res.webhookUrl);
+      onConnected();
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const connectSlack = useMutation({
+    mutationFn: (body: Record<string, string>) =>
+      api<{ channel: 'slack'; teamName: string; eventsUrl: string; interactivityUrl: string }>(
+        '/v1/connections/slack',
+        { method: 'POST', body },
+      ),
+    onSuccess: (res) => {
+      setError('');
+      setSlack({ eventsUrl: res.eventsUrl, interactivityUrl: res.interactivityUrl });
       onConnected();
     },
     onError: (err) => setError(err.message),
@@ -89,6 +121,30 @@ function ConnectModal({
       </select>
     </Field>
   );
+
+  if (slack) {
+    return (
+      <Modal open onClose={onClose} title="Slack connected">
+        <div className="space-y-3">
+          <Field label="Events URL — paste into Event Subscriptions → Request URL">
+            <CopyField value={slack.eventsUrl} />
+          </Field>
+          <Field label="Interactivity URL — paste into Interactivity & Shortcuts → Request URL">
+            <CopyField value={slack.interactivityUrl} />
+          </Field>
+          <p className="text-[12px] text-t2">
+            Slack will show Verified when the events URL is saved — that also proves the signing
+            secret.
+          </p>
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   if (webhookUrl) {
     return (
@@ -120,7 +176,7 @@ function ConnectModal({
   return (
     <Modal open onClose={onClose} title="Connect a channel">
       <div className="mb-4 inline-flex rounded-md border border-bd p-0.5">
-        {(['telegram', 'email'] as const).map((c) => (
+        {(['telegram', 'email', 'slack'] as const).map((c) => (
           <button
             key={c}
             type="button"
@@ -176,7 +232,7 @@ function ConnectModal({
             </Button>
           </div>
         </form>
-      ) : (
+      ) : channel === 'email' ? (
         <form
           className="space-y-4"
           onSubmit={(e) => {
@@ -210,6 +266,54 @@ function ConnectModal({
             </Button>
             <Button variant="primary" type="submit" disabled={connect.isPending}>
               {connect.isPending ? 'Connecting…' : 'Connect email'}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const form = new FormData(e.currentTarget);
+            const botToken = String(form.get('botToken') ?? '');
+            const signingSecret = String(form.get('signingSecret') ?? '');
+            const agentIdentifier = String(form.get('agentIdentifier') ?? '');
+            if (botToken && signingSecret && agentIdentifier)
+              connectSlack.mutate({ botToken, signingSecret, agentIdentifier });
+          }}
+        >
+          <p className="text-[12px] text-t2">
+            Create the app from the manifest in <Mono>docs/AGENT-CHANNELS.md</Mono>, install it to
+            your workspace, then paste the Bot User OAuth Token and Signing Secret here.
+          </p>
+          <Field label="Bot token">
+            <Input
+              name="botToken"
+              required
+              autoFocus
+              placeholder="xoxb-…"
+              className="font-mono"
+              type="password"
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="Signing secret">
+            <Input
+              name="signingSecret"
+              required
+              className="font-mono"
+              type="password"
+              autoComplete="off"
+            />
+          </Field>
+          {agentSelect}
+          {error && <p className="text-[12px] text-err">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" disabled={connectSlack.isPending}>
+              {connectSlack.isPending ? 'Connecting…' : 'Connect Slack'}
             </Button>
           </div>
         </form>
@@ -251,12 +355,163 @@ function RepointModal({
   );
 }
 
+/**
+ * Per-channel routing for a Slack connection: map individual Slack channel ids
+ * to different agents. DMs and unmatched channels fall through to the default.
+ */
+function RoutesModal({
+  conn,
+  agents,
+  onClose,
+}: {
+  conn: Connection;
+  agents: AgentOption[];
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState('');
+
+  // Two-step inline confirm for deleting a rule, mirroring the page's disconnect.
+  const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const routesKey = ['connection-routes', conn.id];
+  const invalidateRoutes = () => void queryClient.invalidateQueries({ queryKey: routesKey });
+
+  const { data, isLoading } = useQuery({
+    queryKey: routesKey,
+    queryFn: () => api<{ routes: Route[] }>(`/v1/connections/${conn.id}/routes`),
+  });
+
+  const addRoute = useMutation({
+    mutationFn: (body: { scopeKey: string; agentIdentifier: string }) =>
+      api(`/v1/connections/${conn.id}/routes`, { method: 'PUT', body }),
+    onSuccess: () => {
+      setError('');
+      invalidateRoutes();
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const removeRoute = useMutation({
+    mutationFn: (scopeKey: string) =>
+      api(`/v1/connections/${conn.id}/routes/${scopeKey}`, { method: 'DELETE' }),
+    onSuccess: invalidateRoutes,
+  });
+
+  const onDeleteClick = (scopeKey: string) => {
+    if (confirmingKey === scopeKey) {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      setConfirmingKey(null);
+      removeRoute.mutate(scopeKey);
+      return;
+    }
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirmingKey(scopeKey);
+    confirmTimer.current = setTimeout(() => setConfirmingKey(null), 3_000);
+  };
+
+  const routes = data?.routes ?? [];
+
+  return (
+    <Modal open onClose={onClose} title="Channel routes">
+      <div className="space-y-4">
+        <p className="text-[12px] text-t2">
+          Route specific Slack channels to different agents; DMs and unmatched channels use the
+          connection's default agent.
+        </p>
+
+        {isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : routes.length > 0 ? (
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th className={th}>Channel</th>
+                <th className={th}>Agent</th>
+                <th className={`${th} text-right`} />
+              </tr>
+            </thead>
+            <tbody>
+              {routes.map((r) => (
+                <tr key={r.scopeKey} className="transition-colors hover:bg-elevated">
+                  <td className={td}>
+                    <Mono className="break-all">{r.scopeKey}</Mono>
+                  </td>
+                  <td className={td}>
+                    <span className="text-t2">{r.agent.name}</span>
+                  </td>
+                  <td className={`${td} text-right whitespace-nowrap`}>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteClick(r.scopeKey)}
+                      disabled={removeRoute.isPending}
+                      className="text-[12px] text-t3 transition-colors hover:text-t1"
+                    >
+                      {confirmingKey === r.scopeKey ? 'confirm?' : 'Delete'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="text-[12px] text-t3">No rules — everything goes to the default agent.</p>
+        )}
+
+        <form
+          className="space-y-4 border-t border-bd pt-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const form = new FormData(e.currentTarget);
+            const scopeKey = String(form.get('scopeKey') ?? '').trim();
+            const agentIdentifier = String(form.get('agentIdentifier') ?? '');
+            if (scopeKey && agentIdentifier) addRoute.mutate({ scopeKey, agentIdentifier });
+          }}
+        >
+          <Field
+            label="Channel ID"
+            hint="In Slack: open the channel → its name → About tab → Channel ID is at the bottom."
+          >
+            <Input name="scopeKey" required placeholder="C0123ABCDEF" className="font-mono" />
+          </Field>
+          <Field label="Answered by">
+            <select
+              name="agentIdentifier"
+              required
+              aria-label="Answered by"
+              className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 hover:border-bd-strong"
+              defaultValue={agents[0]?.identifier ?? ''}
+            >
+              {agents.map((a) => (
+                <option key={a.identifier} value={a.identifier} className="bg-surface">
+                  {a.name} ({a.identifier})
+                </option>
+              ))}
+            </select>
+          </Field>
+          {error && <p className="text-[12px] text-err">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" onClick={onClose}>
+              Close
+            </Button>
+            <Button variant="primary" type="submit" disabled={addRoute.isPending}>
+              {addRoute.isPending ? 'Adding…' : 'Add'}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </Modal>
+  );
+}
+
 export default function ConnectionsPage() {
   const queryClient = useQueryClient();
   const [connectOpen, setConnectOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [repoint, setRepoint] = useState<{ conn: Connection; agentIdentifier: string } | null>(null);
+  const [routesConn, setRoutesConn] = useState<Connection | null>(null);
 
   // Two-step inline confirm for disconnect.
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -418,7 +673,13 @@ export default function ConnectionsPage() {
                             onClick={() => toggleUrl(c.id)}
                             className="text-[12px] text-t3 transition-colors hover:text-t1"
                           >
-                            {expanded.has(c.id) ? 'Hide URL' : 'View URL'}
+                            {c.channel === 'slack'
+                              ? expanded.has(c.id)
+                                ? 'Hide URLs'
+                                : 'View URLs'
+                              : expanded.has(c.id)
+                                ? 'Hide URL'
+                                : 'View URL'}
                           </button>
                         )}
                       </td>
@@ -426,6 +687,15 @@ export default function ConnectionsPage() {
                         <Mono className="text-t3">{timeAgo(c.createdAt)}</Mono>
                       </td>
                       <td className={`${td} text-right whitespace-nowrap`}>
+                        {c.channel === 'slack' && (
+                          <button
+                            type="button"
+                            onClick={() => setRoutesConn(c)}
+                            className="mr-3 text-[12px] text-t3 transition-colors hover:text-t1"
+                          >
+                            Routes
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => onDisconnectClick(c.id)}
@@ -440,6 +710,24 @@ export default function ConnectionsPage() {
                       <tr>
                         <td className={`${td} pt-0`} colSpan={6}>
                           <CopyField value={c.webhook.url} />
+                        </td>
+                      </tr>
+                    )}
+                    {c.channel === 'slack' && expanded.has(c.id) && c.webhook && (
+                      <tr>
+                        <td className={`${td} pt-0`} colSpan={6}>
+                          <div className="space-y-3">
+                            {c.webhook.eventsUrl && (
+                              <Field label="Events URL — Event Subscriptions → Request URL">
+                                <CopyField value={c.webhook.eventsUrl} />
+                              </Field>
+                            )}
+                            {c.webhook.interactivityUrl && (
+                              <Field label="Interactivity URL — Interactivity & Shortcuts → Request URL">
+                                <CopyField value={c.webhook.interactivityUrl} />
+                              </Field>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     )}
@@ -473,6 +761,14 @@ export default function ConnectionsPage() {
           onConfirm={() =>
             move.mutate({ id: repoint.conn.id, agentIdentifier: repoint.agentIdentifier })
           }
+        />
+      )}
+
+      {routesConn && (
+        <RoutesModal
+          conn={routesConn}
+          agents={activeAgents}
+          onClose={() => setRoutesConn(null)}
         />
       )}
     </>

@@ -464,3 +464,21 @@ insert into api_keys (tenant_id, name, key_prefix, key_hash)
   from tenants t
   where t.api_key is not null
     and not exists (select 1 from api_keys k where k.tenant_id = t.id and k.name = 'legacy');
+
+-- ---- Phase 13: Slack channel ----
+create unique index if not exists agent_connections_slack_identity_uq
+  on agent_connections (tenant_id, (config->>'teamId'))
+  where channel = 'slack' and status = 'active';
+
+-- Per-scope routing inside ONE workspace connection: #support -> agent A,
+-- #billing -> agent B. scope_key = the Slack channel id (C.../G...). DMs never
+-- consult this table -- they use the connection's default agent.
+create table if not exists connection_routing_rules (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants(id),
+  connection_id uuid not null references agent_connections(id) on delete cascade,
+  scope_key     text not null,
+  agent_id      uuid not null references agents(id) on delete restrict,
+  created_at    timestamptz not null default now(),
+  unique (connection_id, scope_key)
+);

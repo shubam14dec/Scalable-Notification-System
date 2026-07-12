@@ -168,15 +168,17 @@ POST /v1/events/trigger ──202──▶ caller gets transactionId immediately
 Notifications talk *at* people; **agents** talk *with* them. Register an
 agent (a bridge URL we call), write ~20 lines with
 [`@asyncify-hq/agent`](packages/agent), and users can converse with it
-from the in-app `<AgentChat />` widget, **Telegram**, or **email** — same
-brain on every channel, every transcript in the dashboard, and the agent
+from the in-app `<AgentChat />` widget, **Telegram**, **email**, or
+**Slack** — same brain on every channel, every transcript in the dashboard,
+and the agent
 can fire real notification workflows mid-conversation (`ctx.trigger`).
 Try it: `npm run agent:demo`, then chat from the dashboard's Inbox
 preview.
 
 Channel setup and the local-tunnel → production migration (PUBLIC_URL,
-Telegram re-register, Postmark inbound, custom MX domain when DNS is
-available): **[docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md)**.
+Telegram re-register, Postmark inbound, Slack app manifest + per-channel
+routing, custom MX domain when DNS is available):
+**[docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md)**.
 
 ### Managed agents (zero-code): writing the system prompt
 

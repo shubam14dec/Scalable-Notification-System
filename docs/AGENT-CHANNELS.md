@@ -1,13 +1,14 @@
 # Agent channels: connections, re-pointing, local dev → production
 
-The conversation channels (Telegram, email) run the **same code path** in
-dev and production — the only thing that changes is *how the internet
+The conversation channels (Telegram, email, Slack) run the **same code path**
+in dev and production — the only thing that changes is *how the internet
 reaches your API*. Locally that's a tunnel; in production it's your real
 domain.
 
 As of Phase 12 a channel is no longer wired *into* an agent. A **connection**
 is a standalone resource: it owns the channel identity (a Telegram bot, an
-inbound email address) and its sealed credentials, and it carries a
+inbound email address, a Slack workspace) and its sealed credentials, and it
+carries a
 *mutable route* — the agent that currently answers it. You manage
 connections on the dashboard's top-level **Connections** page, or via the
 `/v1/connections` API. Re-pointing a connection at a different agent is a
@@ -28,7 +29,7 @@ local-dev → production switch.
 
 Because the webhook URL keys on the **connection id** — never on the agent —
 re-pointing, token rotation, and agent swaps all leave the provider side
-(Telegram / Postmark) completely untouched.
+(Telegram / Postmark / Slack) completely untouched.
 
 ## The one variable that matters: `PUBLIC_URL`
 
@@ -40,6 +41,7 @@ read — nothing is hardcoded.
 | `PUBLIC_URL` | the tunnel, e.g. `https://random-words.trycloudflare.com` | your API's real domain, e.g. `https://api.asyncify.org` |
 | Telegram webhook | `<PUBLIC_URL>/webhooks/telegram/<connectionId>` | same pattern, real domain |
 | Email webhook | `<PUBLIC_URL>/webhooks/email/<connectionId>?key=…` | same pattern, real domain |
+| Slack events + interactivity URLs | `<PUBLIC_URL>/webhooks/slack/<connectionId>/…` | same pattern, real domain |
 | Who keeps it running | you, keeping the cloudflared window open | your load balancer / ingress with TLS |
 
 **Production `PUBLIC_URL` requirements:** HTTPS (Telegram refuses plain
@@ -67,6 +69,13 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
   https://api.asyncify.org/v1/connections/email \
   -d '{"address":"a1b2c3@inbound.postmarkapp.com","agentIdentifier":"support-bot"}'
 
+# Connect a Slack workspace and point it at a default agent.
+# Returns the two webhook URLs you paste into the Slack app config.
+curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/connections/slack \
+  -d '{"botToken":"xoxb-...","signingSecret":"...","agentIdentifier":"support-bot"}'
+# → 201 { "channel":"slack", "teamName":"Acme", "eventsUrl":"...", "interactivityUrl":"..." }
+
 # Re-point a connection at a different agent (moves ALL its conversations).
 curl -X PATCH -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
   https://api.asyncify.org/v1/connections/conn_abc123 \
@@ -92,10 +101,12 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
 | `GET /v1/connections` | list all connections in the tenant |
 | `POST /v1/connections/telegram` | connect/upsert a bot `{botToken, agentIdentifier}` |
 | `POST /v1/connections/email` | connect/upsert an address `{address, agentIdentifier}` |
+| `POST /v1/connections/slack` | connect/upsert a workspace `{botToken, signingSecret, agentIdentifier}` |
 | `PATCH /v1/connections/:id` | re-point `{agentIdentifier}` |
 | `POST /v1/connections/:id/reconnect` | re-register the Telegram webhook (telegram only) |
+| `GET/PUT/DELETE /v1/connections/:id/routes` | per-channel routing rules (slack only) — see [Slack](#slack) |
 | `DELETE /v1/connections/:id` | disconnect (keeps transcripts) |
-| `POST /v1/connections/:id/link-tokens` | mint a link token `{subscriberId}` |
+| `POST /v1/connections/:id/link-tokens` | mint a link token `{subscriberId}` (telegram only) |
 
 ## Re-pointing an agent
 
@@ -107,8 +118,8 @@ along — the new agent sees the full thread. The response reports
 What re-pointing does **not** touch:
 
 - **The webhook.** URLs key on the connection id, so a re-point **never**
-  requires webhook re-registration. Telegram / Postmark stay exactly as they
-  were — no `reconnect`, no re-paste.
+  requires webhook re-registration. Telegram / Postmark / Slack stay exactly
+  as they were — no `reconnect`, no re-paste.
 - **The credentials.** The bot token / inbound address are unchanged.
 
 **One turn of overlap, by design.** A turn already in flight at the instant
@@ -188,6 +199,13 @@ from the **Connections** page:
    *current* `PUBLIC_URL`. Copy it and paste it into Postmark → Servers →
    Default Inbound Stream → Settings → Webhook, replacing the old one. The
    connection, secret and address are unchanged.
+4. **Slack — re-paste the two URLs per connection.** The Events and
+   Interactivity URLs are derived from `PUBLIC_URL`, so a change moves them.
+   Copy the current pair from the Slack connection row and paste them back
+   into the Slack app config → *Event Subscriptions* (wait for **Verified**)
+   and *Interactivity & Shortcuts*. The bot token and signing secret are
+   unchanged. (This only applies to a real `PUBLIC_URL` change — an upsert or
+   re-point keeps the URLs stable.)
 
 That's the whole migration. No code, no schema, no reconnects that lose
 history.
@@ -233,6 +251,159 @@ notification sends. For production:
   thread survives whatever the from address is.
 - The suppression list applies to agent replies too: a bounced address
   gets a transcript breadcrumb instead of an email. That's intentional.
+
+## Slack
+
+Slack is the fourth agent channel. Unlike Telegram (one bot) or email (one
+address), a Slack connection owns a **whole workspace** and can fan out to
+**many agents** through per-channel routing rules — the switchboard payoff.
+Install is a **token paste**, not OAuth: you create a Slack app from our
+manifest, install it to your workspace, and paste two secrets into the
+dashboard. (Full OAuth "Add to Slack" distribution is planned — see the
+backlog note at the end.)
+
+### The app manifest
+
+Create the Slack app from this manifest **verbatim**. The two `request_url`
+placeholders are intentional — they get replaced **after** you connect,
+because the real URLs contain the connection id that doesn't exist yet
+(chicken-and-egg). Slack will warn at creation that the URLs are unverified;
+that's expected — ignore it.
+
+```yaml
+display_information:
+  name: Asyncify Agent
+  description: AI agent connected via Asyncify
+features:
+  app_home:
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: asyncify-agent
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - chat:write
+      - im:history
+      - users:read
+      - users:read.email
+settings:
+  event_subscriptions:
+    request_url: https://example.invalid/replace-after-connect
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.im
+  interactivity:
+    is_enabled: true
+    request_url: https://example.invalid/replace-after-connect
+```
+
+### Setup (runbook)
+
+1. **api.slack.com/apps → Create New App → From an app manifest.** Pick the
+   workspace, paste the YAML above, **Create** (ignore the URL warnings).
+2. **Install to Workspace → authorize.** Copy the **Bot User OAuth Token**
+   (`xoxb-…`) from *OAuth & Permissions*, and the **Signing Secret** from
+   *Basic Information*.
+3. **Dashboard → Connections → Connect → Slack.** Paste both secrets, choose
+   the **default agent** ("answered by"), and **Connect**. The success panel
+   returns two URLs — copy both.
+   (API equivalent: `POST /v1/connections/slack {botToken, signingSecret,
+   agentIdentifier}` → `201 {channel, teamName, eventsUrl, interactivityUrl}`.)
+4. **Slack app config → Event Subscriptions → Enable.** Paste the **Events
+   URL**, wait for **Verified** (Slack fires a `url_verification` challenge —
+   a green *Verified* also proves your signing secret was pasted correctly),
+   ensure the three bot events (`app_mention`, `message.channels`,
+   `message.im`) are subscribed, and **Save**.
+5. **Interactivity & Shortcuts → Enable.** Paste the **Interactivity URL** and
+   **Save**.
+6. **Test.** DM the bot. For channels: `/invite @asyncify-agent`, then
+   @mention it.
+7. **Routing (optional).** Add a rule in the dashboard **Routes** modal to
+   send a specific Slack channel to a specific agent (see below).
+
+### Which messages the bot answers
+
+Slack only delivers channel messages for channels the bot is a **member** of,
+so surface behavior depends on where the message lives:
+
+- **DMs to the bot** are **always** answered.
+- **In a channel the bot has been `/invite`-d to:** a thread starts when the
+  bot is **@mentioned**. Once a thread exists, the bot follows every reply in
+  it **without further mentions**. Top-level messages that don't mention the
+  bot are **ignored**.
+- **In a channel the bot is not a member of:** nothing — Slack never delivers
+  those messages.
+
+### Per-channel routing rules (the switchboard)
+
+A single Slack connection can route different channels to different agents.
+Rules map a **Slack channel id** (`C…` public / `G…` private) → a specific
+agent. Anything unmatched — other channels **and all DMs** — falls through to
+the connection's default "answered by" agent.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /v1/connections/:id/routes` | list the routing rules on a Slack connection |
+| `PUT /v1/connections/:id/routes` | add/update a rule `{scopeKey, agentIdentifier}` |
+| `DELETE /v1/connections/:id/routes` | remove a rule |
+
+On the dashboard, use the **Routes** button on the Slack connection's row.
+**Finding a channel id:** open the channel → **About** tab → it's at the very
+bottom.
+
+### Buttons
+
+When an agent replies with buttons (`present_buttons`), they render as native
+**Block Kit** buttons in Slack. A click posts back, the original message
+updates in place to **"✓ &lt;choice&gt;"**, and the agent continues the turn.
+
+### Edit / delete parity
+
+- **Editing** your Slack message updates the transcript in place — it does
+  **not** trigger a re-answer.
+- **Deleting** your Slack message **tombstones** the transcript row.
+- When an operator deletes an **agent reply** from the dashboard, it's removed
+  from Slack too (`chat.delete` — no time window).
+
+### Limitation: no typing indicator
+
+There is **no typing indicator** on Slack. The platform exposes no general
+typing API for bots, so — unlike Telegram/email/widget — a Slack agent can't
+show "typing…". This is a documented platform limitation, not a bug.
+
+### Re-point and upsert (same as every channel)
+
+Connecting the **same workspace** (matched on `teamId`) again is an
+**upsert** — it refreshes the sealed token/secret **in place** and keeps the
+connection id and both URLs **stable** (no re-paste in Slack). `PATCH
+/v1/connections/:id {agentIdentifier}` re-points the connection's **default**
+agent and moves all conversations with their history, exactly like Telegram
+and email. Per-channel routes are unaffected by a re-point.
+
+### Slack backlog notes
+
+- **Identity linking is automatic on Slack.** The `link-token` deep-link flow
+  is **Telegram-only** for now. On Slack, users are matched to subscribers by
+  **email** automatically (this is why the manifest requests
+  `users:read.email`; grant it so the match works).
+- **OAuth distribution (13b) is planned.** The full "Add to Slack" one-click
+  install will replace the manual token paste; the token-paste path above is
+  what ships today.
+
+### Smoke test
+
+1. **DM** the bot → answered.
+2. **@mention** it in an invited channel → a **thread** starts.
+3. **Reply in that thread** without mentioning → still answered.
+4. **Top-level unmentioned** channel message → **silent**.
+5. Agent **button** click → message updates to **"✓ …"**, agent continues.
+6. **Edit** your message → transcript reflects the edit, no re-answer.
+7. **Delete** your message → the row is **tombstoned**.
 
 ## Deprecated (still works): agent-scoped channel routes
 

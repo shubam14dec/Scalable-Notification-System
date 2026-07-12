@@ -129,7 +129,7 @@ export function registerIdentityRoutes(app: FastifyInstance) {
     { preHandler: [authenticate] },
     async (req, reply) => {
       const parsed = z
-        .object({ channel: z.enum(['telegram', 'email']), externalKey: z.string().min(1).max(320) })
+        .object({ channel: z.enum(['telegram', 'email', 'slack']), externalKey: z.string().min(1).max(320) })
         .safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });

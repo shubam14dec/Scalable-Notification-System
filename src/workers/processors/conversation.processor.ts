@@ -7,6 +7,8 @@ import { internalTrigger } from '../../core/internal-trigger';
 import { signWebhook } from '../../api/webhook-signature';
 import { openSecret } from '../../auth/secret-box';
 import { telegram } from '../../channels/telegram';
+import { slack } from '../../channels/slack';
+import type { SlackCredentials } from '../../api/routes/slack';
 import { sendWithFailover } from '../../providers/registry';
 import { isSuppressed } from '../../db/repositories';
 import { runManagedTurn, type TurnUsage } from '../../core/managed-brain';
@@ -561,6 +563,7 @@ function typingEmitter(
         .catch(() => {});
     };
   }
+  if (conversation.channel === 'slack') return () => {}; // Slack has no general typing API for bots (assistant-only surface); deliberate no-op.
   return () => {};
 }
 
@@ -666,6 +669,39 @@ async function deliverReply(
       ...raw,
       providerMessageId: sent.providerMessageId,
       provider: sent.provider,
+    });
+    return;
+  }
+
+  if (conversation.channel === 'slack') {
+    const raw = (replyRow.raw ?? {}) as {
+      slackTs?: string;
+      slackChannel?: string;
+      buttons?: Array<{ id: string; label: string }>;
+    };
+    if (raw.slackTs) return; // already delivered on a prior attempt
+    const connection = await getConnectionForConversation(conversation);
+    if (!connection || connection.status !== 'active') {
+      logger.warn({ agent: agent.identifier }, 'slack reply dropped: channel not connected');
+      return;
+    }
+    const { botToken } = JSON.parse(openSecret(connection.credentials)) as SlackCredentials;
+    // thread_key is a DM channel id (no colon) or `channel:threadTs` for a
+    // thread — split on the FIRST colon so a ts (which has none) stays intact.
+    const colon = conversation.thread_key.indexOf(':');
+    const channel =
+      colon === -1 ? conversation.thread_key : conversation.thread_key.slice(0, colon);
+    const threadTs = colon === -1 ? undefined : conversation.thread_key.slice(colon + 1);
+    // Buttons render as an actions block; clicks come back on the
+    // interactivity webhook.
+    const sent = await slack.postMessage(botToken, channel, replyRow.content, {
+      threadTs,
+      buttons: raw.buttons,
+    });
+    await updateConversationMessageRaw(replyRow.id, {
+      ...raw,
+      slackTs: sent.ts,
+      slackChannel: sent.channel,
     });
     return;
   }
