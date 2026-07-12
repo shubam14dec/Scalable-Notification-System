@@ -43,6 +43,9 @@ docs/ARCHITECTURE-COMPARISON.md):**
       watchdog + auto PUBLIC_URL/webhook re-registration — erases the
       cloudflared rotation drill (Tier B — our own recurring pain)
 - [ ] Rolling dual API keys per environment (Tier B — small)
+- [ ] API polish: map Fastify FST_ERR_CTP_* (415 unsupported media
+      type) to a clean 4xx JSON error instead of 500 'internal error'
+      (found in Phase 11 E2E via PS5.1 bodyless POST)
 - [ ] Engine hygiene from their DAL: keyset pagination + capped
       counts on list endpoints; mandatory column projection on hot
       queries; cache-set TTL jitter (Tier B — adopt incrementally)
@@ -85,10 +88,11 @@ notes. Order within this cluster is rough — reorder freely.)
 (user-verified 2026-07-12 on real Telegram: proactive push landed in
 the TG chat unprompted, same-messageId repeat → duplicate:true with no
 second send, operator resolve + bridge resolve both printed RESOLVED
-lines in agent-demo. Bonus: the operator resolve was fired while the
-demo bridge was DOWN — the queued event retried and delivered exactly
-once when the bridge came up, an accidental live proof of the
-queue-backed reliability. 224 tests. Delegation: 2 Opus + 1 Sonnet
+lines in agent-demo (job records show first-attempt delivery in
+~150ms — bridge was up throughout; an earlier "delivered through
+bridge downtime" claim here was a manager inference error from paste
+ordering, corrected against Redis job timestamps + execution logs;
+the retry path itself is test-covered, not live-proven). 224 tests. Delegation: 2 Opus + 1 Sonnet
 slices, zero revision-gate retries. E2E friction noted for backlog:
 Fastify 415 content-type errors surface as 500 'internal error' —
 map FST_ERR_CTP_* to clean 4xx; PS5.1 bodyless POST needs -Body '{}'.)
@@ -113,8 +117,8 @@ priority 10 so live turns always win. Delegated per CLAUDE.md.)
       sweep enqueue cases; full suite green (Sonnet, audited +
       manager re-run: 224 tests, 2x no-flake)
 - [x] D. Manual E2E: real Telegram push (dedupe proof), RESOLVED
-      operator + bridge in agent-demo console (operator event
-      delivered through bridge downtime via queue retry)
+      operator + bridge in agent-demo console (both first-attempt,
+      sub-second — verified via Redis job timestamps)
 - [x] E. Review section; single verified commit + changeset; push;
       memory update
 
