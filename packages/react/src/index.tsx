@@ -753,7 +753,11 @@ export function AgentChat(props: AgentChatProps) {
                           padding: '0 8px',
                           borderRadius: 8,
                           border: `1px solid ${c.border}`,
-                          background: 'transparent',
+                          // A solid themed surface + colorScheme make the
+                          // browser render the NATIVE dropdown popup in the
+                          // widget's theme instead of defaulting to light.
+                          background: c.hover,
+                          colorScheme: theme,
                           color: cardLive ? c.text : c.text2,
                           fontSize: 13,
                           fontFamily: font,
@@ -762,11 +766,11 @@ export function AgentChat(props: AgentChatProps) {
                           opacity: cardLive ? 1 : 0.55,
                         }}
                       >
-                        <option value="" disabled>
+                        <option value="" disabled style={{ background: c.hover, color: c.text2 }}>
                           {card.prompt ?? 'Choose…'}
                         </option>
                         {card.options.map((o) => (
-                          <option key={o.id} value={o.id}>
+                          <option key={o.id} value={o.id} style={{ background: c.hover, color: c.text }}>
                             {o.label}
                           </option>
                         ))}
