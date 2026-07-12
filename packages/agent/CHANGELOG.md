@@ -1,5 +1,11 @@
 # @asyncify-hq/agent
 
+## 0.4.0
+
+### Minor Changes
+
+- 11f6d36: ctx.reply can attach a card (single-select choices or a text input) rendered natively per channel; onAction events carry the structured value.
+
 ## 0.3.0
 
 ### Minor Changes
