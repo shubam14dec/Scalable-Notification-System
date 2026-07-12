@@ -1,5 +1,11 @@
 # @asyncify-hq/react
 
+## 0.4.0
+
+### Minor Changes
+
+- 11f6d36: AgentChat renders select and text-input cards natively and streams plan-card progress via live message updates.
+
 ## 0.3.0
 
 ### Minor Changes
