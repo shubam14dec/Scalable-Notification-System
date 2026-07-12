@@ -121,7 +121,16 @@ exits with no error, or `VirtualAlloc failed` / `Could not determine
 Node.js install directory` in its output. It's the environment, not the
 code — just restart the dead process(es); nothing is lost (all state is
 in Docker/Postgres). If it keeps happening, tell the user to free RAM
-(close browser tabs / other apps). Restarting all four at once is fine
+(close browser tabs / other apps). **Reduced mode** (proven 2026-07-12
+after three kill cycles in one evening): `docker stop` the jaeger +
+clickhouse containers — they are the heavy optional residents of
+vmmemWSL (the top RAM consumer) and nothing in the agent stack needs
+them; tracing/analytics writers degrade gracefully. Bring back with
+`docker start notification-system-jaeger-1
+notification-system-clickhouse-1` before any observability/analytics
+work. Also: stop dashboard+ws before running builds or the full test
+suite when RAM is tight — the spike from tsup/vitest is what tips the
+stack over. Restarting all four at once is fine
 but riskier when free RAM is already low; restart individually then.
 
 ## 3. Restart what you changed — processes don't reload code
