@@ -168,7 +168,7 @@ export class AsyncifyClient {
         identities: Array<{ channel: string; externalKey: string; linkedAt: string }>;
       }>('GET', `/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`),
     /** Drop a linked identity — future messages fall back to a channel-local one. */
-    unlink: (subscriberId: string, identity: { channel: 'telegram' | 'email'; externalKey: string }) =>
+    unlink: (subscriberId: string, identity: { channel: 'telegram' | 'email' | 'slack'; externalKey: string }) =>
       this.request<{ deleted: boolean }>(
         'DELETE',
         `/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`,
