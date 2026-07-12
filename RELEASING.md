@@ -35,12 +35,19 @@ Platform-only changes (src/, dashboard/, tests/) need no changeset.
 - GitHub: repo Settings → Actions → General → *Allow GitHub Actions to
   create and approve pull requests*.
 
-**Adding a brand-new package.** Before its **first** publish, add the npm
-Trusted Publisher binding for it (same repo `shubam14dec/Scalable-Notification-System`,
-same workflow `release.yml`) — otherwise the OIDC publish fails with an auth
-error on the very first release. Existing packages already have this; a new
-one (e.g. the first release of `@asyncify-hq/cli`) needs the binding created
-before you merge its Version Packages PR.
+**Adding a brand-new package.** npm cannot OIDC-publish a package's FIRST
+version, and the Trusted Publisher settings page only exists once the
+package does (npm/cli#8544; verified 2026-07-13). The one-time bootstrap:
+1. `npm login` locally (browser flow — no token stored anywhere), then
+   `npm publish --access public` from the package dir at its pre-release
+   version (e.g. 0.0.0) to make the package exist.
+2. npmjs.com → the new package → Settings → Trusted Publisher → GitHub
+   Actions: `shubam14dec` / `Scalable-Notification-System` /
+   `release.yml` / environment blank.
+3. Merge the Version Packages PR — the real first release (e.g. 0.1.0)
+   publishes via OIDC with provenance.
+4. Optionally `npm deprecate <pkg>@0.0.0 "placeholder — use >=0.1.0"`
+   and `npm logout`.
 
 ## If a publish fails with an auth error
 
