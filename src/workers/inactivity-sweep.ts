@@ -4,6 +4,7 @@ import { logExec } from '../core/execution-log';
 import { inAppPubSubChannel } from '../providers/inapp';
 import { sweepInactiveConversations } from '../db/conversations.repo';
 import { purgeDeadLinkTokens } from '../db/identities.repo';
+import { getQueue, QUEUE } from '../shared/queues';
 
 /**
  * The inactivity backstop: conversations idle past their agent's
@@ -59,6 +60,25 @@ export async function runInactivitySweep(): Promise<number> {
       );
     }
     await pipe.exec();
+
+    // Bridge agents also get a resolved lifecycle event (managed agents have
+    // no bridge to notify). One bulk enqueue per batch; the jobId keys on the
+    // row's idle epoch so a re-swept row can't double-fire the event.
+    const bridgeRows = swept.filter((r) => r.agent_runtime === 'bridge' && r.agent_bridge_url);
+    if (bridgeRows.length > 0) {
+      await getQueue(QUEUE.CONVERSATION).addBulk(
+        bridgeRows.map((r) => ({
+          name: `resolved-${r.id}`,
+          data: {
+            kind: 'resolved',
+            tenantId: r.tenant_id,
+            conversationId: r.id,
+            resolvedBy: 'sweep',
+          },
+          opts: { jobId: `conv-resolved-${r.id}-${r.idle_epoch}`, attempts: 5, priority: 10 },
+        })),
+      );
+    }
 
     if (swept.length < BATCH_SIZE) break; // drained
     if (Date.now() - started > TICK_BUDGET_MS) {

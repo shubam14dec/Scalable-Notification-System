@@ -12,11 +12,13 @@ import {
   deleteAgent,
   findConversationByThread,
   getAgent,
+  getAgentById,
   getConversation,
   insertConversationMessage,
   listAgents,
   listConversations,
   openConversation,
+  reopenConversation,
   resolveConversation,
   rotateAgentSecret,
   updateAgent,
@@ -24,6 +26,7 @@ import {
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
+import { tenantRateLimit } from '../rate-limit';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
 
 /**
@@ -108,6 +111,19 @@ const InboundActionSchema = z.object({
   label: z.string().min(1).max(48),
   /** Client-supplied id: a double-click can never become two actions. */
   actionEventId: z.string().min(1).max(255).optional(),
+});
+
+/** An operator/API push of an agent message into an existing conversation. */
+const PushMessageSchema = z.object({
+  text: z.string().min(1).max(8192),
+  /** Client-supplied id makes retries idempotent (same doctrine as messages). */
+  messageId: z.string().min(1).max(255).optional(),
+  buttons: z
+    .array(z.object({ id: z.string().min(1).max(64), label: z.string().min(1).max(48) }))
+    .max(6)
+    .optional(),
+  /** Push onto a resolved thread only reopens it when this is set. */
+  reopen: z.boolean().optional(),
 });
 
 /** Public shape — sealed secrets (signing, LLM key) never leave the API. */
@@ -524,8 +540,95 @@ export function registerAgentRoutes(app: FastifyInstance) {
       }
       const conversation = await getConversation(req.tenant.id, req.params.id);
       if (!conversation) return reply.code(404).send({ error: 'unknown conversation' });
-      await resolveConversation(conversation.id, 'resolved manually');
+      // Fire the resolved event exactly once — only when THIS call did the flip.
+      const flipped = await resolveConversation(conversation.id, 'resolved manually');
+      if (flipped) {
+        const agent = await getAgentById(conversation.agent_id);
+        if (agent && agent.runtime === 'bridge' && agent.bridge_url) {
+          await getQueue(QUEUE.CONVERSATION).add(
+            `resolved-${conversation.id}`,
+            {
+              kind: 'resolved',
+              tenantId: req.tenant.id,
+              conversationId: conversation.id,
+              resolvedBy: 'operator',
+            },
+            {
+              jobId: `conv-resolved-${conversation.id}-${Date.now()}`,
+              attempts: 5,
+              priority: 10,
+            },
+          );
+        }
+      }
       return { status: 'resolved' };
+    },
+  );
+
+  /**
+   * Push an agent message into an existing conversation (operator reply / API
+   * outbound), out of band from any inbound turn. The insert is the durable
+   * copy; a 'deliver' job carries it to the channel. Rate-limited: the hard
+   * cap 429s, but overflowDiverted is intentionally ignored — conversations
+   * have no overflow lane, so a within-cap burst just proceeds.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/v1/conversations/:id/messages',
+    { preHandler: [authenticate, tenantRateLimit] },
+    async (req, reply) => {
+      if (!z.string().uuid().safeParse(req.params.id).success) {
+        return reply.code(400).send({ error: 'invalid id' });
+      }
+      const parsed = PushMessageSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+      }
+      const conversation = await getConversation(req.tenant.id, req.params.id);
+      if (!conversation) return reply.code(404).send({ error: 'unknown conversation' });
+      const agent = await getAgentById(conversation.agent_id);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      if (agent.status !== 'active') return reply.code(409).send({ error: 'agent is disabled' });
+
+      let status = conversation.status;
+      if (parsed.data.reopen === true && conversation.status === 'resolved') {
+        await reopenConversation(conversation.id);
+        status = 'active';
+      }
+
+      const row = await insertConversationMessage({
+        conversationId: conversation.id,
+        tenantId: req.tenant.id,
+        role: 'agent',
+        content: parsed.data.text,
+        dedupeKey: parsed.data.messageId
+          ? `push-${parsed.data.messageId}`
+          : `push-${crypto.randomUUID()}`,
+        raw: parsed.data.buttons ? { buttons: parsed.data.buttons } : undefined,
+      });
+      if (!row) {
+        // Same client messageId seen before — accepted once, never twice.
+        return reply.code(200).send({ conversationId: conversation.id, duplicate: true });
+      }
+
+      await getQueue(QUEUE.CONVERSATION).add(
+        row.id,
+        {
+          kind: 'deliver',
+          tenantId: req.tenant.id,
+          conversationId: conversation.id,
+          messageId: row.id,
+        },
+        { jobId: `conv-deliver-${row.id}`, attempts: 5 },
+      );
+
+      logExec({
+        tenantId: req.tenant.id,
+        transactionId: `conv-${conversation.id}`,
+        level: 'info',
+        detail: `agent message pushed: agent=${agent.identifier} conversation=${conversation.id}`,
+      });
+
+      return reply.code(202).send({ conversationId: conversation.id, messageId: row.id, status });
     },
   );
 }

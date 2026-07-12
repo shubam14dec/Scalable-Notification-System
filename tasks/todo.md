@@ -81,8 +81,42 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — next up per the agents track: Phase 11, send-agent-reply
-API + onResolve callback)
+### Conversations / Agents — Phase 11: send-agent-reply API + onResolve — COMPLETE
+(user-verified 2026-07-12 on real Telegram: proactive push landed in
+the TG chat unprompted, same-messageId repeat → duplicate:true with no
+second send, operator resolve + bridge resolve both printed RESOLVED
+lines in agent-demo. Bonus: the operator resolve was fired while the
+demo bridge was DOWN — the queued event retried and delivered exactly
+once when the bridge came up, an accidental live proof of the
+queue-backed reliability. 224 tests. Delegation: 2 Opus + 1 Sonnet
+slices, zero revision-gate retries. E2E friction noted for backlog:
+Fastify 415 content-type errors surface as 500 'internal error' —
+map FST_ERR_CTP_* to clean 4xx; PS5.1 bodyless POST needs -Body '{}'.)
+
+### (original Phase 11 plan)
+(plan approved 2026-07-12; full plan in
+`~/.claude/plans/tranquil-swimming-acorn.md`. Semantics: push never
+reopens unless reopen:true; onResolve = bridge-only signed
+notification, response ignored, dropped if reopened before dispatch.
+Same conversation queue with kind discriminator; resolved jobs
+priority 10 so live turns always win. Delegated per CLAUDE.md.)
+
+- [x] A. Backend: repo (flip-boolean resolve, reopenConversation,
+      lastUserMessage, sweep CTE columns) + processor (kind dispatch,
+      processDeliver, processResolved, postSignedToBridge extraction,
+      nullable inboundRow) + enqueue sites + push route
+      (Opus, audited; tsc green under manager re-run)
+- [x] B. SDK: AgentEvent union + ResolveContext + handleEvent resolved
+      case + unknown-type fix + createHandler guard; agent changeset;
+      agent-demo onResolve log (Opus, audited; tsup build green)
+- [x] C. Tests: SDK unit cases; agents.test.ts push/resolved cases;
+      sweep enqueue cases; full suite green (Sonnet, audited +
+      manager re-run: 224 tests, 2x no-flake)
+- [x] D. Manual E2E: real Telegram push (dedupe proof), RESOLVED
+      operator + bridge in agent-demo console (operator event
+      delivered through bridge downtime via queue retry)
+- [x] E. Review section; single verified commit + changeset; push;
+      memory update
 
 ## Recently finished
 

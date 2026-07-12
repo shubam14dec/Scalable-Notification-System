@@ -372,15 +372,40 @@ export async function updateConversationMetadata(
   ]);
 }
 
+/**
+ * Flip an active conversation to resolved. Returns true only when THIS call
+ * did the flip (status was 'active') — the caller uses that to fire the
+ * resolved event exactly once, even under concurrent resolves / retries.
+ */
 export async function resolveConversation(
   conversationId: string,
   summary?: string,
-): Promise<void> {
-  await pool.query(
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
     `update conversations set status = 'resolved', summary = coalesce($2, summary)
-     where id = $1`,
+     where id = $1 and status = 'active'
+     returning id`,
     [conversationId, summary ?? null],
   );
+  return (rowCount ?? 0) > 0;
+}
+
+/** A new turn on a resolved thread reopens it (the user came back). */
+export async function reopenConversation(conversationId: string): Promise<void> {
+  await pool.query(`update conversations set status = 'active' where id = $1`, [conversationId]);
+}
+
+/** The latest live inbound turn — the row an agent push is replying to. */
+export async function lastUserMessage(
+  conversationId: string,
+): Promise<ConversationMessage | null> {
+  const { rows } = await pool.query(
+    `select * from conversation_messages
+     where conversation_id = $1 and role = 'user' and deleted_at is null
+     order by created_at desc limit 1`,
+    [conversationId],
+  );
+  return rows[0] ?? null;
 }
 
 export interface SweptConversation {
@@ -391,6 +416,13 @@ export interface SweptConversation {
   agent_identifier: string;
   agent_name: string;
   subscriber_external_id: string;
+  agent_id: string;
+  agent_runtime: 'bridge' | 'managed';
+  agent_bridge_url: string | null;
+  /** Epoch (seconds, as text) of the row's honest idle timestamp — matches
+   * the autoresolve crumb's dedupe suffix so the resolved-event jobId dedupes
+   * against the same swept row. */
+  idle_epoch: string;
 }
 
 /**
@@ -407,7 +439,8 @@ export async function sweepInactiveConversations(limit: number): Promise<SweptCo
   const { rows } = await pool.query(
     `with stale as (
        select c.id, a.auto_resolve_minutes, a.identifier as agent_identifier,
-              a.name as agent_name
+              a.name as agent_name, a.id as agent_id, a.runtime as agent_runtime,
+              a.bridge_url as agent_bridge_url
          from conversations c
          join agents a on a.id = c.agent_id
         where c.status = 'active'
@@ -437,7 +470,8 @@ export async function sweepInactiveConversations(limit: number): Promise<SweptCo
          from stale s
         where c.id = s.id
         returning c.id, c.tenant_id, c.channel, c.subscriber_id, c.last_message_at,
-                  c.summary, s.auto_resolve_minutes, s.agent_identifier, s.agent_name
+                  c.summary, s.auto_resolve_minutes, s.agent_identifier, s.agent_name,
+                  s.agent_id, s.agent_runtime, s.agent_bridge_url
      ),
      crumbs as (
        insert into conversation_messages
@@ -450,6 +484,8 @@ export async function sweepInactiveConversations(limit: number): Promise<SweptCo
      )
      select r.id, r.tenant_id, r.channel, r.auto_resolve_minutes,
             r.agent_identifier, r.agent_name,
+            r.agent_id, r.agent_runtime, r.agent_bridge_url,
+            extract(epoch from r.last_message_at)::bigint::text as idle_epoch,
             sub.external_id as subscriber_external_id
        from resolved r
        join subscribers sub on sub.id = r.subscriber_id`,

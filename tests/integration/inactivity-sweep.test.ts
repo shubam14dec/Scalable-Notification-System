@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/api/app';
-import { closeQueues } from '../../src/shared/queues';
+import { closeQueues, getQueue, QUEUE } from '../../src/shared/queues';
 import { redis } from '../../src/shared/redis';
 import { pool } from '../../src/db/pool';
 import { runInactivitySweep } from '../../src/workers/inactivity-sweep';
@@ -61,6 +61,26 @@ async function conversationDetail(id: string) {
     headers: { 'x-api-key': apiKey },
   });
   return json(res);
+}
+
+/** The exact epoch the sweep's SQL will bake into the resolved job's jobId. */
+async function idleEpochOf(conversationId: string): Promise<string> {
+  const { rows } = await pool.query(
+    `select extract(epoch from last_message_at)::bigint::text as idle_epoch
+     from conversations where id = $1`,
+    [conversationId],
+  );
+  return rows[0].idle_epoch;
+}
+
+async function resolvedJobsFor(conversationId: string) {
+  const jobs = await getQueue(QUEUE.CONVERSATION).getJobs([
+    'waiting',
+    'prioritized',
+    'delayed',
+    'completed',
+  ]);
+  return jobs.filter((j) => j.data.conversationId === conversationId && j.data.kind === 'resolved');
 }
 
 beforeAll(async () => {
@@ -204,5 +224,59 @@ describe('the sweep', () => {
     // Still resolved, but with NO auto-resolve breadcrumb/summary rewrite.
     expect(detail.conversation.status).toBe('resolved');
     expect(detail.messages.some((m: { content: string }) => m.content.includes('auto-resolved'))).toBe(false);
+  });
+});
+
+describe('the resolved-event job the sweep enqueues for bridge agents', () => {
+  test('a swept bridge-runtime conversation gets a resolved job keyed on the idle epoch', async () => {
+    const id = await openConversation('sweep-agent', 'epoch-ana', 'epoch-1');
+    await backdate(id, 25); // past sweep-agent's 24h knob
+    const epoch = await idleEpochOf(id);
+
+    await runInactivitySweep();
+
+    const job = await getQueue(QUEUE.CONVERSATION).getJob(`conv-resolved-${id}-${epoch}`);
+    expect(job).toBeTruthy();
+    expect(job!.data.resolvedBy).toBe('sweep');
+    expect(job!.data.conversationId).toBe(id);
+    expect(job!.data.tenantId).toBeDefined();
+    expect(job!.opts.priority).toBe(10);
+  });
+
+  test('a managed-runtime agent is swept but produces no resolved job', async () => {
+    const create = await app.inject({
+      method: 'POST',
+      url: '/v1/agents',
+      headers: { 'x-api-key': apiKey },
+      payload: {
+        identifier: 'sweep-managed-agent',
+        name: 'Sweep Managed',
+        runtime: 'managed',
+        llm: { apiKey: 'sk-test-managed-key-123' },
+        autoResolveMinutes: 60,
+      },
+    });
+    expect(create.statusCode).toBe(201);
+
+    const id = await openConversation('sweep-managed-agent', 'epoch-managed', 'epoch-managed-1');
+    await backdate(id, 2); // past the 60m knob
+
+    await runInactivitySweep();
+
+    expect((await conversationDetail(id)).conversation.status).toBe('resolved');
+    expect(await resolvedJobsFor(id)).toHaveLength(0);
+  });
+
+  test('sweeping twice yields exactly one resolved job', async () => {
+    const id = await openConversation('sweep-agent', 'epoch-twice', 'epoch-twice-1');
+    await backdate(id, 25);
+    const epoch = await idleEpochOf(id);
+
+    await runInactivitySweep();
+    await runInactivitySweep();
+
+    const job = await getQueue(QUEUE.CONVERSATION).getJob(`conv-resolved-${id}-${epoch}`);
+    expect(job).toBeTruthy();
+    expect(await resolvedJobsFor(id)).toHaveLength(1);
   });
 });

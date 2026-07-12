@@ -39,6 +39,8 @@ export interface AgentEventConversation {
   status: 'active' | 'resolved';
   metadata: Record<string, unknown>;
   messageCount: number;
+  /** Set once the conversation is resolved; carried on 'resolved' events. */
+  summary?: string | null;
 }
 
 export interface AgentEventSubscriber {
@@ -59,7 +61,10 @@ export interface AgentAction {
   label: string;
 }
 
-export interface AgentEvent {
+/** Who or what resolved the conversation. */
+export type ResolvedBy = 'bridge' | 'operator' | 'sweep';
+
+export interface AgentTurnEvent {
   /** 'message' = the user typed; 'action' = the user clicked a button. */
   type: 'message' | 'action';
   agent: { identifier: string; name: string };
@@ -71,6 +76,20 @@ export interface AgentEvent {
   action?: AgentAction;
   history: HistoryEntry[];
 }
+
+/**
+ * A conversation was resolved — by the agent (`bridge`), a human `operator`,
+ * or the inactivity `sweep`. Delivered to `onResolve`; no reply is expected.
+ */
+export interface AgentResolvedEvent {
+  type: 'resolved';
+  resolvedBy: ResolvedBy;
+  agent: { identifier: string; name: string };
+  conversation: AgentEventConversation;
+  subscriber: AgentEventSubscriber;
+}
+
+export type AgentEvent = AgentTurnEvent | AgentResolvedEvent;
 
 // ---- what the handler sends back ----
 
@@ -129,6 +148,21 @@ export type MessageHandler = (
   ctx: AgentContext,
 ) => string | void | undefined | Promise<string | void | undefined>;
 
+/**
+ * The read-only context passed to `onResolve`. There is no reply or signal
+ * surface — the conversation is already closed; this is a notification.
+ */
+export interface ResolveContext {
+  conversation: AgentEventConversation;
+  subscriber: AgentEventSubscriber;
+  /** Who resolved it: the agent (`bridge`), an `operator`, or the `sweep`. */
+  resolvedBy: ResolvedBy;
+  metadata: {
+    /** Read a metadata key persisted on the conversation. */
+    get(key: string): unknown;
+  };
+}
+
 export interface AgentDefinition {
   onMessage: MessageHandler;
   /**
@@ -136,8 +170,12 @@ export interface AgentDefinition {
    * onMessage with the button label as the message text.
    */
   onAction?: MessageHandler;
-  /** Reserved for platform-dispatched resolve events (not sent yet). */
-  onResolve?: (ctx: AgentContext) => void | Promise<void>;
+  /**
+   * Fires when a conversation is resolved — by the agent (`bridge`), a human
+   * `operator`, or the inactivity `sweep`. Receives a read-only
+   * {@link ResolveContext} (summary + metadata); no reply is expected.
+   */
+  onResolve?: (ctx: ResolveContext) => void | Promise<void>;
 }
 
 export function defineAgent(definition: AgentDefinition): AgentDefinition {
@@ -175,6 +213,28 @@ export async function handleEvent(
   agent: AgentDefinition,
   event: AgentEvent,
 ): Promise<BridgeResponse> {
+  // Resolved is a fire-and-forget lifecycle event: no reply, no signals.
+  if (event.type === 'resolved') {
+    if (agent.onResolve) {
+      const resolvedMeta = { ...event.conversation.metadata };
+      await agent.onResolve({
+        conversation: event.conversation,
+        subscriber: event.subscriber,
+        resolvedBy: event.resolvedBy,
+        metadata: {
+          get(key) {
+            return resolvedMeta[key];
+          },
+        },
+      });
+    }
+    return { signals: [] };
+  }
+  // Anything that isn't a turn stops here — unknown types never reach onMessage.
+  if (event.type !== 'message' && event.type !== 'action') {
+    return { signals: [] };
+  }
+
   const signals: Signal[] = [];
   let reply: string | undefined;
   let buttons: ReplyButton[] | undefined;
@@ -276,7 +336,11 @@ export function createHandler(
         } catch {
           return respond(res, 400, { error: 'invalid JSON' });
         }
-        if (event.type !== 'message' && event.type !== 'action') {
+        if (
+          event.type !== 'message' &&
+          event.type !== 'action' &&
+          event.type !== 'resolved'
+        ) {
           return respond(res, 200, { signals: [] });
         }
 

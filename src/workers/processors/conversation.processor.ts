@@ -1,7 +1,7 @@
 import type { Job } from 'bullmq';
 import { z } from 'zod';
 import { logger } from '../../shared/logger';
-import { PRIORITIES } from '../../shared/queues';
+import { PRIORITIES, getQueue, QUEUE } from '../../shared/queues';
 import { logExec } from '../../core/execution-log';
 import { internalTrigger } from '../../core/internal-trigger';
 import { signWebhook } from '../../api/webhook-signature';
@@ -28,6 +28,7 @@ import {
   getConversationMessageByDedupe,
   getSubscriberById,
   insertConversationMessage,
+  lastUserMessage,
   resolveConversation,
   updateConversationMessageRaw,
   updateConversationMetadata,
@@ -39,8 +40,20 @@ import {
 export interface ConversationJobData {
   tenantId: string;
   conversationId: string;
-  /** conversation_messages.id of the inbound user turn to dispatch. */
-  messageId: string;
+  /**
+   * conversation_messages.id: the inbound user turn to dispatch ('turn'), or
+   * the agent row to deliver ('deliver'). Absent on 'resolved' jobs.
+   */
+  messageId?: string;
+  /**
+   * What this job does. Absent = 'turn' (so jobs enqueued before this field
+   * existed still dispatch correctly). 'deliver' = push a pre-inserted agent
+   * message out over the channel; 'resolved' = notify the bridge a
+   * conversation closed.
+   */
+  kind?: 'turn' | 'deliver' | 'resolved';
+  /** On 'resolved' jobs: who closed the conversation. */
+  resolvedBy?: 'bridge' | 'operator' | 'sweep';
 }
 
 const BRIDGE_TIMEOUT_MS = 10_000;
@@ -82,7 +95,15 @@ const BridgeResponseSchema = z.object({
  * are safe — the same doctrine as the delivery pipeline.
  */
 export async function processConversation(job: Job<ConversationJobData>): Promise<void> {
-  const { tenantId, conversationId, messageId } = job.data;
+  if (job.data.kind === 'deliver') return processDeliver(job.data);
+  if (job.data.kind === 'resolved') return processResolved(job.data);
+  return processTurn(job.data);
+}
+
+/** The inbound-turn hop (default kind): dispatch one user turn, apply the reply. */
+async function processTurn(data: ConversationJobData): Promise<void> {
+  if (!data.messageId) return;
+  const { tenantId, conversationId, messageId } = data;
 
   const conversation = await getConversation(tenantId, conversationId);
   if (!conversation) return; // deleted underneath us — nothing to do
@@ -206,6 +227,90 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   });
 }
 
+/**
+ * The push hop: an agent message was inserted out-of-band (operator/API push,
+ * not a reply to an inbound turn) and needs to reach the subscriber. Same
+ * channel delivery + send-once guard as a reply row; retries are safe.
+ */
+async function processDeliver(data: ConversationJobData): Promise<void> {
+  if (!data.messageId) return;
+  const conversation = await getConversation(data.tenantId, data.conversationId);
+  if (!conversation) return; // deleted underneath us
+  const [agent, row, subscriber] = await Promise.all([
+    getAgentById(conversation.agent_id),
+    getConversationMessage(data.messageId),
+    getSubscriberById(conversation.subscriber_id),
+  ]);
+  if (!agent || !row || !subscriber) return;
+  if (agent.status !== 'active') {
+    logger.info({ agent: agent.identifier }, 'agent disabled, skipping delivery');
+    return;
+  }
+  if (row.deleted_at) return; // soft-deleted before we delivered it
+
+  // A push has no inbound turn of its own; the latest live user message is
+  // what an email reply threads onto (null => a fresh, un-threaded email).
+  const inbound = await lastUserMessage(data.conversationId);
+  await deliverReply(conversation, subscriber.external_id, agent, row, inbound);
+  logExec({
+    tenantId: data.tenantId,
+    transactionId: `conv-${data.conversationId}`,
+    level: 'info',
+    detail: `pushed agent message delivered channel=${conversation.channel}`,
+  });
+}
+
+/**
+ * The resolved-event hop: a conversation closed (bridge signal, operator, or
+ * the inactivity sweep) — tell the agent's bridge so customer code can react.
+ * Never writes a transcript row; the resolve breadcrumb was already written by
+ * whoever flipped the status. Idempotent: the status guard drops the event if
+ * the conversation was reopened before we ran.
+ */
+async function processResolved(data: ConversationJobData): Promise<void> {
+  const conversation = await getConversation(data.tenantId, data.conversationId);
+  if (!conversation) return;
+  if (conversation.status !== 'resolved') {
+    logExec({
+      tenantId: data.tenantId,
+      transactionId: `conv-${data.conversationId}`,
+      level: 'info',
+      detail: 'resolved event dropped: conversation reopened',
+    });
+    return;
+  }
+  const [agent, subscriber] = await Promise.all([
+    getAgentById(conversation.agent_id),
+    getSubscriberById(conversation.subscriber_id),
+  ]);
+  if (!agent || !subscriber) return;
+  if (agent.runtime !== 'bridge' || !agent.bridge_url || agent.status !== 'active') return;
+
+  try {
+    await dispatchResolvedToBridge(agent, conversation, subscriber, data.resolvedBy);
+  } catch (err) {
+    // Config-shaped failure (blocked/missing bridge URL): retrying can't fix
+    // it. Surface it and stop instead of burning attempts; other errors
+    // rethrow so BullMQ retries the transient case.
+    if (err instanceof PermanentError) {
+      logExec({
+        tenantId: data.tenantId,
+        transactionId: `conv-${data.conversationId}`,
+        level: 'error',
+        detail: `resolved event permanent failure: ${err.message}`,
+      });
+      return;
+    }
+    throw err;
+  }
+  logExec({
+    tenantId: data.tenantId,
+    transactionId: `conv-${data.conversationId}`,
+    level: 'info',
+    detail: 'resolved event delivered to bridge',
+  });
+}
+
 type BridgeSignal = z.infer<typeof BridgeResponseSchema>['signals'][number];
 
 /** The customer-code runtime: signed POST to the bridge URL. */
@@ -220,9 +325,6 @@ async function dispatchToBridge(
   buttons?: Array<{ id: string; label: string }>;
   signals: BridgeSignal[];
 }> {
-  if (!agent.bridge_url) {
-    throw new PermanentError(`bridge agent ${agent.identifier} has no bridge URL`);
-  }
   // Button clicks arrive as user rows carrying raw.action — the bridge
   // sees them as first-class 'action' events (label rides message.text).
   const clicked = (message.raw as { action?: { id: string } } | null)?.action;
@@ -250,6 +352,28 @@ async function dispatchToBridge(
     })),
   });
 
+  const response = await postSignedToBridge(agent, rawBody);
+  const parsed = BridgeResponseSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) {
+    throw new Error(`bridge returned an invalid response for agent ${agent.identifier}`);
+  }
+  return parsed.data;
+}
+
+/**
+ * The shared bridge transport: HMAC-sign a raw body and POST it to the agent's
+ * bridge URL, with both SSRF layers and a hard timeout. Returns the (ok)
+ * response so callers can parse a body, or ignore it. Config-shaped failures
+ * (missing/blocked URL) throw PermanentError → no retry; a non-2xx is a plain
+ * Error → retried.
+ */
+async function postSignedToBridge(
+  agent: Agent,
+  rawBody: string,
+): Promise<Awaited<ReturnType<typeof safeFetch>>> {
+  if (!agent.bridge_url) {
+    throw new PermanentError(`bridge agent ${agent.identifier} has no bridge URL`);
+  }
   // SSRF gate, both halves: the assert catches literal private IPs (which
   // bypass custom DNS lookup), the dispatcher re-checks every resolved
   // address at connect time (DNS rebinding). Blocked → no retries.
@@ -297,11 +421,39 @@ async function dispatchToBridge(
   if (!response.ok) {
     throw new Error(`bridge responded ${response.status} for agent ${agent.identifier}`);
   }
-  const parsed = BridgeResponseSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    throw new Error(`bridge returned an invalid response for agent ${agent.identifier}`);
-  }
-  return parsed.data;
+  return response;
+}
+
+/**
+ * Fire the resolved lifecycle event at a bridge agent. Mirrors dispatchToBridge's
+ * subscriber/conversation shapes for field-name consistency; the bridge's
+ * response body is ignored (success = a 2xx, enforced by postSignedToBridge).
+ */
+async function dispatchResolvedToBridge(
+  agent: Agent,
+  conversation: Conversation,
+  subscriber: NonNullable<Awaited<ReturnType<typeof getSubscriberById>>>,
+  resolvedBy: ConversationJobData['resolvedBy'],
+): Promise<void> {
+  const rawBody = JSON.stringify({
+    type: 'resolved',
+    resolvedBy,
+    agent: { identifier: agent.identifier, name: agent.name },
+    conversation: {
+      id: conversation.id,
+      channel: conversation.channel,
+      status: conversation.status,
+      metadata: conversation.metadata,
+      messageCount: conversation.message_count,
+      summary: conversation.summary,
+    },
+    subscriber: {
+      subscriberId: subscriber.external_id,
+      email: subscriber.email,
+      phone: subscriber.phone,
+    },
+  });
+  await postSignedToBridge(agent, rawBody);
 }
 
 /** Bridge signals, applied in order — deduped so retries can't re-apply. */
@@ -357,6 +509,20 @@ async function applySignals(
           type: 'conversation.resolved',
         });
       }
+      // Tell the bridge its conversation closed (separate hop; deduped per
+      // turn so a retried job can't double-fire the resolved event).
+      if (agent.runtime === 'bridge' && agent.bridge_url) {
+        await getQueue(QUEUE.CONVERSATION).add(
+          `resolved-${conversation.id}`,
+          {
+            kind: 'resolved',
+            tenantId: conversation.tenant_id,
+            conversationId: conversation.id,
+            resolvedBy: 'bridge',
+          },
+          { jobId: `conv-resolved-${conversation.id}-${messageId}`, attempts: 5, priority: 10 },
+        );
+      }
     }
   }
 }
@@ -409,7 +575,7 @@ async function deliverReply(
   subscriberExternalId: string,
   agent: Agent,
   replyRow: ConversationMessage,
-  inboundRow: ConversationMessage,
+  inboundRow: ConversationMessage | null,
 ): Promise<void> {
   if (conversation.channel === 'inapp') {
     const buttons = (replyRow.raw as { buttons?: Array<{ id: string; label: string }> } | null)
@@ -469,9 +635,12 @@ async function deliverReply(
     }
     const connection = await getConnectionForAgent(agent.id, 'email');
     const address = (connection?.config as { address?: string } | null)?.address;
-    const inboundRaw = (inboundRow.raw ?? {}) as { subject?: string; rfcMessageId?: string | null };
+    const inboundRaw = (inboundRow?.raw ?? {}) as { subject?: string; rfcMessageId?: string | null };
+    // A reply to an inbound email keeps the thread (Re: + In-Reply-To). A push
+    // with no inbound turn (or an inbound with no email subject) opens a fresh
+    // thread: plain subject, no Re:, no threading headers.
     const subject = inboundRaw.subject
-      ? inboundRaw.subject.replace(/^(re:\s*)+/i, '')
+      ? `Re: ${inboundRaw.subject.replace(/^(re:\s*)+/i, '')}`
       : `Message from ${agent.name}`;
     // Email has no buttons — degrade to a numbered options list the user
     // can answer in a plain reply.
@@ -486,10 +655,10 @@ async function deliverReply(
       messageId: replyRow.id,
       tenantId: conversation.tenant_id,
       to: { email: toEmail },
-      subject: `Re: ${subject}`,
+      subject,
       body,
       replyTo: address,
-      headers: inboundRaw.rfcMessageId
+      headers: inboundRaw.subject && inboundRaw.rfcMessageId
         ? { 'In-Reply-To': inboundRaw.rfcMessageId, References: inboundRaw.rfcMessageId }
         : undefined,
     });
@@ -525,12 +694,27 @@ async function systemNote(
 /** DLQ hook: retries exhausted — leave the failure visible in the transcript. */
 export async function onConversationDead(job: Job): Promise<void> {
   const data = job.data as Partial<ConversationJobData>;
+  // A resolved event is a lifecycle notification, not a turn — an
+  // undeliverable one leaves no transcript row (nothing failed in the chat).
+  if (data.kind === 'resolved') {
+    if (!data.tenantId || !data.conversationId) return;
+    logExec({
+      tenantId: data.tenantId,
+      transactionId: `conv-${data.conversationId}`,
+      level: 'warn',
+      detail: 'resolved event undeliverable: bridge unreachable after 5 attempts',
+    });
+    return;
+  }
   if (!data.tenantId || !data.conversationId || !data.messageId) return;
   await insertConversationMessage({
     conversationId: data.conversationId,
     tenantId: data.tenantId,
     role: 'system',
-    content: 'agent unreachable — this message was not answered',
+    content:
+      data.kind === 'deliver'
+        ? 'agent message could not be delivered'
+        : 'agent unreachable — this message was not answered',
     dedupeKey: `dead-${data.messageId}`,
   }).catch((err) => logger.warn({ err }, 'failed to record dead conversation turn'));
 }

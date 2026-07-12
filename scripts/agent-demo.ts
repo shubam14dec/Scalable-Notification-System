@@ -102,6 +102,14 @@ const brain = defineAgent({
     }
     return `Got your choice: ${ctx.message.text}`;
   },
+
+  onResolve(ctx) {
+    console.log(
+      `[${IDENTIFIER}] *** conversation ${ctx.conversation.id} RESOLVED (${ctx.resolvedBy})` +
+        (ctx.conversation.summary ? ` — ${ctx.conversation.summary}` : '') +
+        ' ***',
+    );
+  },
 });
 
 async function main() {
