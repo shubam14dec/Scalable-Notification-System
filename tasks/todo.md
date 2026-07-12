@@ -84,6 +84,53 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+### Conversations / Agents — Phase 15: connect-button components — COMPLETE
+(user-verified 2026-07-12 as his own customer's end user: telegram
+linked from the widget via deep link (typed /start on phone — desktop
+t.me button needs the native app; QR handoff → backlog), row flipped
+Linked on tab refocus; self-unlink two-step worked; slack app_redirect
+landed in the bot DM and auto-match linked U0BGL10B3EX →
+connect-test-1 (DB-verified); maya's card showed the three correct
+ABSENCES (email row w/ no unlink, slack+tg Not linked = per-subscriber
+isolation); both themes clean. THE E2E EARNED ITS KEEP: found TWO live
+Slack API-dialect bugs — bots.info AND users.info silently ignore
+JSON bodies (read methods need query params); users.info had been
+silently disabling live email auto-match SINCE PHASE 13, masked by its
+own fallback + JSON-accepting test stubs. Both wrappers fixed +
+live-proven (real app id A0BGW0B0M9S fetched), stubs updated, lesson
+in skill ledger. 320 tests. LOCAL COMMIT ONLY per no-push rule.)
+
+### (original Phase 15 plan)
+(plan approved 2026-07-12; full plan in
+`~/.claude/plans/tranquil-swimming-acorn.md`. New token-only /v1/me
+family (token IS identity — no subscriberId params, no oracle,
+projection allowlist); telegram full deep-link connect; slack
+universal app_redirect w/ bots.info appId capture + click-gated lazy
+backfill; email display-only; self-unlink w/ ownership check the
+legacy admin route lacks; ONE composite <ConnectChannels> + hook,
+focus-refetch link detection. ALL COMMITS LOCAL — NO PUSH. All Opus.)
+
+- [x] A. Backend: channels/slack botsInfo, repo updateConnectionConfig,
+      slack connect appId capture, mintLinkTokenCore extraction,
+      me.ts (channels/link-tokens/identities) + app.ts
+      (Opus, audited; 306 green; oracle-proof unlink verified)
+- [x] B. React: useConnectChannels + <ConnectChannels> + changeset +
+      InboxPreview dogfood (Opus, audited; builds green, zero raw
+      colors, focus-refetch + two-step unlink per spec)
+- [x] C. Tests: me.test.ts (14 tests incl. strict projection,
+      ownership, zero-slack-calls-after-persist cache proof, negative-
+      ttl expired token) + slack stub bots.info; 320/320 2x + manager
+      re-run (Opus, audited; zero suspected bugs)
+- [x] D. Docs: end-user linking section (method table, token-only
+      callout, 3 curls, slack app-id + email-not-unlinkable notes) +
+      README SDK line (Opus, audited; scrub clean)
+- [x] E. Manual E2E complete (found + fixed the two Slack read-method
+      JSON bugs live) + review above + single LOCAL commit + memory.
+      Backlog added: QR code in ConnectChannels for desktop→phone
+      telegram handoff (t.me button dead without native app)
+
+## Recently finished
+
 ### Conversations / Agents — Phase 14: Cards v2 + plan-card streaming — COMPLETE
 (user-verified 2026-07-12 on ALL THREE surfaces in one storyline
 (order → dropdown → Resend → email input → plan card → resolve):

@@ -97,13 +97,25 @@ export async function handleSlackConnect(
     return reply.code(422).send({ error: `slack rejected the token: ${(err as Error).message}` });
   }
 
+  // Capture the app id best-effort now (auth.test omits it); a failure defers
+  // to the lazy backfill on the first /v1/me/link-tokens slack request.
+  let appId: string | undefined;
+  try {
+    appId = (await slack.botsInfo(botToken, r.bot_id)).bot.app_id;
+  } catch (err) {
+    logger.warn(
+      { err: (err as Error).message },
+      'bots.info failed - appId deferred to lazy backfill',
+    );
+  }
+
   const connection = await upsertSlackConnection({
     tenantId,
     agentId: agent.id,
     sealedCredentials: sealSecret(
       JSON.stringify({ botToken, signingSecret } satisfies SlackCredentials),
     ),
-    config: { teamId: r.team_id, teamName: r.team, botUserId: r.user_id },
+    config: { teamId: r.team_id, teamName: r.team, botUserId: r.user_id, ...(appId ? { appId } : {}) },
   });
 
   // Re-connecting the same workspace (identity-upsert hit a live row) may be

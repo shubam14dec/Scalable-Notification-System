@@ -1080,6 +1080,351 @@ export function AgentChat(props: AgentChatProps) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Connect channels — end users link their own Telegram/Slack identity */
+/* (and see email auto-links) from any app embedding the widget.       */
+/* ------------------------------------------------------------------ */
+
+export interface ConnectChannelRow {
+  connectionId: string | null;
+  channel: 'telegram' | 'slack' | 'email';
+  label: string;
+  linked: boolean;
+  identities: Array<{ externalKey: string; linkedAt: string }>;
+}
+
+export interface UseConnectChannelsOptions {
+  token: string;
+  apiUrl?: string;
+}
+
+export function useConnectChannels({ token, apiUrl = '' }: UseConnectChannelsOptions) {
+  const [channels, setChannels] = useState<ConnectChannelRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const headers = useCallback(
+    () => ({ 'content-type': 'application/json', 'x-subscriber-token': token }),
+    [token],
+  );
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiUrl}/v1/me/channels`, { headers: headers() });
+      const data = (await res.json()) as { channels?: ConnectChannelRow[] };
+      setChannels(data.channels ?? []);
+    } catch {
+      /* keep the last-known rows on a transient failure */
+    } finally {
+      setLoading(false);
+    }
+  }, [apiUrl, headers]);
+
+  // Mount fetch, then refetch whenever the tab regains focus or becomes
+  // visible — the actual link completes in Telegram/Slack (often another tab
+  // or app), so returning here is the natural moment to reflect the new state.
+  useEffect(() => {
+    let alive = true;
+    const run = () => {
+      if (alive) void load();
+    };
+    run();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') run();
+    };
+    window.addEventListener('focus', run);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      alive = false;
+      window.removeEventListener('focus', run);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [load]);
+
+  const connect = useCallback(
+    async (connectionId: string) => {
+      setBusy(connectionId);
+      try {
+        const res = await fetch(`${apiUrl}/v1/me/link-tokens`, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ connectionId }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          const message = body.error ?? 'could not start linking';
+          setRowErrors((prev) => ({ ...prev, [connectionId]: message }));
+          console.warn(`[asyncify] link-token failed (${connectionId}): ${message}`);
+          return;
+        }
+        const body = (await res.json()) as { url: string };
+        setRowErrors((prev) => {
+          const next = { ...prev };
+          delete next[connectionId];
+          return next;
+        });
+        window.open(body.url, '_blank', 'noopener,noreferrer');
+      } catch {
+        const message = 'could not start linking';
+        setRowErrors((prev) => ({ ...prev, [connectionId]: message }));
+        console.warn(`[asyncify] link-token failed (${connectionId}): ${message}`);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [apiUrl, headers],
+  );
+
+  const unlink = useCallback(
+    async (channel: string, externalKey: string) => {
+      try {
+        await fetch(`${apiUrl}/v1/me/identities`, {
+          method: 'DELETE',
+          headers: headers(),
+          body: JSON.stringify({ channel, externalKey }),
+        });
+      } catch {
+        /* the refetch below is the source of truth either way */
+      }
+      await load();
+    },
+    [apiUrl, headers, load],
+  );
+
+  return { channels, loading, rowErrors, busy, connect, unlink, refresh: load };
+}
+
+export interface ConnectChannelsProps {
+  token: string;
+  apiUrl?: string;
+  theme?: 'dark' | 'light';
+  title?: string;
+}
+
+export function ConnectChannels(props: ConnectChannelsProps) {
+  const { theme = 'dark', title = 'Connected channels' } = props;
+  const { channels, loading, rowErrors, busy, connect, unlink, refresh } = useConnectChannels(props);
+  // Two-step unlink confirm, keyed by `${channel}:${externalKey}`, auto-reverts
+  // after 3s — mirrors AgentChat's lightweight text-button control idiom.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Rows the user just started connecting; the hint shows until a refetch
+  // flips `linked` (or an error surfaces), no server round-trip needed.
+  const [pendingConnect, setPendingConnect] = useState<Record<string, boolean>>({});
+  const c = palettes[theme];
+  const font = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const mono = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+
+  useEffect(
+    () => () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    },
+    [],
+  );
+
+  const textBtn: CSSProperties = {
+    padding: 0,
+    background: 'transparent',
+    border: 'none',
+    color: c.text2,
+    fontSize: 11,
+    fontFamily: font,
+    cursor: 'pointer',
+  };
+
+  const askConfirm = (key: string) => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirming(key);
+    confirmTimer.current = setTimeout(() => setConfirming(null), 3000);
+  };
+  const cancelConfirm = () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirming(null);
+  };
+  const doUnlink = (channel: string, externalKey: string) => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirming(null);
+    void unlink(channel, externalKey);
+  };
+
+  const onConnect = (connectionId: string) => {
+    setPendingConnect((prev) => ({ ...prev, [connectionId]: true }));
+    void connect(connectionId);
+  };
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${c.border}`,
+        borderRadius: 12,
+        background: c.bg,
+        padding: 14,
+        fontFamily: font,
+        boxSizing: 'border-box',
+      }}
+    >
+      <style>{`.asy-cc-refresh{color:${c.text2};background:transparent;border:none;padding:0;cursor:pointer;font-size:11px;font-family:${font};}.asy-cc-refresh:hover{color:${c.text};}.asy-cc-pill:hover:enabled{background:${c.hover};}`}</style>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 8,
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 600, color: c.text }}>{title}</span>
+        <button type="button" className="asy-cc-refresh" onClick={() => void refresh()}>
+          Refresh
+        </button>
+      </div>
+
+      {loading ? (
+        <p style={{ margin: '6px 0 0', fontSize: 12, color: c.text2 }}>Loading channels…</p>
+      ) : channels.length === 0 ? (
+        <p style={{ margin: '6px 0 0', fontSize: 12, color: c.text2 }}>No channels available yet.</p>
+      ) : (
+        <div>
+          {channels.map((row, idx) => {
+            const cid = row.connectionId;
+            const err = cid ? rowErrors[cid] : undefined;
+            const isBusy = cid !== null && busy === cid;
+            const showHint = cid !== null && !!pendingConnect[cid] && !row.linked && !err;
+            const name = row.channel.charAt(0).toUpperCase() + row.channel.slice(1);
+            // @handles / addresses read best in mono; a Slack team name is prose.
+            const labelMono = row.channel !== 'slack';
+            return (
+              <div
+                key={cid ?? row.channel}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '10px 0',
+                  borderTop: idx === 0 ? 'none' : `1px solid ${c.border}`,
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: c.text }}>
+                    {name}
+                    <span style={{ color: c.text2 }}> — </span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: c.text2,
+                        fontFamily: labelMono ? mono : font,
+                      }}
+                    >
+                      {row.label}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: 999,
+                        flexShrink: 0,
+                        background: row.linked ? c.text : 'transparent',
+                        border: row.linked ? 'none' : `1px solid ${c.border}`,
+                      }}
+                    />
+                    <span style={{ fontSize: 12, color: c.text2 }}>
+                      {row.linked ? 'Linked' : 'Not linked'}
+                    </span>
+                    {(row.channel === 'telegram' || row.channel === 'slack') &&
+                      row.identities.map((id) => (
+                        <span
+                          key={id.externalKey}
+                          style={{ fontSize: 11, color: c.text2, fontFamily: mono }}
+                        >
+                          {id.externalKey}
+                        </span>
+                      ))}
+                  </div>
+                  {showHint && (
+                    <span style={{ fontSize: 11, color: c.text2 }}>
+                      {row.channel === 'telegram'
+                        ? 'Finish in Telegram, then return here.'
+                        : 'Finish in Slack, then return here.'}
+                    </span>
+                  )}
+                  {err && <span style={{ fontSize: 11, color: c.text2 }}>{err}</span>}
+                </div>
+
+                <div style={{ flexShrink: 0 }}>
+                  {row.channel === 'email' ? (
+                    <span style={{ fontSize: 11, color: c.text2 }}>Linked automatically</span>
+                  ) : row.linked ? (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                        alignItems: 'flex-end',
+                      }}
+                    >
+                      {row.identities.map((id) => {
+                        const key = `${row.channel}:${id.externalKey}`;
+                        return confirming === key ? (
+                          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: 11, color: c.text2 }}>Unlink?</span>
+                            <button
+                              type="button"
+                              style={textBtn}
+                              onClick={() => doUnlink(row.channel, id.externalKey)}
+                            >
+                              Confirm
+                            </button>
+                            <span style={{ fontSize: 11, color: c.text2 }}>·</span>
+                            <button type="button" style={textBtn} onClick={cancelConfirm}>
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            key={key}
+                            type="button"
+                            style={textBtn}
+                            onClick={() => askConfirm(key)}
+                          >
+                            Unlink
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="asy-cc-pill"
+                      disabled={isBusy}
+                      onClick={() => cid && onConnect(cid)}
+                      style={{
+                        padding: '5px 12px',
+                        borderRadius: 8,
+                        border: `1px solid ${c.border}`,
+                        background: 'transparent',
+                        color: c.text,
+                        fontSize: 12,
+                        fontFamily: font,
+                        cursor: isBusy ? 'default' : 'pointer',
+                        opacity: isBusy ? 0.6 : 1,
+                      }}
+                    >
+                      {isBusy ? 'Opening…' : 'Connect'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function NotificationInbox(props: NotificationInboxProps) {
   const { theme = 'dark', title = 'Notifications', align = 'right' } = props;
   const { items, unread, connected, markAllRead } = useNotifications(props);

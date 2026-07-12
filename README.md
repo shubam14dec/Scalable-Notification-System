@@ -8,7 +8,8 @@ architecture of production notification systems operating at very large
 scale.
 
 SDKs: [`@asyncify-hq/node`](packages/sdk-node) ·
-[`@asyncify-hq/react`](packages/react) (drop-in `<NotificationInbox />`).
+[`@asyncify-hq/react`](packages/react) (drop-in `<NotificationInbox />`,
+plus `<ConnectChannels />` so end users link their own Telegram/Slack).
 
 **Channels:** email, SMS, push, in-app (live WebSocket push + durable inbox) —
 extensible via one provider interface.

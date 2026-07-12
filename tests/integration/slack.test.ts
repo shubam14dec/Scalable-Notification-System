@@ -74,7 +74,8 @@ function startSlackStub(): Promise<void> {
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
-      const method = String(req.url).split('/').pop() ?? '';
+      const stubUrl = new URL(String(req.url), 'http://stub');
+      const method = stubUrl.pathname.split('/').pop() ?? '';
       const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       const token = String(req.headers.authorization ?? '').replace(/^Bearer\s+/, '');
       slackCalls.push({ method, path: String(req.url), body, token });
@@ -104,6 +105,12 @@ function startSlackStub(): Promise<void> {
       if (method === 'chat.update' || method === 'chat.delete') {
         return res.end(JSON.stringify({ ok: true, channel: body.channel, ts: body.ts }));
       }
+      if (method === 'bots.info') {
+        // auth.test returns bot_id 'B001'; connect calls this to capture app_id.
+        // Arg arrives as a QUERY param (Slack ignores JSON bodies for bots.info).
+        const botId = stubUrl.searchParams.get('bot') ?? body.bot;
+        return res.end(JSON.stringify({ ok: true, bot: { id: botId, app_id: 'A0TESTAPP' } }));
+      }
       if (method === 'users.info') {
         if (usersInfo.mode === 'error') {
           res.statusCode = 500;
@@ -115,7 +122,11 @@ function startSlackStub(): Promise<void> {
         return res.end(
           JSON.stringify({
             ok: true,
-            user: { id: body.user, profile: usersInfo.email ? { email: usersInfo.email } : {} },
+            // Arg arrives as a QUERY param (Slack ignores JSON bodies for users.info).
+            user: {
+              id: stubUrl.searchParams.get('user') ?? body.user,
+              profile: usersInfo.email ? { email: usersInfo.email } : {},
+            },
           }),
         );
       }
@@ -474,6 +485,8 @@ describe('1. connect', () => {
     expect(row.channel).toBe('slack');
     expect(row.status).toBe('active');
     expect(row.config.teamName).toBe('Test Team');
+    // connect captures the app id best-effort via bots.info and persists it.
+    expect(row.config.appId).toBe('A0TESTAPP');
     expect(row.webhook.eventsUrl).toContain(`/webhooks/slack/${connectionId}/events`);
     expect(row.webhook.interactivityUrl).toContain(`/webhooks/slack/${connectionId}/interactivity`);
   });

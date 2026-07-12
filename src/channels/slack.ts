@@ -214,11 +214,47 @@ export const slack = {
   deleteMessage: (token: string, channel: string, ts: string) =>
     call<{ channel: string; ts: string }>(token, 'chat.delete', { channel, ts }),
 
-  /** Look up a Slack user's profile — used to auto-match by email. */
-  usersInfo: (token: string, userId: string) =>
-    call<{ user: { id: string; profile?: { email?: string } } }>(token, 'users.info', {
-      user: userId,
-    }),
+  /**
+   * Look up a Slack user's profile — used to auto-match by email.
+   * NOTE: like bots.info, users.info silently IGNORES JSON-body arguments
+   * (proven live 2026-07-12: auto-match never fired because the `user` arg
+   * never reached Slack and the error was swallowed by the fallback) — read
+   * methods send their args as query parameters.
+   */
+  usersInfo: async (
+    token: string,
+    userId: string,
+  ): Promise<{ user: { id: string; profile?: { email?: string } } }> => {
+    const res = await fetch(`${apiBase()}/users.info?user=${encodeURIComponent(userId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const json = (await res.json().catch(() => null)) as
+      | { ok: boolean; error?: string; user?: { id: string; profile?: { email?: string } } }
+      | null;
+    if (!json || !json.ok || !json.user) {
+      throw new SlackError('users.info', json?.error ?? `HTTP ${res.status}`);
+    }
+    return { user: json.user };
+  },
+
+  /**
+   * The bot's app id (A…) — auth.test returns bot_id but not app_id.
+   * NOTE: bots.info silently IGNORES JSON-body arguments (returns ok with no
+   * bot object) — proven live 2026-07-12 — so this one method sends its arg
+   * as a query parameter instead of using the JSON `call` helper.
+   */
+  botsInfo: async (token: string, botId: string): Promise<{ bot: { id: string; app_id?: string } }> => {
+    const res = await fetch(`${apiBase()}/bots.info?bot=${encodeURIComponent(botId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const json = (await res.json().catch(() => null)) as
+      | { ok: boolean; error?: string; bot?: { id: string; app_id?: string } }
+      | null;
+    if (!json || !json.ok || !json.bot) {
+      throw new SlackError('bots.info', json?.error ?? `HTTP ${res.status}`);
+    }
+    return { bot: json.bot };
+  },
 };
 
 /**

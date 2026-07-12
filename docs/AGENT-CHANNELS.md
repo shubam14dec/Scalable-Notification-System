@@ -499,6 +499,138 @@ reply**. One message, edited in place; never a stream of separate posts.
 - **Crash-safe.** If the worker dies mid-turn, the retry **resumes editing
   the same message** — no duplicate "working…" posts.
 
+## End-user linking (connect buttons)
+
+Everything above is the **operator's** view — you connect a bot or workspace
+in your own dashboard. This section is the **end-user's** view: your customers
+embed a widget in *their* product so *their* users link their own Telegram or
+Slack account and start receiving agent conversations there. Nobody touches
+your dashboard, and no API key ever reaches a browser.
+
+### The `<ConnectChannels />` component
+
+Drop the component in from [`@asyncify-hq/react`](../packages/react):
+
+```tsx
+import { ConnectChannels } from '@asyncify-hq/react';
+
+<ConnectChannels
+  token={subscriberToken}                 // minted by YOUR backend, per user
+  apiUrl="https://api.asyncify.org"
+/>
+```
+
+It renders one row per channel: **Telegram** and **Slack** show a
+**Connect** button (and, once linked, the linked handle plus an **Unlink**
+control); **email** shows as already linked and read-only (see the email
+note below). Clicking **Connect** mints a link token and sends the user into
+the normal handshake — the Telegram deep link or the Slack DM redirect.
+
+**Where `subscriberToken` comes from.** The token **is** the user's identity,
+so it must be minted server-side and handed to the browser — **never** put an
+API key in front-end code. Your backend calls
+`POST /v1/subscriber-tokens` (an `x-api-key` admin route) for the signed-in
+user and returns the short-lived token to your page. The component then talks
+to the `/v1/me/*` routes below using that token and nothing else.
+
+### The `/v1/me` API (for custom UIs)
+
+If you're building your own linking UI instead of using the component, drive
+these three routes directly. **Auth is `x-subscriber-token` only** — the
+token carries the subscriber identity, so there are **no `subscriberId`
+parameters anywhere**, and an **API key is rejected** on these routes. A user
+can only ever see and touch their own identities.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /v1/me/channels` | merged listing of the caller's channels + linked identities |
+| `POST /v1/me/link-tokens` | mint a link token `{connectionId}` to start a Telegram/Slack link |
+| `DELETE /v1/me/identities` | unlink one of the caller's own identities `{channel, externalKey}` |
+
+**`GET /v1/me/channels`** returns one row per linkable channel, merged across
+the tenant's connections:
+
+```json
+{
+  "channels": [
+    { "connectionId": "conn_abc123", "channel": "telegram", "label": "Support bot",
+      "linked": true,
+      "identities": [ { "externalKey": "882410", "linkedAt": "2026-07-10T12:00:00Z" } ] },
+    { "connectionId": "conn_def456", "channel": "slack", "label": "Acme workspace",
+      "linked": false, "identities": [] },
+    { "connectionId": null, "channel": "email", "label": "you@example.com",
+      "linked": true,
+      "identities": [ { "externalKey": "you@example.com", "linkedAt": "2026-07-01T09:00:00Z" } ] }
+  ]
+}
+```
+
+Email rows are **display-only**: their `connectionId` is `null` because email
+identities are linked **automatically server-side** (an inbound email is
+matched to the subscriber by address), so there is no connect button to press.
+
+**`POST /v1/me/link-tokens {connectionId}`** returns the action that starts
+the handshake for that connection's channel:
+
+```json
+{ "kind": "telegram_deeplink", "url": "https://t.me/support_bot?start=lt_…", "expiresAt": "…" }
+```
+
+- **Telegram** → `kind: "telegram_deeplink"`: a **single-use, 24h** deep link
+  into the existing `/start` handshake. The user taps it, Telegram opens the
+  bot, and pressing **Start** completes the link.
+- **Slack** → `kind: "slack_redirect"`: an **`app_redirect`** URL that opens
+  the bot's DM in the user's Slack. Their **first message** in that DM
+  auto-links via the workspace email match (the same
+  `users:read.email` mechanism the operator flow relies on).
+
+**`DELETE /v1/me/identities {channel, externalKey}`** unlinks one identity and
+returns `{ "deleted": true }`. It only ever affects the **caller's own**
+identities; asking to delete a foreign or unknown identity returns
+`{ "deleted": false }` — the two cases are **deliberately
+indistinguishable**, so a caller can't probe whether some other identity
+exists.
+
+### Curl (end-user token, never an API key)
+
+```bash
+# List the caller's channels and linked identities.
+curl -H "x-subscriber-token: $SUBSCRIBER_TOKEN" \
+  https://api.asyncify.org/v1/me/channels
+
+# Start a Telegram (or Slack) link for one connection.
+curl -X POST -H "x-subscriber-token: $SUBSCRIBER_TOKEN" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/me/link-tokens \
+  -d '{"connectionId":"conn_abc123"}'
+# → { "kind":"telegram_deeplink", "url":"https://t.me/support_bot?start=lt_…", "expiresAt":"…" }
+
+# Unlink one of your own identities.
+curl -X DELETE -H "x-subscriber-token: $SUBSCRIBER_TOKEN" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/me/identities \
+  -d '{"channel":"telegram","externalKey":"882410"}'
+# → { "deleted": true }
+```
+
+### Slack app id (needed for the redirect)
+
+The `slack_redirect` URL needs the workspace's **Slack app id**. It's
+**captured automatically at connect**, and **lazily backfilled on first use**
+for workspaces that were connected before this feature existed — so it just
+works. If the app id can't be determined, `POST /v1/me/link-tokens` returns
+**`502` with `reconnect the workspace`**; reconnecting that workspace from the
+**Connections** page (an upsert — no re-paste in Slack) records the app id and
+fixes it. A desktop-only `slack://` deep link exists as a documented
+alternative but is **not shipped** — it silently no-ops on mobile and web, so
+the `app_redirect` URL is the one path that works everywhere.
+
+### Email is intentionally not unlinkable from the widget
+
+Email rows are display-only and the component offers **no** email unlink. You
+*can* call `DELETE /v1/me/identities {channel:"email", …}` and it will report
+`deleted: true`, but the **next inbound email from that address re-links it
+automatically** — so an unlink button would be a lie. The auto-link is the
+feature, not a gap; the widget just doesn't pretend otherwise.
+
 ## Deprecated (still works): agent-scoped channel routes
 
 The pre-Phase-12 routes that wired a channel directly into an agent still

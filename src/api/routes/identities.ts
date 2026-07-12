@@ -35,12 +35,11 @@ export function hashLinkToken(token: string): string {
  * config builds the t.me deep link. Forgiving like triggers: the customer's
  * user may not have messaged yet, so the subscriber is upserted.
  */
-export async function mintLinkToken(
-  reply: FastifyReply,
+export async function mintLinkTokenCore(
   tenantId: string,
   connection: AgentConnection,
   subscriberId: string,
-): Promise<FastifyReply> {
+): Promise<{ token: string; deepLink: string; expiresAt: string }> {
   const botUsername = (connection.config as { botUsername?: string } | null)?.botUsername;
 
   const subscriber = await upsertSubscriber(tenantId, { subscriberId });
@@ -55,11 +54,22 @@ export async function mintLinkToken(
     expiresAt: new Date(Date.now() + TOKEN_TTL_MS),
   });
 
-  return reply.code(201).send({
+  return {
     token,
     deepLink: `https://t.me/${botUsername}?start=${token}`,
     expiresAt: row.expires_at,
-  });
+  };
+}
+
+export async function mintLinkToken(
+  reply: FastifyReply,
+  tenantId: string,
+  connection: AgentConnection,
+  subscriberId: string,
+): Promise<FastifyReply> {
+  const minted = await mintLinkTokenCore(tenantId, connection, subscriberId);
+  reply.code(201);
+  return reply.send(minted);
 }
 
 /** An agent's active telegram connections (0, 1, or — post-split — several). */

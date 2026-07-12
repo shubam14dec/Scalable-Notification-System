@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { Button, Card, Field, Input, Mono, PageHeader } from '../ui';
 // Dogfooding: these are the ACTUAL embeddable widgets from packages/react —
 // the same components customers drop into their apps.
-import { AgentChat, NotificationInbox } from '../../../packages/react/src';
+import { AgentChat, ConnectChannels, NotificationInbox } from '../../../packages/react/src';
 
 export default function InboxPreviewPage() {
   const [subscriberId, setSubscriberId] = useState('customer-42');
@@ -72,6 +72,16 @@ export default function InboxPreviewPage() {
       )}
 
       {session && <AgentChatPreview token={session.token} subscriberId={session.subscriberId} theme={theme} />}
+
+      {session && (
+        <div className="mt-8 max-w-md">
+          <p className="mb-3 text-[12px] text-t3">
+            And <Mono>&lt;ConnectChannels /&gt;</Mono> — the same subscriber links their own
+            Telegram/Slack from your app, and sees which channels were wired up automatically.
+          </p>
+          <ConnectChannels key={session.token} token={session.token} apiUrl="" theme={theme} />
+        </div>
+      )}
     </>
   );
 }

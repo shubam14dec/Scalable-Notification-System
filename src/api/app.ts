@@ -22,6 +22,7 @@ import { registerTelegramRoutes } from './routes/telegram';
 import { registerEmailChannelRoutes } from './routes/email-channel';
 import { registerSlackRoutes } from './routes/slack';
 import { registerIdentityRoutes } from './routes/identities';
+import { registerMeRoutes } from './routes/me';
 import { registerConnectionRoutes } from './routes/connections';
 
 declare module 'fastify' {
@@ -74,6 +75,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerEmailChannelRoutes(app);
   registerSlackRoutes(app);
   registerIdentityRoutes(app);
+  registerMeRoutes(app);
   registerConnectionRoutes(app);
   registerTriggerRoutes(app);
   registerAdminRoutes(app);

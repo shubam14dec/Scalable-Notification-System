@@ -247,6 +247,16 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   answering 200 from the OLD code. Before restarting api/worker/ws, free
   the port: `Get-NetTCPConnection -LocalPort <p> -State Listen` →
   `Stop-Process` the owning pid.
+- **Slack READ methods ignore JSON bodies — args go as query params**
+  (proven live twice on 2026-07-12: bots.info returned ok-with-no-payload,
+  and users.info had silently disabled email auto-match since the slack
+  channel shipped — masked by its own .catch fallback AND by test stubs
+  that accepted JSON). Write methods (chat.postMessage/update/delete)
+  take JSON; read methods (users.info, bots.info, likely conversations.*)
+  need `?arg=` query strings. Corollary: any external call whose failure
+  is swallowed by a designed fallback MUST get one live proof — a stubbed
+  test cannot catch an API-dialect mismatch, and the fallback hides it
+  in production forever.
 - **Server enum widened → grep packages/* for the same union** (user-found
   after Phase 13, 2026-07-12): identities unlink gained 'slack' server-side
   but @asyncify-hq/node still typed `'telegram' | 'email'` — SDK consumers

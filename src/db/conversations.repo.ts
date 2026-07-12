@@ -382,6 +382,20 @@ export async function updateConnectionAgent(
   }
 }
 
+/** Shallow-merge a config patch (jsonb ||) — idempotent; races converge. */
+export async function updateConnectionConfig(
+  tenantId: string,
+  connectionId: string,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `update agent_connections set config = config || $3::jsonb, updated_at = now()
+      where tenant_id = $1 and id = $2`,
+    [tenantId, connectionId, JSON.stringify(patch)],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
 /** Tenant-scoped delete by connection id (the endpoint-model delete path). */
 export async function deleteConnectionById(tenantId: string, id: string): Promise<boolean> {
   const { rowCount } = await pool.query(
