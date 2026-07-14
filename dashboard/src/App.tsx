@@ -5,7 +5,9 @@ import { LoginPage, SignupPage } from './pages/Login';
 import OverviewPage from './pages/Overview';
 import ActivityPage from './pages/Activity';
 import WorkflowsPage from './pages/Workflows';
-import WorkflowEditorPage from './pages/WorkflowEditor';
+import WorkflowEditorPage from './pages/workflow-editor';
+import StepDrawer from './pages/workflow-editor/StepDrawer';
+import StepEditorPage from './pages/workflow-editor/StepEditorPage';
 import MessageDetailPage from './pages/MessageDetail';
 import AnalyticsPage from './pages/Analytics';
 import SubscribersPage from './pages/Subscribers';
@@ -39,8 +41,14 @@ export default function App() {
           <Route path="/activity" element={<ActivityPage />} />
           <Route path="/activity/:transactionId" element={<MessageDetailPage />} />
           <Route path="/workflows" element={<WorkflowsPage />} />
-          <Route path="/workflows/new" element={<WorkflowEditorPage />} />
-          <Route path="/workflows/:key" element={<WorkflowEditorPage />} />
+          <Route path="/workflows/new" element={<WorkflowEditorPage />}>
+            <Route path="steps/:index" element={<StepDrawer />} />
+            <Route path="steps/:index/editor" element={<StepEditorPage />} />
+          </Route>
+          <Route path="/workflows/:key" element={<WorkflowEditorPage />}>
+            <Route path="steps/:index" element={<StepDrawer />} />
+            <Route path="steps/:index/editor" element={<StepEditorPage />} />
+          </Route>
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/subscribers" element={<SubscribersPage />} />
           <Route path="/topics" element={<TopicsPage />} />

@@ -113,7 +113,6 @@ body {
     transform: translateY(0);
   }
 }
-
 /* Thin scrollbars that match the chrome */
 * {
   scrollbar-width: thin;

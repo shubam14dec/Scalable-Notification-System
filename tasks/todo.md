@@ -107,6 +107,39 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## Recently finished
 
+### Workflow flow-editor redesign (dashboard UX, user-requested 2026-07-14) — COMPLETE
+Reworks /workflows/:key from a stack of expanded edit-cards into a FLOW
+canvas (impeccable `shape` brief, user-approved): novu-style content
+cards, but the flow makes CONDITIONAL LOGIC spatial — a step with
+conditions/skip-gate gets a labeled BYPASS around it ("if not opened"),
+so optional steps are visible at a glance (novu's flat line can't show
+this). Single-click node → timing drawer (steps/:i); double-click → full
+content page (steps/:i/editor); explicit Save with dirty guard. Hand-
+rolled (no React Flow), zero new deps. Foundation (types + WorkflowProvider
+draft context + layout + nested routes) manager-written + tsc green; canvas
+(Slice A) + drawer/page (Slice B) delegated to Opus in parallel.
+- [x] Foundation: types.ts, WorkflowProvider, layout shell, routing
+- [x] A. Gated-bypass flow canvas (Opus; measured-SVG dashed bypass +
+      "skip" tag + gate diamond, portal'd add-menu, cancelable
+      single/double-click nav, selected-from-location, zero hex)
+- [x] B. Timing drawer (subset) + full content page (all fields)
+      (Opus; live updateStep, template/inline toggle, monochrome
+      Toggle/ChannelPicker, skip-gate gated to i>0)
+- [x] Dashboard build green (all 3 integrate); HMR clean on :5173
+- [x] User-reviewed + iterated 2026-07-14/15: channel/type no longer
+      editable post-create (per-type content only); drawer re-anchored
+      to the viewport right + GSAP slide (gsap added, matchMedia for
+      reduced-motion — the CSS reduced-motion setting had made it look
+      instant); double-click window 180→280ms + native onDoubleClick
+      (was opening the drawer/needing a fast triple-click); drawer
+      Content section = just an "Edit content →" button (no misleading
+      disabled preview); conditions "Add" is now a clear dashed empty-
+      state affordance + secondary button (was a faint text link).
+      GSAP is now the project's animation lib; keep motion subtle +
+      only-when-it-improves-UX (his directive).
+
+## Recently finished
+
 ### Onboarding — Phase 17: every first touch becomes one tap — COMPLETE
 (plan approved 2026-07-13 ("go ahead, auto mode"); full plan in
 `~/.claude/plans/phase17-onboarding.md`. Slack quick setup (config-token
