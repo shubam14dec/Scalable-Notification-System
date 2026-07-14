@@ -344,6 +344,20 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   slack→email auto-match. Auto-match would have degraded invisibly (the
   Phase 15 saga shape, again). When trimming scopes, grep every wrapper
   call's RESPONSE FIELDS for scope-gated data, not just the methods.
+  SECOND INSTANCE (extended E2E, 2026-07-14): the manifest emitted
+  features.agent_view.suggested_prompts but omitted assistant:write —
+  Slack ACCEPTS the block and silently never renders it. A manifest
+  FEATURE and its enabling SCOPE must ship together or the feature is
+  inert with zero error. Same rule, wider: any capability gated on a
+  scope you didn't request fails silent, not loud.
+- **Dedupe granularity is a design choice, not a formality** (Phase 17
+  E2E): the telegram welcome keyed on welcome-<conversationId> = one
+  greeting per conversation EVER, which made a repeat bare /start do
+  NOTHING (welcome deduped, brain skipped → dead command). /start is
+  Telegram's 'show me your intro' — it should re-greet every press.
+  Fix: key on welcome-<update_id> so only Telegram's delivery RETRIES of
+  the same press dedupe. Pick the dedupe key at the granularity of 'the
+  event I want to happen once', not the coarsest thing that compiles.
 - **Authed 302s are unreadable by browsers** (Phase 17): fetch with auth
   headers + redirect:'manual' yields an opaqueredirect (no Location), and
   window.open can't carry headers. Any authed endpoint whose value IS a
