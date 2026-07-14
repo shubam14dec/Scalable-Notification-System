@@ -590,15 +590,19 @@ Where each surface shows them:
   dedupe keys on the update, so only Telegram's delivery retries are suppressed.
   Tapping a chip flows through the normal action pipeline. (Welcome unset →
   `/start` behaves exactly as before.)
-- **Slack** — **two surfaces.** (1) The **first DM** a user opens with the bot
-  gets the welcome message posted as a real message, with the prompts as **Block
-  Kit buttons**; it's deduped **once per DM** (the analog of the widget bubble),
-  and the user's own message still runs the model. (2) The prompts *also* ride
-  the manifest's **`agent_view`** (Slack's native suggested-prompts surface in
-  the assistant pane) — this needs the `assistant:write` scope and takes the
-  **first 4**; it applies to apps built via **Quick Setup** or the **prefilled
-  manifest** and refreshes on `reconnect`. Existing apps must **re-install** to
-  pick up the scope. DM greetings fire only in DMs, never in shared channels.
+- **Slack** — greets **on DM open** (the `app_home_opened` event): opening the
+  bot's DM posts the welcome message with the prompts as **Block Kit buttons**,
+  before the user types — the analog of the widget's empty-conversation bubble.
+  It's deduped **once per DM**. If a workspace doesn't deliver the open event,
+  the **first message** greets instead (same once-per-DM marker, so it never
+  doubles); when that fallback fires on a bare `"hi"`, the greeting *is* the
+  reply and the model is skipped (no double-hello), while a real first question
+  gets both the greeting and an answer. Greets only in DMs, never in shared
+  channels. The prompts *also* ride the manifest's **`agent_view`** (Slack's
+  native suggested-prompts surface in the assistant pane) for anyone who uses
+  it — that needs the `assistant:write` scope and takes the **first 4**.
+  **Existing apps must re-install** to pick up the new `app_home_opened`
+  subscription and the scope.
 - **Email** — no first-contact surface (there is no "open" / `/start` event to
   hang a greeting on).
 

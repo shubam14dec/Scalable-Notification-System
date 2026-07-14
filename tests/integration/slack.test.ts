@@ -626,17 +626,21 @@ describe('3b. DM welcome (agent-speaks-first)', () => {
       )
     ).rows as Array<{ id: string; content: string; raw: { buttons?: unknown } }>;
 
-  test('the first DM greets once with prompt buttons on the deliver lane; the turn still runs', async () => {
+  const homeOpened = (channel: string, user: string) => ({
+    type: 'event_callback',
+    event_id: `ev-home-${channel}-${user}`,
+    event: { type: 'app_home_opened', tab: 'messages', channel, user, event_ts: newTs() },
+  });
+
+  test('app_home_opened greets the DM on OPEN, with prompt buttons on the deliver lane', async () => {
     usersInfo.mode = 'ok';
     usersInfo.email = null;
-    const chan = 'D0WELC01';
-    const ts = newTs();
-    const res = await postEvent(
-      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0WELC01', text: 'hello', ts }),
-    );
+    const chan = 'D0OPEN01';
+    const res = await postEvent(homeOpened(chan, 'U0OPEN01'));
     expect(res.statusCode).toBe(200);
 
     const conv = await convByThread(chan);
+    expect(conv).toBeDefined();
     const rows = await welcomeRows(conv!.id);
     expect(rows).toHaveLength(1);
     expect(rows[0].content).toBe('Hi! I can help.');
@@ -644,20 +648,67 @@ describe('3b. DM welcome (agent-speaks-first)', () => {
       { id: 'welcome-prompt-0', label: 'Track order' },
       { id: 'welcome-prompt-1', label: 'Human' },
     ]);
-    // The greeting rides the 'deliver' lane…
     expect(await getQueue(QUEUE.CONVERSATION).getJob(`conv-deliver-${rows[0].id}`)).toBeTruthy();
-    // …and the user's own message still enqueued the normal brain turn.
+  });
+
+  test('after an open-greeting, a first message just runs the model — no second greeting', async () => {
+    usersInfo.mode = 'ok';
+    usersInfo.email = null;
+    const chan = 'D0OPEN01'; // already greeted on open, above
+    const ts = newTs();
+    const res = await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0OPEN01', text: 'hi', ts }),
+    );
+    expect(res.statusCode).toBe(200);
+
+    const conv = await convByThread(chan);
+    expect(await welcomeRows(conv!.id)).toHaveLength(1); // not re-greeted
+    // Even though "hi" is a bare greeting, we did NOT greet here, so the model runs.
     const userRow = await rowBySlackTs(conv!.id, ts);
-    expect(userRow).toBeDefined();
     expect(await getQueue(QUEUE.CONVERSATION).getJob(`conv-${userRow!.id}`)).toBeTruthy();
   });
 
-  test('a second DM in the same channel does not re-greet', async () => {
+  test('fallback: a real-question first message greets AND runs the model', async () => {
     usersInfo.mode = 'ok';
     usersInfo.email = null;
-    const chan = 'D0WELC01';
+    const chan = 'D0FALL01';
+    const ts = newTs();
     const res = await postEvent(
-      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0WELC01', text: 'again', ts: newTs() }),
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0FALL01', text: 'where is my order?', ts }),
+    );
+    expect(res.statusCode).toBe(200);
+
+    const conv = await convByThread(chan);
+    expect(await welcomeRows(conv!.id)).toHaveLength(1); // greeted (no open event fired)
+    const userRow = await rowBySlackTs(conv!.id, ts);
+    expect(await getQueue(QUEUE.CONVERSATION).getJob(`conv-${userRow!.id}`)).toBeTruthy();
+  });
+
+  test('fallback: a bare-greeting first message greets but skips the model (no double-hi)', async () => {
+    usersInfo.mode = 'ok';
+    usersInfo.email = null;
+    const chan = 'D0FALL02';
+    const ts = newTs();
+    const res = await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0FALL02', text: 'hi', ts }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(json(res).greetedOnly).toBe(true);
+
+    const conv = await convByThread(chan);
+    expect(await welcomeRows(conv!.id)).toHaveLength(1); // greeted
+    const userRow = await rowBySlackTs(conv!.id, ts);
+    expect(userRow).toBeDefined();
+    // The welcome IS the reply — the model was not enqueued on top of it.
+    expect(await getQueue(QUEUE.CONVERSATION).getJob(`conv-${userRow!.id}`)).toBeFalsy();
+  });
+
+  test('a second message in a greeted DM does not re-greet', async () => {
+    usersInfo.mode = 'ok';
+    usersInfo.email = null;
+    const chan = 'D0FALL02';
+    const res = await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0FALL02', text: 'still here', ts: newTs() }),
     );
     expect(res.statusCode).toBe(200);
 

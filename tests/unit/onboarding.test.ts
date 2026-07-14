@@ -58,7 +58,7 @@ describe('buildSlackManifest', () => {
   const publicUrl = 'https://tunnel.example.test';
   const connectionId = 'c0ffee00-0000-4000-8000-000000000001';
 
-  test('carries the exact 14 bot scopes and 5 bot events', () => {
+  test('carries the exact 14 bot scopes and 6 bot events', () => {
     const m = buildSlackManifest({ agentName: 'Helper', publicUrl, connectionId });
     const scopes = (m.oauth_config as { scopes: { bot: string[] } }).scopes.bot;
     expect(scopes).toEqual([...SLACK_BOT_SCOPES]);
@@ -94,8 +94,9 @@ describe('buildSlackManifest', () => {
       'message.groups',
       'message.im',
       'message.mpim',
+      'app_home_opened',
     ]);
-    expect(events).toHaveLength(5);
+    expect(events).toHaveLength(6);
   });
 
   test('sanitizes a name containing "slack" and collapses the doubled space', () => {

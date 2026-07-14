@@ -51,6 +51,8 @@ const BOT_EVENTS = [
   'message.groups',
   'message.im',
   'message.mpim',
+  // Greet-on-open: fires when a user opens the app's DM (see handleAppHomeOpened).
+  'app_home_opened',
 ] as const;
 
 /**

@@ -203,6 +203,10 @@ export function registerSlackRoutes(app: FastifyInstance) {
       if (event.type === 'app_mention') {
         return { ok: true, skipped: true };
       }
+      // A user opened the app's DM — greet them BEFORE they type.
+      if (event.type === 'app_home_opened') {
+        return handleAppHomeOpened(connection, event);
+      }
       if (event.type !== 'message') {
         return { ok: true, skipped: true };
       }
@@ -243,10 +247,14 @@ export function registerSlackRoutes(app: FastifyInstance) {
           channel: 'slack',
           threadKey: event.channel,
         });
-        // Agent-speaks-first: greet once per DM before the turn runs. Enqueued
-        // ahead of ingestSlackTurn's brain turn so the greeting lands first.
-        await maybeSendSlackWelcome(connection, agent, conversation);
-        return ingestSlackTurn(connection, agent, conversation, event, event.text);
+        // Agent-speaks-first: greet once per DM before the turn runs (unless the
+        // app_home_opened event already greeted on open). If THIS message is the
+        // one that triggered the greeting AND it's a bare "hi", the welcome IS
+        // the reply — skip the model so the user doesn't get greeted twice.
+        const greeted = await maybeSendSlackWelcome(connection, agent, conversation);
+        return ingestSlackTurn(connection, agent, conversation, event, event.text, {
+          runBrain: !(greeted && isBareGreeting(event.text)),
+        });
       }
 
       // ---- channel / group: mention starts a thread, replies follow it ----
@@ -575,13 +583,15 @@ function oauthHtml(
  * action pipeline. DM-only (never noisy in shared channels); no-op when the
  * agent has no welcome set. The greeting rides the 'deliver' lane (a fast
  * postMessage), enqueued before the caller's brain turn, so it lands first.
+ * Returns whether it greeted on THIS call (false = no welcome set, or the DM
+ * was already greeted) so the caller can decide whether the model still runs.
  */
 async function maybeSendSlackWelcome(
   connection: AgentConnection,
   agent: Agent,
   conversation: Conversation,
-): Promise<void> {
-  if (!agent.welcome_message) return;
+): Promise<boolean> {
+  if (!agent.welcome_message) return false;
 
   const prompts = Array.isArray(agent.suggested_prompts) ? agent.suggested_prompts : [];
   const buttons =
@@ -597,7 +607,7 @@ async function maybeSendSlackWelcome(
     dedupeKey: `slack-welcome-${conversation.id}`,
     raw: buttons ? { buttons } : undefined,
   });
-  if (!row) return; // this DM was already greeted
+  if (!row) return false; // this DM was already greeted
 
   await getQueue(QUEUE.CONVERSATION).add(
     row.id,
@@ -616,6 +626,48 @@ async function maybeSendSlackWelcome(
     level: 'info',
     detail: `slack welcome sent: agent=${agent.identifier} conversation=${conversation.id}`,
   });
+  return true;
+}
+
+/**
+ * A user opened the app's DM (App Home, messages tab) — greet on OPEN, before
+ * they type, so the welcome behaves like the widget's empty-conversation bubble
+ * rather than trailing their first message. Shares maybeSendSlackWelcome's
+ * once-per-DM marker, so if the greeting already fired (here or via a first
+ * message) it never doubles. Best-effort: Slack fires app_home_opened reliably
+ * for the Home tab and usually the Messages tab; the first-message greeting is
+ * the fallback for workspaces where the DM-open event doesn't arrive. We greet
+ * only when the event names a real DM channel (`D…`).
+ */
+async function handleAppHomeOpened(
+  connection: AgentConnection,
+  event: SlackMessageEvent & { type: string },
+): Promise<unknown> {
+  if (!event.user || !event.channel || !event.channel.startsWith('D')) {
+    return { ok: true, skipped: true };
+  }
+  const agent = await resolveAgentForInbound(connection);
+  if (!agent || !agent.welcome_message) return { ok: true, skipped: true };
+
+  const creds = credentials(connection);
+  const subscriber = await resolveSlackSubscriber(connection.tenant_id, event.user, creds.botToken);
+  const conversation = await openChannelConversation({
+    tenantId: connection.tenant_id,
+    connectionId: connection.id,
+    agentId: agent.id,
+    subscriberId: subscriber.id,
+    channel: 'slack',
+    threadKey: event.channel,
+  });
+  await maybeSendSlackWelcome(connection, agent, conversation);
+  return { ok: true };
+}
+
+/** A whole-message greeting ("hi", "hello", "good morning") and nothing else. */
+const BARE_GREETING =
+  /^(hi+|hey+|hello+|yo+|hiya|sup|howdy|greetings|good (morning|afternoon|evening|day)|start)[\s!.,]*$/i;
+function isBareGreeting(text: string): boolean {
+  return BARE_GREETING.test(text.trim());
 }
 
 async function ingestSlackTurn(
@@ -624,6 +676,7 @@ async function ingestSlackTurn(
   conversation: Conversation,
   event: SlackMessageEvent,
   content: string,
+  opts: { runBrain?: boolean } = {},
 ): Promise<unknown> {
   const row = await insertConversationMessage({
     conversationId: conversation.id,
@@ -635,6 +688,12 @@ async function ingestSlackTurn(
     raw: { slackTs: event.ts, slackChannel: event.channel, from: event.user },
   });
   if (!row) return { ok: true, duplicate: true };
+
+  // The welcome we just posted answers a bare greeting — keep the user's
+  // message in the transcript, but don't run the model on top of the greeting.
+  if (opts.runBrain === false) {
+    return { ok: true, greetedOnly: true };
+  }
 
   await getQueue(QUEUE.CONVERSATION).add(
     row.id,
