@@ -325,11 +325,13 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       });
 
       // Agent-speaks-first: greet on /start and SKIP the brain turn for this
-      // update. Idempotent on /start spam via the welcome-<conversationId>
-      // dedupe key. Welcome unset → fall through to the normal turn path,
-      // i.e. exactly the pre-welcome behavior.
+      // update. /start is Telegram's canonical "show me your intro" command, so
+      // every press re-greets; the dedupe keys on the update_id (not the
+      // conversation) so only Telegram's delivery RETRIES of the same press are
+      // suppressed. Welcome unset → fall through to the normal turn path, i.e.
+      // exactly the pre-welcome behavior.
       if (isBareStart && agent.welcome_message) {
-        return handleWelcomeStart(connection, agent, conversation);
+        return handleWelcomeStart(connection, agent, conversation, update.update_id);
       }
 
       // A ForceReply answer to a text_input card is that card's value, not a
@@ -495,15 +497,18 @@ async function handleLinkStart(
  * `kind:'deliver'` conversation job with the row's messageId, and the worker's
  * processDeliver → deliverReply sends it (rendering suggested_prompts as an
  * inline keyboard and stamping the telegram message id for send-once safety).
- * The welcome-<conversationId> dedupe key makes /start spam a no-op: a second
- * insert returns null, so there is no duplicate greeting and no duplicate job.
- * Tapping a prompt button returns as a callback_query and flows through the
- * existing action pipeline (handleCallback → brain), unchanged.
+ * The welcome-<updateId> dedupe key scopes idempotency to a single /start
+ * PRESS: Telegram re-delivering the same update returns null (no duplicate
+ * greeting or job), while a fresh /start — a new update_id — greets again, as
+ * Telegram users expect. Tapping a prompt button returns as a callback_query
+ * and flows through the existing action pipeline (handleCallback → brain),
+ * unchanged.
  */
 async function handleWelcomeStart(
   connection: AgentConnection,
   agent: Agent,
   conversation: Conversation,
+  updateId: number,
 ): Promise<unknown> {
   const prompts = Array.isArray(agent.suggested_prompts) ? agent.suggested_prompts : [];
   const buttons =
@@ -516,8 +521,9 @@ async function handleWelcomeStart(
     tenantId: connection.tenant_id,
     role: 'agent',
     content: agent.welcome_message ?? '',
-    // Idempotent on /start spam: one welcome per conversation, ever.
-    dedupeKey: `welcome-${conversation.id}`,
+    // Keyed on the update, not the conversation: a fresh /start greets again;
+    // only Telegram's retry of THIS press is deduped.
+    dedupeKey: `welcome-${updateId}`,
     raw: buttons ? { buttons } : undefined,
   });
   if (!row) return { ok: true, duplicate: true };

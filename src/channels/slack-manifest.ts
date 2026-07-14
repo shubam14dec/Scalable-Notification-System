@@ -16,10 +16,11 @@ export interface SuggestedPrompt {
 }
 
 /**
- * The EXACT 13 bot scopes the platform needs — app_mentions + read/history on
- * every conversation surface + chat:write + users:read/.email (auto-match).
- * One source of truth: the install route joins this with commas for the OAuth
- * `scope` param, and the manifest embeds it verbatim.
+ * The EXACT 14 bot scopes the platform needs — app_mentions + read/history on
+ * every conversation surface + chat:write + users:read/.email (auto-match) +
+ * assistant:write (the agent_view suggested-prompts surface). One source of
+ * truth: the install route joins this with commas for the OAuth `scope` param,
+ * and the manifest embeds it verbatim.
  */
 export const SLACK_BOT_SCOPES = [
   'app_mentions:read',
@@ -37,6 +38,10 @@ export const SLACK_BOT_SCOPES = [
   // Never prune: users.info returns profile.email ONLY with this scope — the
   // slack→email subscriber auto-match silently degrades without it.
   'users:read.email',
+  // Enables the agent_view feature below: without it Slack accepts the
+  // suggested_prompts block but never renders it (the AI-assistant surface
+  // stays off). Pair them or neither works.
+  'assistant:write',
 ] as const;
 
 /** The bot events our events webhook ingests. */

@@ -58,15 +58,17 @@ describe('buildSlackManifest', () => {
   const publicUrl = 'https://tunnel.example.test';
   const connectionId = 'c0ffee00-0000-4000-8000-000000000001';
 
-  test('carries the exact 13 bot scopes and 5 bot events', () => {
+  test('carries the exact 14 bot scopes and 5 bot events', () => {
     const m = buildSlackManifest({ agentName: 'Helper', publicUrl, connectionId });
     const scopes = (m.oauth_config as { scopes: { bot: string[] } }).scopes.bot;
     expect(scopes).toEqual([...SLACK_BOT_SCOPES]);
     // The exact set (order-insensitive): users:read.email rides along because
-    // the email auto-match's users.info call returns no profile email without it.
+    // the email auto-match's users.info call returns no profile email without it;
+    // assistant:write rides along because agent_view's prompts don't render without it.
     expect([...scopes].sort()).toEqual(
       [
         'app_mentions:read',
+        'assistant:write',
         'channels:history',
         'channels:read',
         'chat:write',
@@ -81,7 +83,7 @@ describe('buildSlackManifest', () => {
         'users:read.email',
       ].sort(),
     );
-    expect(scopes).toHaveLength(13);
+    expect(scopes).toHaveLength(14);
 
     const events = (
       m.settings as { event_subscriptions: { bot_events: string[] } }

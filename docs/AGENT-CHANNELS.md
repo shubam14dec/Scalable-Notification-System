@@ -370,11 +370,12 @@ customer workspaces — is still planned; see the backlog note at the end.)
    configRefreshToken?, agentIdentifier}` → `201 {connectionId, installUrl,
    eventsUrl, interactivityUrl}`.)
 3. **Install to workspace.** Press it; Slack's **consent screen** opens
-   requesting the **13 bot scopes** (`app_mentions:read` + read/history on
+   requesting the **14 bot scopes** (`app_mentions:read` + read/history on
    channels, groups, im and mpim + `chat:write` + `users:read` +
-   `users:read.email` — the last one powers slack→email subscriber
-   auto-match; without it users.info returns no email and matching
-   silently degrades). Authorize.
+   `users:read.email` — powers slack→email subscriber auto-match; without
+   it users.info returns no email and matching silently degrades — and
+   `assistant:write`, which enables the agent's suggested-prompts view).
+   Authorize.
    The OAuth callback flips the connection **active** and captures the
    workspace's team + Slack app id.
 4. **Watch it connect.** The panel shows **"Listening…"** and polls until the

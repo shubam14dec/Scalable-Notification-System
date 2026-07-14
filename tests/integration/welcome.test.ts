@@ -342,12 +342,25 @@ describe('telegram bare-/start greeting', () => {
     expect(brainCalls.length).toBe(before); // the brain was never invoked
   });
 
-  test('a second /start is deduped: still exactly one welcome row', async () => {
-    const res = await postUpdate(connId, tgMessageUpdate(6001, '/start', chatId));
+  test('a re-delivery of the same /start update is deduped: still one welcome row', async () => {
+    // Same update_id (6000) as the first press — Telegram retrying delivery.
+    const res = await postUpdate(connId, tgMessageUpdate(6000, '/start', chatId));
     expect(json(res).duplicate).toBe(true);
 
     const conv = await convByChat(chatId);
     expect(await agentRows(conv!.id)).toHaveLength(1);
+  });
+
+  test('a fresh /start (new update_id) greets again — a second welcome row', async () => {
+    const before = brainCalls.length;
+    const res = await postUpdate(connId, tgMessageUpdate(6001, '/start', chatId));
+    expect(json(res).welcomed).toBe(true);
+
+    const conv = await convByChat(chatId);
+    const rows = await agentRows(conv!.id);
+    expect(rows).toHaveLength(2); // re-greeted, not suppressed
+    expect(rows[rows.length - 1].content).toBe(WELCOME_TEXT);
+    expect(brainCalls.length).toBe(before); // still no brain turn for /start
   });
 
   test('/start <token-shaped> takes the link handshake, not the welcome', async () => {
