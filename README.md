@@ -9,7 +9,8 @@ scale.
 
 SDKs: [`@asyncify-hq/node`](packages/sdk-node) ·
 [`@asyncify-hq/react`](packages/react) (drop-in `<NotificationInbox />`,
-plus `<ConnectChannels />` so end users link their own Telegram/Slack) ·
+plus `<ConnectChannels />` so end users link their own Telegram/Slack — tap a
+button or scan a phone QR) ·
 [`@asyncify-hq/agent`](packages/agent) (bridge agents) ·
 [`@asyncify-hq/cli`](packages/cli) (`asyncify` — one-command local tunnel +
 webhook rewire, and agent scaffolding).
@@ -176,6 +177,9 @@ from the in-app `<AgentChat />` widget, **Telegram**, **email**, or
 **Slack** — same brain on every channel, every transcript in the dashboard,
 and the agent
 can fire real notification workflows mid-conversation (`ctx.trigger`).
+An agent can also **speak first** — a per-agent welcome message and up to six
+suggested-prompt chips greet users in the widget, on Telegram's `/start`, and
+as Slack's native suggested prompts.
 Try it: `npm run agent:demo`, then chat from the dashboard's Inbox
 preview.
 
@@ -187,7 +191,8 @@ wired for `onMessage` / `onAction` / `onResolve` plus self-registration,
 (needs Node ≥ 20.6).
 
 Channel setup and the local-tunnel → production migration (PUBLIC_URL,
-Telegram re-register, Postmark inbound, Slack app manifest + per-channel
+Telegram re-register, QR phone-handoff for bot setup, Postmark inbound,
+one-paste Slack quick-setup with auto-rotating webhook URLs + per-channel
 routing, custom MX domain when DNS is available):
 **[docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md)**.
 
@@ -254,8 +259,9 @@ command spins up a tunnel and wires every inbound webhook to it — no restart:
 ```bash
 npx @asyncify-hq/cli dev       # cloudflared tunnel → sets the runtime public
                                # URL, updates .env, re-registers Telegram
-                               # webhooks, prints the Slack/email paste table,
-                               # and re-rewires automatically if the tunnel dies
+                               # webhooks, auto-rotates eligible Slack app URLs,
+                               # prints the paste table for the rest (email +
+                               # legacy Slack), and re-rewires if the tunnel dies
 ```
 
 See [docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md#runbook-rotating-the-tunnel--changing-public_url).

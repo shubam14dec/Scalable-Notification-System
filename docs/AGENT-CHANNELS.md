@@ -222,12 +222,14 @@ zero clicks**, automatically:
    line in your `.env`.
 2. **Re-registers every active Telegram webhook** in the tenant.
 
-Steps 1–2 are the two channels that *can* be pushed programmatically, so
-they're fully automatic. For the two that can't, the CLI prints a **paste
-table** — Slack (Events + Interactivity URLs) and email (inbound URL) — with
-a **●** marking only the rows that **changed** since the last rotation. Paste
-**just the ●-marked rows** into the provider config (the manual steps below
-say exactly where each goes); unmarked rows are already correct.
+Steps 1–2 are the channels that *can* be pushed programmatically, so they're
+automatic — as is Slack for **quick-setup connections that stored a refresh
+token** (their URLs auto-update; see [URL rotation](#url-rotation)). For what's
+left — email always, and Slack for legacy/manual connections — the CLI prints a
+**paste table** with a **●** marking only the rows that **changed** since the
+last rotation. Paste **just the ●-marked rows** into the provider config (the
+manual steps below say exactly where each goes); unmarked rows are already
+correct.
 
 It then **watches the tunnel**, health-checking through it every 20s; when
 the tunnel dies or sleeps it **respawns and re-runs the whole rewire
@@ -255,13 +257,16 @@ still works. Fix each channel from the **Connections** page:
    *current* `PUBLIC_URL`. Copy it and paste it into Postmark → Servers →
    Default Inbound Stream → Settings → Webhook, replacing the old one. The
    connection, secret and address are unchanged.
-4. **Slack — re-paste the two URLs per connection.** The Events and
-   Interactivity URLs are derived from `PUBLIC_URL`, so a change moves them.
-   Copy the current pair from the Slack connection row and paste them back
-   into the Slack app config → *Event Subscriptions* (wait for **Verified**)
-   and *Interactivity & Shortcuts*. The bot token and signing secret are
-   unchanged. (This only applies to a real `PUBLIC_URL` change — an upsert or
-   re-point keeps the URLs stable.)
+4. **Slack — re-paste the two URLs per connection** *unless it auto-updates*.
+   A **quick-setup connection with a stored refresh token** rewrites its own
+   Slack URLs on `reconnect` — nothing to paste (see
+   [URL rotation](#url-rotation)). For legacy/manual connections the Events and
+   Interactivity URLs derive from `PUBLIC_URL`, so a change moves them: copy the
+   current pair from the Slack connection row and paste them back into the Slack
+   app config → *Event Subscriptions* (wait for **Verified**) and *Interactivity
+   & Shortcuts*. The bot token and signing secret are unchanged. (This only
+   applies to a real `PUBLIC_URL` change — an upsert or re-point keeps the URLs
+   stable.)
 
 That's the whole migration. No code, no schema, no reconnects that lose
 history.
@@ -308,79 +313,156 @@ notification sends. For production:
 - The suppression list applies to agent replies too: a bounced address
   gets a transcript breadcrumb instead of an email. That's intentional.
 
+## Telegram
+
+Create a bot with **@BotFather** (`/newbot`) and connect it on **Dashboard →
+Connections → Connect → Telegram**. Two conveniences in the connect form:
+
+- **Paste the whole message.** Drop BotFather's entire *"Done! Congratulations…"*
+  reply into the box — we extract the `<digits>:<letters>` token and show
+  **token detected ✔**. Two different tokens in one paste are flagged
+  (*"multiple tokens found — paste just one"*); a bare token works too. On
+  **Connect** we validate the token, register the webhook, and route the bot to
+  the chosen agent. (API: `POST /v1/connections/telegram {botToken,
+  agentIdentifier}`.)
+- **Set up from your phone.** No bot yet, or BotFather only open on your phone?
+  Press **Set up from your phone**: the dashboard mints a **single-use,
+  5-minute** handoff and shows it as a **QR**. Scan it and a minimal paste page
+  — served through your tunnel at `{PUBLIC_URL}/handoff/<token>` — asks for
+  BotFather's message on the phone. Paste there; the token flows back and
+  **autofills the desktop form exactly once**. The page carries no tenant data,
+  the token is stored hashed (the plaintext lives only in the QR), and the
+  paste endpoint is rate-limited per IP. A live QR counts down to expiry; an
+  expired one offers a **New QR**.
+
 ## Slack
 
 Slack is the fourth agent channel. Unlike Telegram (one bot) or email (one
 address), a Slack connection owns a **whole workspace** and can fan out to
 **many agents** through per-channel routing rules — the switchboard payoff.
-Install is a **token paste**, not OAuth: you create a Slack app from our
-manifest, install it to your workspace, and paste two secrets into the
-dashboard. (Full OAuth "Add to Slack" distribution is planned — see the
-backlog note at the end.)
 
-### The app manifest
+Two ways to connect, both on **Dashboard → Connections → Connect → Slack**:
 
-Create the Slack app from this manifest **verbatim**. The two `request_url`
-placeholders are intentional — they get replaced **after** you connect,
-because the real URLs contain the connection id that doesn't exist yet
-(chicken-and-egg). Slack will warn at creation that the URLs are unverified;
-that's expected — ignore it.
+- **Quick Setup** (recommended) — paste an *App Configuration Token* and we
+  create the Slack app, wire its scopes / event / interactivity URLs, and hand
+  you an OAuth **Install** button. No manifest copy-paste, no URL paste-back.
+- **Manual** (the trust path) — create the app yourself from a prefilled
+  manifest, install it, and paste the bot token + signing secret back. Use
+  this when you'd rather not hand us a config token.
 
-```yaml
-display_information:
-  name: Asyncify Agent
-  description: AI agent connected via Asyncify
-features:
-  app_home:
-    messages_tab_enabled: true
-    messages_tab_read_only_enabled: false
-  bot_user:
-    display_name: asyncify-agent
-    always_online: true
-oauth_config:
-  scopes:
-    bot:
-      - app_mentions:read
-      - channels:history
-      - chat:write
-      - im:history
-      - users:read
-      - users:read.email
-settings:
-  event_subscriptions:
-    request_url: https://example.invalid/replace-after-connect
-    bot_events:
-      - app_mention
-      - message.channels
-      - message.im
-  interactivity:
-    is_enabled: true
-    request_url: https://example.invalid/replace-after-connect
-```
+(Full OAuth "Add to Slack" *distribution* — installing one app across many
+customer workspaces — is still planned; see the backlog note at the end.)
 
-### Setup (runbook)
+### Quick Setup (recommended)
 
-1. **api.slack.com/apps → Create New App → From an app manifest.** Pick the
-   workspace, paste the YAML above, **Create** (ignore the URL warnings).
-2. **Install to Workspace → authorize.** Copy the **Bot User OAuth Token**
-   (`xoxb-…`) from *OAuth & Permissions*, and the **Signing Secret** from
+1. **Generate an App Configuration Token.** api.slack.com/apps → the **App
+   Configuration Tokens** section at the bottom → generate. It **lasts 12
+   hours**; generate a fresh one if it's expired. *Optionally* also copy the
+   **refresh token** next to it — storing it lets us keep the app's webhook
+   URLs current automatically when your tunnel rotates (see
+   [URL rotation](#url-rotation)).
+2. **Connect → Slack → Quick setup.** Paste the config token (and the refresh
+   token if you have one), choose the **default agent** ("answered by"), and
+   **Create Slack app**. We POST a manifest to `apps.manifest.create`, so the
+   app is born with the right scopes, bot events, and *our* webhook URLs
+   already set — the connection is created **pending**.
+   (API: `POST /v1/connections/slack/quick-setup {configToken,
+   configRefreshToken?, agentIdentifier}` → `201 {connectionId, installUrl,
+   eventsUrl, interactivityUrl}`.)
+3. **Install to workspace.** Press it; Slack's **consent screen** opens
+   requesting the **13 bot scopes** (`app_mentions:read` + read/history on
+   channels, groups, im and mpim + `chat:write` + `users:read` +
+   `users:read.email` — the last one powers slack→email subscriber
+   auto-match; without it users.info returns no email and matching
+   silently degrades). Authorize.
+   The OAuth callback flips the connection **active** and captures the
+   workspace's team + Slack app id.
+4. **Watch it connect.** The panel shows **"Listening…"** and polls until the
+   connection goes active, then flips to **"✔ Connected"** and displays the
+   Events / Interactivity URLs *for reference* — you don't paste them, they
+   were baked into the app at creation.
+   You can't strand the flow: if the modal (or the whole browser) closes
+   before you install, the connections table keeps a persistent **Install to
+   workspace** action on the pending Slack row ("app created — awaiting
+   workspace install") — pick it up from there any time.
+5. **Test.** DM the bot. For channels: `/invite @<bot>`, then @mention it.
+6. **Routing (optional).** Add a rule in the dashboard **Routes** modal to
+   send a specific Slack channel to a specific agent (see below).
+
+If the config token is stale, quick-setup returns **400** — *"slack config
+token invalid or expired — tokens last 12 hours; generate a fresh one"* — the
+fix is a fresh token. A manifest Slack rejects comes back **400** with
+`code: invalid_manifest` and the offending pointer.
+
+### Manual (paste a bot token)
+
+The trust path — you create and install the app yourself; we never see a
+config token.
+
+1. **Connect → Slack → Manual.** Choose the **default agent**. The form offers
+   **Open prefilled manifest** (opens api.slack.com/apps with the manifest
+   pre-loaded) and **Show manifest** (view the exact YAML inline). The
+   manifest's two `request_url`s carry a `pending` placeholder — the real URLs
+   come back after you connect.
+   (API: `GET /v1/connections/slack/manifest-preview?agentIdentifier=…` →
+   `{yaml, prefillUrl}`.)
+2. **Create the app** from that manifest (ignore Slack's unverified-URL
+   warning), **Install to Workspace**, then copy the **Bot User OAuth Token**
+   (`xoxb-…`) from *OAuth & Permissions* and the **Signing Secret** from
    *Basic Information*.
-3. **Dashboard → Connections → Connect → Slack.** Paste both secrets, choose
-   the **default agent** ("answered by"), and **Connect**. The success panel
-   returns two URLs — copy both.
-   (API equivalent: `POST /v1/connections/slack {botToken, signingSecret,
+3. **Paste both secrets** back in the Manual form and **Connect Slack**. The
+   success panel returns the **Events URL** and **Interactivity URL** — copy
+   both.
+   (API: `POST /v1/connections/slack {botToken, signingSecret,
    agentIdentifier}` → `201 {channel, teamName, eventsUrl, interactivityUrl}`.)
 4. **Slack app config → Event Subscriptions → Enable.** Paste the **Events
    URL**, wait for **Verified** (Slack fires a `url_verification` challenge —
    a green *Verified* also proves your signing secret was pasted correctly),
-   ensure the three bot events (`app_mention`, `message.channels`,
-   `message.im`) are subscribed, and **Save**.
+   confirm the bot events are subscribed, and **Save**.
 5. **Interactivity & Shortcuts → Enable.** Paste the **Interactivity URL** and
    **Save**.
-6. **Test.** DM the bot. For channels: `/invite @asyncify-agent`, then
-   @mention it.
+6. **Test.** DM the bot. For channels: `/invite @<bot>`, then @mention it.
 7. **Routing (optional).** Add a rule in the dashboard **Routes** modal to
    send a specific Slack channel to a specific agent (see below).
+
+### URL rotation
+
+The webhook URLs (Events + Interactivity) derive from `PUBLIC_URL`, so a tunnel
+rotation moves them. What you paste depends on whether the connection can
+update *itself*:
+
+- **Quick-setup connection with a stored refresh token** (the row shows
+  **URL auto-update: on**): `asyncify dev` — or `POST
+  /v1/connections/:id/reconnect` — **rotates the config token and pushes a
+  fresh manifest**, so the Slack app's URLs update themselves. **Zero pastes**;
+  the CLI paste table omits these Slack rows. This covers **pending**
+  connections too: an app created but not yet installed keeps its event,
+  interactivity **and OAuth redirect** URLs current across rotations, so the
+  install works whenever you get to it.
+- **Legacy / manual connections, or a broken refresh chain:** no auto-update,
+  so the CLI paste table lists the Slack row and you re-paste both URLs into
+  the Slack app config (Event Subscriptions + Interactivity).
+
+**Re-arming a broken chain.** A dead refresh token flips the row to
+**`broken`** ("Config refresh token expired"). To recover: generate a fresh
+token pair on api.slack.com, then on the Connections page open the Slack row's
+**View URLs** section, paste the new **refresh** token, and press **Re-arm**.
+(API: `PUT /v1/connections/:id/slack/config-token {configRefreshToken}`.) It
+validates the token by spending it once via rotate, persists the successor,
+**heals the app's URLs to the current public URL immediately**, and flips
+auto-update back **on**. If the rotate succeeds but the manifest push fails
+(502), the chain is still restored — do **not** re-paste the same token (it's
+spent); the URLs heal on the next rotation. The same field appears on healthy
+rows as a quiet *"re-arm auto-update"* action — pasting a fresh token any time
+is legitimate.
+
+**The single-use-chain gotcha:** config refresh tokens are spent on first use
+(each rotation stores a successor), so always generate a **fresh pair** per
+setup and **re-arm** if the chain ever dies — a reused or lost token can't be
+revived.
+
+An upsert or re-point never changes the URLs — only a real `PUBLIC_URL` change
+does.
 
 ### Which messages the bot answers
 
@@ -454,9 +536,11 @@ and email. Per-channel routes are unaffected by a re-point.
   is **Telegram-only** for now. On Slack, users are matched to subscribers by
   **email** automatically (this is why the manifest requests
   `users:read.email`; grant it so the match works).
-- **OAuth distribution (13b) is planned.** The full "Add to Slack" one-click
-  install will replace the manual token paste; the token-paste path above is
-  what ships today.
+- **OAuth *distribution* (13b) is planned.** Quick Setup already uses OAuth to
+  install an app **we create for you** into **your own** workspace. What's
+  still planned is the full "Add to Slack" flow that installs **one** app
+  across **many** customer workspaces from a public listing; today the two
+  paths are Quick Setup and the manual token paste.
 
 ### Smoke test
 
@@ -467,6 +551,50 @@ and email. Per-channel routes are unaffected by a re-point.
 5. Agent **button** click → message updates to **"✓ …"**, agent continues.
 6. **Edit** your message → transcript reflects the edit, no re-answer.
 7. **Delete** your message → the row is **tombstoned**.
+
+## Welcome messages & suggested prompts
+
+An agent can **speak first**. Give it a **welcome message** and a set of
+**suggested prompts** (starter chips) — per agent, on the dashboard **Agents**
+form or via the API:
+
+```bash
+curl -X PATCH -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/support-bot \
+  -d '{
+    "welcomeMessage": "Hi! I can help track an order or start a return. What do you need?",
+    "suggestedPrompts": [
+      { "title": "Track my order",  "message": "Where is my order?" },
+      { "title": "Start a return",  "message": "I want to return an item." }
+    ]
+  }'
+```
+
+Each prompt is a **`title`** (the chip label) and a **`message`** (the turn the
+chip sends). **Bounds:** `welcomeMessage` ≤ **2000** chars; **≤6** prompts, each
+`title` ≤ **40** and `message` ≤ **200**. Send `null` to clear a field; omit it
+to leave it untouched.
+
+Where each surface shows them:
+
+- **Widget** — while a conversation is **empty**, the widget renders the welcome
+  as a greeting bubble and the prompts as tappable chips (tapping one sends its
+  `message` as the user's first turn). **Nothing is stored until the user
+  acts** — the greeting and chips come from the agent config the
+  `GET /v1/agents/:identifier/conversation` response carries even when the
+  conversation is still `null`.
+- **Telegram** — a bare **`/start`** gets the welcome message (delivered as a
+  normal agent reply) with the prompts as an **inline keyboard**, instead of a
+  model turn. It's **idempotent**: one welcome per conversation, so `/start`
+  spam is a no-op, and tapping a chip flows through the normal action pipeline.
+  (Welcome unset → `/start` behaves exactly as before.)
+- **Slack** — the prompts render as Slack's **native suggested prompts** (the
+  manifest's `agent_view`). Because they live in the manifest they apply to apps
+  built via **Quick Setup** or the **prefilled manifest** (and refresh on
+  `reconnect`); Slack takes the **first 4**. The welcome-message *text* is not
+  posted on Slack.
+- **Email** — no first-contact surface (there is no "open" / `/start` event to
+  hang a greeting on).
 
 ## Cards and plan cards
 
@@ -581,6 +709,19 @@ It renders one row per channel: **Telegram** and **Slack** show a
 control); **email** shows as already linked and read-only (see the email
 note below). Clicking **Connect** mints a link token and sends the user into
 the normal handshake — the Telegram deep link or the Slack DM redirect.
+
+**Desktop → phone QR (Telegram).** The Telegram row also offers an **"or scan
+with your phone"** toggle that renders the minted deep link as a **QR code**. A
+desktop user — for whom the `t.me` **Connect** button would try to hand off to a
+Telegram app that isn't installed — scans it with their phone instead, opening
+the bot there to press **Start**. Slack rows have no QR: their `app_redirect`
+link already opens the native app.
+
+**Manual fallback (`/start` command).** Under the QR — and after a **Connect**
+click — the widget shows a copyable **`/start <token>`** command with the bot's
+@handle: some ISPs DNS-block `t.me`, but the Telegram app itself is unaffected,
+so messaging the bot directly and sending that command completes the link
+in-app. One click selects the whole command.
 
 **Where `subscriberToken` comes from.** The token **is** the user's identity,
 so it must be minted server-side and handed to the browser — **never** put an

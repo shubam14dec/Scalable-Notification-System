@@ -54,6 +54,19 @@ docs/ARCHITECTURE-COMPARISON.md):**
       counts on list endpoints; mandatory column projection on hot
       queries; cache-set TTL jitter (Tier B — adopt incrementally)
 
+**Phase 17 polish leftovers (small, non-blocking):**
+- [ ] GET /v1/connections: expose quickSetup flag on slack rows so the
+      dashboard hides re-arm on manual connections (today it 409s
+      politely)
+- [ ] Fold setup_handoffs purge into the inactivity sweep (today:
+      opportunistic delete on mint)
+- [ ] Welcome-message empty-string == clear sentinel (API can't store
+      an explicitly empty greeting; fine unless someone asks)
+- [ ] tests tsconfig: lib ES2023 needed (agents.test.ts findLast) if
+      tests ever enter the typecheck
+- [ ] Slack CMD+A credentials paste parser for the manual tab (novu
+      parity; Quick Setup made it near-moot)
+
 **Agents / conversations — future phases** (continuation of the shipped
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
@@ -90,10 +103,110 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — between phases; agents track complete 8/8, next work comes
-from the backlog above)
+(nothing — between phases; next work comes from the backlog)
 
 ## Recently finished
+
+### Onboarding — Phase 17: every first touch becomes one tap — COMPLETE
+(plan approved 2026-07-13 ("go ahead, auto mode"); full plan in
+`~/.claude/plans/phase17-onboarding.md`. Slack quick setup (config-token
+→ apps.manifest.create, two-phase b/c URLs embed connectionId; OAuth
+install leg mandatory — bot token only exists post-install) + rotation
+auto-update via sealed refresh-token chain (persist-before-use!) that
+novu lacks; welcome_message + suggested_prompts on agents (widget =
+client-side render, zero rows; telegram bare-/start = dedupe
+welcome-<convId>; slack = manifest suggested_prompts only); telegram
+admin onboarding (BotFather parser + 5-min single-use phone-handoff
+paste page served via tunnel); end-user QR in ConnectChannels (vendored
+qrcodegen, react stays zero-dep). 12 scopes not novu's 17. ALL COMMITS
+LOCAL. All Opus.)
+
+- [x] Schema block (manager): agents welcome cols, setup_handoffs,
+      pending status accommodation; migrate idempotent on live db
+      (applied 2026-07-13, live-verified via psql \d)
+- [x] A. Slack backend: quick-setup + install/callback + reconnect
+      manifest-update branch + slack-manifest builder
+      (Opus, audited + 1 revision: invalid_auth now gets the friendly
+      12-hours message — live Slack returns invalid_auth not
+      invalid_token, found by the slice's own curl; persist-refresh-
+      BEFORE-manifest-update ordering verified by manager read;
+      pending-status sweep clean: routes/delivery gate on active,
+      GET /v1/connections lists pending for the poller)
+- [x] B. Telegram+agents backend: bare-/start welcome, handoff
+      endpoints+pages, botfather parser, agent config surface
+      (Opus, audited; welcome enqueue mirrors the operator-push
+      deliver job byte-for-byte; prompts ride existing buttons →
+      action pipeline unchanged; handoff one-shot read via
+      data-modifying CTE; manager moved registerHandoffRoutes from
+      server.ts into buildApp so inject() tests see it; handoff purge
+      is mint-time opportunistic — folding into the sweep = polish)
+- [x] C. packages/react: QrCode, ConnectChannels QR, AgentChat welcome
+      bubble + prompt chips, changeset
+      (Opus, audited; build+dts green, qrcodegen zero-import w/ Nayuki
+      MIT header, self-caught format-bits bug (M=00 not 1), RS-syndrome
+      self-decoder round-trip on 3 inputs; QR intentionally light-
+      palette both themes for scannability; INDEPENDENT decode proof =
+      the user's actual phone in E2E)
+- [x] D. Dashboard: slack Quick/Manual tabs + Listening poller,
+      telegram handoff QR + autofill, agents welcome editor
+      (Opus, audited + 1 joint revision with A: browsers return
+      opaqueredirect for authed fetches so the install 302 was
+      unreadable → install route content-negotiates (Accept json →
+      200 {authorizeUrl}), dashboard opens it directly, manual-tab
+      fallback deleted; live-verified with the real tunnel URL in
+      redirect_uri. Standing polish gap: no refresh-token-only
+      repair endpoint when manifestAutoUpdate='broken')
+- [x] E. CLI: slack auto-update attempt in rewire + fallbacks, changeset
+      (Opus, audited; 48 cli tests green incl. 6 new runtime-attempt
+      cases; suppressed rows still feed the prevUrls snapshot so a
+      later manual fallback ●-marks correctly; runRewire effect
+      branches contract-read, not mocked — noted in-file)
+- [x] F. Tests: slack-quick-setup / handoff / welcome integration +
+      parser/manifest/state unit
+      (Opus, audited; suite 368→417 green 2x, 43 new re-verified by
+      manager; adversarial reads: rotate-before-appId-guard is
+      doctrine-consistent (never strand a spent refresh token);
+      empty-string welcome == clear (sentinel; acceptable semantics);
+      pre-existing agents.test findLast needs lib ES2023 if tests
+      ever enter tsc — polish note)
+- [x] G. Docs + user E2E + review + single LOCAL commit + memory
+      (docs written from shipped code + updated again post-E2E for the
+      re-arm/fallback features; all 7 E2E tests user-verified
+      2026-07-14)
+
+**Phase 17 review — COMPLETE (user-verified 2026-07-14, all 7 tests):**
+THE E2E'S RICHEST HAUL YET — six live defects found and fixed
+same-session, each now regression-tested: (1) OAuth callback 500 on the
+one-connection-per-workspace constraint → mapped 409 HTML w/ recovery
+instructions; (2) reboot stranded the install (button lived only in
+create-flow state) → persistent [Install to workspace] on pending rows;
+(3) browsers return opaqueredirect for authed fetches → install route
+content-negotiates Accept:json → {authorizeUrl}; (4) rotation before
+install stranded the app's registered URLs → CLI attempts pending slack
+too; (5) readiness-timeout left a zombie cloudflared that could go
+healthy-but-unrewired → dud child killed on timeout → immediate
+re-rotation through the storm breaker; (6) reused refresh token killed
+the chain (single-use! access twin still worked, so creation succeeded
+and rotation died later) → re-arm endpoint + dashboard field (validate
+by rotating, heal URLs, flip flag) replacing dead-end re-creation.
+Plus the docs agent's adversarial read caught a MANAGER SPEC BUG before
+E2E: 12-scope minimalism had pruned users:read.email, which slack→email
+auto-match needs — silent-degradation shape of the Phase 15 saga.
+And the user's own ISP proved t.me is DNS-blocked in his market → the
+widget now ships a copyable /start fallback under QR + connect.
+Headline moments, all user-driven live: clean-slate Quick Setup on a
+virgin workspace = one paste + three clicks + authorize → agent
+replying in Slack; kill-test rotation printing '✔ slack app URLs
+auto-updated (asyncify-dev)' with only Postmark left in the paste
+table; /start welcome + prompt keyboard instant on telegram; widget
+welcome bubble + chips (zero rows until the user acts); phone-handoff
+paste page autofilling the desktop; phone camera decoding our
+hand-rolled QR (the independent decoder proof). Suite 368→424 (49 new
+in F + 7 in E); cli tests 49. Changesets riding: react minor, cli
+minor. Polish backlog fed: expose quickSetup flag to hide re-arm on
+manual rows; fold handoff purge into the sweep; empty-string welcome ==
+clear sentinel; agents.test findLast needs lib ES2023 if tests enter
+tsc. LOCAL COMMIT ONLY per no-push rule.
 
 ### Conversations / Agents — Phase 16: @asyncify-hq/cli (TRACK FINALE) — COMPLETE + RELEASED
 (plan approved 2026-07-12; full plan in

@@ -120,9 +120,14 @@ export async function runDev(args: DevArgs): Promise<void> {
     // Detach the exit listener so this intentional kill doesn't re-trigger.
     child.removeAllListeners('exit');
     if (!child.killed) child.kill();
+    // Set once spawnTunnel succeeds, so the catch below can tell a post-spawn
+    // failure (fresh child alive but unusable) from a spawn failure (no new
+    // child; `child` still points at the old, already-killed process).
+    let spawned: ChildProcess | null = null;
     try {
       tunnel = await spawnTunnel(args.port);
       child = tunnel.child;
+      spawned = child;
       currentUrl = tunnel.url;
       wireChildExit();
       console.log(`\n  ↻ tunnel rotated: ${currentUrl}\n`);
@@ -140,6 +145,28 @@ export async function runDev(args: DevArgs): Promise<void> {
       });
     } catch (err) {
       console.error(`  ✖ tunnel rotation failed: ${(err as Error).message}`);
+      if (spawned !== null) {
+        // The fresh cloudflared spawned but never became usable (readiness
+        // timeout, or the rewire failed). Left alone it is a zombie: if it
+        // later turns healthy the watchdog sees health_ok forever while the
+        // platform was never rewired to it — channels dark indefinitely.
+        // Discard it so the wired exit listener feeds child_exit into the
+        // watchdog, which immediately rotates again (still subject to the
+        // 5-rotations-in-120s breaker).
+        console.error('  ✖ tunnel never became usable — discarding it and rotating again');
+        if (spawned.exitCode === null && spawned.signalCode === null) {
+          // Still running: kill it. kill() on a process that races us and
+          // dies first returns false without throwing, and the exit event
+          // (listener still attached) drives the watchdog either way.
+          spawned.kill();
+        } else {
+          // Already dead: its exit event fired while this rotation was in
+          // flight and was swallowed by the watchdog's busy guard. Re-notify
+          // once the current rotation has fully unwound (setImmediate runs
+          // after the busy flag is cleared in the microtask queue).
+          setImmediate(() => watchdog.notifyChildExit());
+        }
+      }
     }
   }
 

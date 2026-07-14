@@ -24,6 +24,7 @@ import { registerSlackRoutes } from './routes/slack';
 import { registerIdentityRoutes } from './routes/identities';
 import { registerMeRoutes } from './routes/me';
 import { registerConnectionRoutes } from './routes/connections';
+import { registerHandoffRoutes } from './routes/handoff';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -73,6 +74,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerConversationMessageRoutes(app);
   registerTelegramRoutes(app);
   registerEmailChannelRoutes(app);
+  registerHandoffRoutes(app);
   registerSlackRoutes(app);
   registerIdentityRoutes(app);
   registerMeRoutes(app);

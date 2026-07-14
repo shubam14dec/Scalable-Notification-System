@@ -30,9 +30,17 @@ interface Agent {
   llmBaseUrl: string | null;
   maxTokens: number | null;
   autoResolveMinutes: number | null;
+  welcomeMessage: string | null;
+  suggestedPrompts: SuggestedPrompt[] | null;
   hasLlmKey: boolean;
   status: 'active' | 'disabled';
   createdAt: string;
+}
+
+/** An agent-speaks-first starter chip: the label plus the turn it sends. */
+interface SuggestedPrompt {
+  title: string;
+  message: string;
 }
 
 interface AgentBody {
@@ -45,6 +53,8 @@ interface AgentBody {
   systemPrompt?: string;
   maxTokens?: number;
   autoResolveMinutes?: number | null;
+  welcomeMessage?: string | null;
+  suggestedPrompts?: SuggestedPrompt[] | null;
   llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
@@ -157,6 +167,11 @@ function AgentForm({
   const [runtime, setRuntime] = useState<'bridge' | 'managed'>(initial?.runtime ?? 'bridge');
   const editing = Boolean(initial?.identifier);
 
+  // Agent-speaks-first config: controlled so the char counters and add/remove
+  // rows stay live. Empty here means "clear" (sent as null on save).
+  const [welcome, setWelcome] = useState(initial?.welcomeMessage ?? '');
+  const [prompts, setPrompts] = useState<SuggestedPrompt[]>(initial?.suggestedPrompts ?? []);
+
   return (
     <form
       className="space-y-4"
@@ -196,6 +211,13 @@ function AgentForm({
         } else if (editing && initial?.autoResolveMinutes) {
           body.autoResolveMinutes = null; // both cleared = backstop off
         }
+        // Welcome + prompts always travel (null clears) so an emptied field saves.
+        body.welcomeMessage = welcome.trim() ? welcome.trim() : null;
+        const cleanPrompts = prompts
+          .map((p) => ({ title: p.title.trim(), message: p.message.trim() }))
+          .filter((p) => p.title && p.message)
+          .slice(0, 6);
+        body.suggestedPrompts = cleanPrompts.length ? cleanPrompts : null;
         onSubmit(body);
       }}
     >
@@ -322,6 +344,89 @@ function AgentForm({
       <Field label="Description">
         <Input name="description" placeholder="What this agent handles (optional)" defaultValue={initial?.description ?? ''} />
       </Field>
+
+      {/* Agent-speaks-first — used by the in-app chat widget. */}
+      <div>
+        <span className="mb-1.5 block text-[12px] font-medium text-t2">Welcome message</span>
+        <textarea
+          value={welcome}
+          onChange={(e) => setWelcome(e.target.value.slice(0, 2000))}
+          maxLength={2000}
+          rows={3}
+          placeholder="Hi! I'm the Acme assistant — ask me anything about your account."
+          className="w-full rounded-md border border-bd bg-transparent px-2.5 py-2 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
+        />
+        <div className="mt-1 flex items-center justify-between">
+          <span className="text-[11px] text-t3">
+            The agent's opening line when a chat starts — blank sends nothing.
+          </span>
+          <Mono className="text-t3">{welcome.length}/2000</Mono>
+        </div>
+      </div>
+
+      <div>
+        <span className="mb-1.5 block text-[12px] font-medium text-t2">Suggested prompts</span>
+        <p className="mb-2 text-[11px] text-t3">
+          Up to 6 starter chips shown under the welcome — the title is the chip, the message is
+          what it sends. Empty saves none.
+        </p>
+        {prompts.length > 0 && (
+          <div className="space-y-2">
+            {prompts.map((p, i) => (
+              <div key={i} className="flex items-start gap-2">
+                <div className="flex-1">
+                  <Input
+                    value={p.title}
+                    maxLength={40}
+                    placeholder="Reset password"
+                    aria-label={`Prompt ${i + 1} title`}
+                    onChange={(e) => {
+                      const title = e.target.value.slice(0, 40);
+                      setPrompts((prev) => prev.map((q, j) => (j === i ? { ...q, title } : q)));
+                    }}
+                  />
+                  <div className="mt-1 text-right">
+                    <Mono className="text-t3">{p.title.length}/40</Mono>
+                  </div>
+                </div>
+                <div className="flex-[2]">
+                  <Input
+                    value={p.message}
+                    maxLength={200}
+                    placeholder="How do I reset my password?"
+                    aria-label={`Prompt ${i + 1} message`}
+                    onChange={(e) => {
+                      const message = e.target.value.slice(0, 200);
+                      setPrompts((prev) => prev.map((q, j) => (j === i ? { ...q, message } : q)));
+                    }}
+                  />
+                  <div className="mt-1 text-right">
+                    <Mono className="text-t3">{p.message.length}/200</Mono>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Remove prompt ${i + 1}`}
+                  onClick={() => setPrompts((prev) => prev.filter((_, j) => j !== i))}
+                  className="h-8 shrink-0 px-1.5 text-[12px] text-t3 transition-colors hover:text-t1"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {prompts.length < 6 && (
+          <button
+            type="button"
+            onClick={() => setPrompts((prev) => [...prev, { title: '', message: '' }])}
+            className="mt-2 text-[12px] text-t3 transition-colors hover:text-t1"
+          >
+            + Add prompt
+          </button>
+        )}
+      </div>
+
       {error && <p className="text-[12px] text-err">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button type="button" onClick={onCancel}>
@@ -543,6 +648,8 @@ http.createServer(createHandler(support, {
                 systemPrompt: body.systemPrompt,
                 maxTokens: body.maxTokens,
                 autoResolveMinutes: body.autoResolveMinutes,
+                welcomeMessage: body.welcomeMessage,
+                suggestedPrompts: body.suggestedPrompts,
                 llm: body.llm,
               })
             }

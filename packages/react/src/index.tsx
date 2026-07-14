@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { encodeText } from './qrcodegen';
 
 /**
  * @asyncify-hq/react — drop-in notification inbox for Asyncify.
@@ -137,6 +138,47 @@ function timeAgo(iso: string): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
+export interface QrCodeProps {
+  value: string;
+  /** Rendered side length in pixels (square). Default 168. */
+  size?: number;
+}
+
+/** Render `value` as a scannable QR Code SVG (ECC level M, 4-module quiet zone, currentColor). */
+export function QrCode({ value, size = 168 }: QrCodeProps) {
+  const path = useMemo(() => {
+    let matrix;
+    try {
+      matrix = encodeText(value);
+    } catch {
+      return null;
+    }
+    const quiet = 4;
+    const dim = matrix.size + quiet * 2;
+    let d = '';
+    for (let y = 0; y < matrix.size; y++) {
+      for (let x = 0; x < matrix.size; x++) {
+        if (matrix.getModule(x, y)) d += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+      }
+    }
+    return { d, dim };
+  }, [value]);
+  if (!path) return null;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${path.dim} ${path.dim}`}
+      shapeRendering="crispEdges"
+      role="img"
+      aria-label="QR code"
+      style={{ display: 'block' }}
+    >
+      <path d={path.d} fill="currentColor" />
+    </svg>
+  );
+}
+
 export interface NotificationInboxProps extends UseNotificationsOptions {
   theme?: 'dark' | 'light';
   title?: string;
@@ -197,6 +239,24 @@ export interface UseAgentChatOptions {
   wsUrl?: string;
 }
 
+/** One suggested opener shown as a chip under the welcome bubble. */
+export interface SuggestedPrompt {
+  /** Short label on the chip. */
+  title: string;
+  /** The message actually sent when the chip is tapped. */
+  message: string;
+}
+
+/**
+ * Optional agent presentation carried by the conversation fetch. Any field may
+ * be absent or null — when so, the corresponding onboarding affordance is off.
+ */
+export interface AgentInfo {
+  name?: string | null;
+  welcomeMessage?: string | null;
+  suggestedPrompts?: SuggestedPrompt[] | null;
+}
+
 export function useAgentChat({
   token,
   subscriberId,
@@ -208,6 +268,7 @@ export function useAgentChat({
   const [status, setStatus] = useState<'active' | 'resolved'>('active');
   const [connected, setConnected] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [agent, setAgent] = useState<AgentInfo | null>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const headers = useCallback(
@@ -234,11 +295,19 @@ export function useAgentChat({
       { headers: headers() },
     )
       .then((res) => res.json())
-      .then((data: { conversation: { status: 'active' | 'resolved' } | null; messages: ChatMessage[] }) => {
-        if (!alive) return;
-        setMessages(data.messages ?? []);
-        if (data.conversation) setStatus(data.conversation.status);
-      })
+      .then(
+        (data: {
+          conversation: { status: 'active' | 'resolved' } | null;
+          messages: ChatMessage[];
+          // May arrive from a newer backend; absent/null = onboarding off.
+          agent?: AgentInfo | null;
+        }) => {
+          if (!alive) return;
+          setMessages(data.messages ?? []);
+          if (data.conversation) setStatus(data.conversation.status);
+          setAgent(data.agent ?? null);
+        },
+      )
       .catch(() => undefined);
     return () => {
       alive = false;
@@ -466,7 +535,7 @@ export function useAgentChat({
     [apiUrl, agentIdentifier, subscriberId, headers],
   );
 
-  return { messages, status, connected, typing, send, sendAction, editMessage, deleteMessage };
+  return { messages, status, connected, typing, agent, send, sendAction, editMessage, deleteMessage };
 }
 
 export interface AgentChatProps extends UseAgentChatOptions {
@@ -642,9 +711,11 @@ function CardSelect({
 }
 
 export function AgentChat(props: AgentChatProps) {
-  const { theme = 'dark', title = props.agentIdentifier, placeholder = 'Type a message…', height = 380 } = props;
-  const { messages, status, connected, typing, send, sendAction, editMessage, deleteMessage } =
+  const { theme = 'dark', placeholder = 'Type a message…', height = 380 } = props;
+  const { messages, status, connected, typing, agent, send, sendAction, editMessage, deleteMessage } =
     useAgentChat(props);
+  // A server-supplied display name wins over the raw identifier for the header.
+  const title = props.title ?? agent?.name ?? props.agentIdentifier;
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
   const [clicking, setClicking] = useState(false);
@@ -707,6 +778,17 @@ export function AgentChat(props: AgentChatProps) {
     }
   };
 
+  // A suggested-prompt chip sends its message through the normal send() path;
+  // send() appends the user turn optimistically, which retires the welcome block.
+  const sendPrompt = async (message: string) => {
+    setError('');
+    try {
+      await send(message);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   // A card select answer — same optimistic/revert flow a button click uses.
   const answerSelect = (action: { id: string; label: string; value: string }) => {
     setError('');
@@ -745,7 +827,7 @@ export function AgentChat(props: AgentChatProps) {
         overflow: 'hidden',
       }}
     >
-      <style>{`@keyframes asyncify-typing{0%,60%,100%{opacity:0.25}30%{opacity:1}}.asy-card-input::placeholder{color:${c.text2}}.asy-card-send:hover:enabled{background:${c.hover}}`}</style>
+      <style>{`@keyframes asyncify-typing{0%,60%,100%{opacity:0.25}30%{opacity:1}}.asy-card-input::placeholder{color:${c.text2}}.asy-card-send:hover:enabled{background:${c.hover}}.asy-chip:hover{color:${c.text};border-color:${c.text2}}`}</style>
       <div
         style={{
           display: 'flex',
@@ -763,9 +845,65 @@ export function AgentChat(props: AgentChatProps) {
 
       <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
         {messages.length === 0 ? (
-          <p style={{ padding: '24px 8px', textAlign: 'center', fontSize: 12, color: c.text2 }}>
-            Start the conversation — the agent answers right here.
-          </p>
+          agent?.welcomeMessage ? (
+            // Synthetic opener: never sent to the server, no id, no edit/delete.
+            // It vanishes the moment the thread gains its first real message.
+            <div
+              key="welcome"
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                marginBottom: 8,
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: '80%',
+                  padding: '7px 10px',
+                  borderRadius: 10,
+                  borderBottomLeftRadius: 3,
+                  fontSize: 13,
+                  lineHeight: 1.45,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  background: c.hover,
+                  color: c.text,
+                  border: `1px solid ${c.border}`,
+                }}
+              >
+                {agent.welcomeMessage}
+              </div>
+              {!!agent.suggestedPrompts?.length && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8, maxWidth: '90%' }}>
+                  {agent.suggestedPrompts.map((p, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className="asy-chip"
+                      onClick={() => void sendPrompt(p.message)}
+                      style={{
+                        padding: '5px 10px',
+                        borderRadius: 8,
+                        border: `1px solid ${c.border}`,
+                        background: 'transparent',
+                        color: c.text2,
+                        fontSize: 12,
+                        fontFamily: font,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {p.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p style={{ padding: '24px 8px', textAlign: 'center', fontSize: 12, color: c.text2 }}>
+              Start the conversation — the agent answers right here.
+            </p>
+          )
         ) : (
           messages.map((m, i) => {
             // Buttons stay clickable only while theirs is the latest turn;
@@ -1103,6 +1241,9 @@ export function useConnectChannels({ token, apiUrl = '' }: UseConnectChannelsOpt
   const [loading, setLoading] = useState(true);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  // Minted link URLs, keyed by connectionId, for inline QR rendering. Tokens
+  // last 24h, so a cached URL is reused across open/close without re-minting.
+  const [linkUrls, setLinkUrls] = useState<Record<string, { url: string; expiresAt?: string }>>({});
 
   const headers = useCallback(
     () => ({ 'content-type': 'application/json', 'x-subscriber-token': token }),
@@ -1158,17 +1299,65 @@ export function useConnectChannels({ token, apiUrl = '' }: UseConnectChannelsOpt
           console.warn(`[asyncify] link-token failed (${connectionId}): ${message}`);
           return;
         }
-        const body = (await res.json()) as { url: string };
+        const body = (await res.json()) as { url: string; expiresAt?: string };
         setRowErrors((prev) => {
           const next = { ...prev };
           delete next[connectionId];
           return next;
         });
+        // Keep the minted URL around: the row's manual /start fallback (for
+        // networks that block t.me) renders from the same state the QR uses.
+        setLinkUrls((prev) => ({
+          ...prev,
+          [connectionId]: { url: body.url, expiresAt: body.expiresAt },
+        }));
         window.open(body.url, '_blank', 'noopener,noreferrer');
       } catch {
         const message = 'could not start linking';
         setRowErrors((prev) => ({ ...prev, [connectionId]: message }));
         console.warn(`[asyncify] link-token failed (${connectionId}): ${message}`);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [apiUrl, headers],
+  );
+
+  // Mint a link token via the SAME endpoint as connect(), but return the URL
+  // for inline QR rendering instead of opening a window. Resolves true on
+  // success; on failure it surfaces through the row's existing error slot.
+  const mintLink = useCallback(
+    async (connectionId: string): Promise<boolean> => {
+      setBusy(connectionId);
+      try {
+        const res = await fetch(`${apiUrl}/v1/me/link-tokens`, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ connectionId }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          const message = body.error ?? 'could not start linking';
+          setRowErrors((prev) => ({ ...prev, [connectionId]: message }));
+          console.warn(`[asyncify] link-token failed (${connectionId}): ${message}`);
+          return false;
+        }
+        const body = (await res.json()) as { url: string; expiresAt?: string };
+        setRowErrors((prev) => {
+          const next = { ...prev };
+          delete next[connectionId];
+          return next;
+        });
+        setLinkUrls((prev) => ({
+          ...prev,
+          [connectionId]: { url: body.url, expiresAt: body.expiresAt },
+        }));
+        return true;
+      } catch {
+        const message = 'could not start linking';
+        setRowErrors((prev) => ({ ...prev, [connectionId]: message }));
+        console.warn(`[asyncify] link-token failed (${connectionId}): ${message}`);
+        return false;
       } finally {
         setBusy(null);
       }
@@ -1192,7 +1381,7 @@ export function useConnectChannels({ token, apiUrl = '' }: UseConnectChannelsOpt
     [apiUrl, headers, load],
   );
 
-  return { channels, loading, rowErrors, busy, connect, unlink, refresh: load };
+  return { channels, loading, rowErrors, busy, linkUrls, connect, mintLink, unlink, refresh: load };
 }
 
 export interface ConnectChannelsProps {
@@ -1202,9 +1391,76 @@ export interface ConnectChannelsProps {
   title?: string;
 }
 
+/**
+ * Pull the bot username and start token out of a t.me deep link
+ * (https://t.me/<bot>?start=<token>). Anything else returns null.
+ */
+function parseTelegramLink(url: string): { bot: string; token: string } | null {
+  try {
+    const u = new URL(url);
+    if (u.hostname !== 't.me' && u.hostname !== 'telegram.me') return null;
+    const bot = u.pathname.replace(/^\//, '');
+    const token = u.searchParams.get('start');
+    if (!bot || bot.includes('/') || !token) return null;
+    return { bot, token };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Manual fallback for networks that DNS-block t.me: tell the user to message
+ * the bot directly and paste the /start command. One click selects the whole
+ * command (the widget has no copy affordance; technical values are mono text).
+ * Renders nothing when the URL is not a parseable t.me deep link.
+ */
+function TelegramManualStart({
+  url,
+  c,
+  mono,
+}: {
+  url: string;
+  c: (typeof palettes)['dark'];
+  mono: string;
+}) {
+  const parsed = parseTelegramLink(url);
+  if (!parsed) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+      <span style={{ fontSize: 11, color: c.text2 }}>
+        Can't open the link? In Telegram, message{' '}
+        <span style={{ fontFamily: mono }}>@{parsed.bot}</span> and send:
+      </span>
+      <code
+        onClick={(e) => {
+          const sel = window.getSelection();
+          if (!sel) return;
+          const range = document.createRange();
+          range.selectNodeContents(e.currentTarget);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }}
+        style={{
+          fontFamily: mono,
+          fontSize: 11,
+          color: c.text2,
+          cursor: 'text',
+          userSelect: 'all',
+          width: 'fit-content',
+          maxWidth: '100%',
+          overflowWrap: 'anywhere',
+        }}
+      >
+        /start {parsed.token}
+      </code>
+    </div>
+  );
+}
+
 export function ConnectChannels(props: ConnectChannelsProps) {
   const { theme = 'dark', title = 'Connected channels' } = props;
-  const { channels, loading, rowErrors, busy, connect, unlink, refresh } = useConnectChannels(props);
+  const { channels, loading, rowErrors, busy, linkUrls, connect, mintLink, unlink, refresh } =
+    useConnectChannels(props);
   // Two-step unlink confirm, keyed by `${channel}:${externalKey}`, auto-reverts
   // after 3s — mirrors AgentChat's lightweight text-button control idiom.
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -1212,7 +1468,12 @@ export function ConnectChannels(props: ConnectChannelsProps) {
   // Rows the user just started connecting; the hint shows until a refetch
   // flips `linked` (or an error surfaces), no server round-trip needed.
   const [pendingConnect, setPendingConnect] = useState<Record<string, boolean>>({});
+  // Which row's inline QR is open (one at a time). A tap toggles it.
+  const [qrOpenRow, setQrOpenRow] = useState<string | null>(null);
   const c = palettes[theme];
+  // A QR wants a light quiet zone and dark modules to scan reliably, so the QR
+  // card always paints from the light palette regardless of the widget theme.
+  const paper = palettes.light;
   const font = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   const mono = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
@@ -1253,6 +1514,20 @@ export function ConnectChannels(props: ConnectChannelsProps) {
     void connect(connectionId);
   };
 
+  // Toggle the inline QR: a second tap closes it; a cached URL reopens without
+  // re-minting; otherwise mint first and only open on success.
+  const onScan = async (connectionId: string) => {
+    if (qrOpenRow === connectionId) {
+      setQrOpenRow(null);
+      return;
+    }
+    if (linkUrls[connectionId]) {
+      setQrOpenRow(connectionId);
+      return;
+    }
+    if (await mintLink(connectionId)) setQrOpenRow(connectionId);
+  };
+
   return (
     <div
       style={{
@@ -1264,7 +1539,7 @@ export function ConnectChannels(props: ConnectChannelsProps) {
         boxSizing: 'border-box',
       }}
     >
-      <style>{`.asy-cc-refresh{color:${c.text2};background:transparent;border:none;padding:0;cursor:pointer;font-size:11px;font-family:${font};}.asy-cc-refresh:hover{color:${c.text};}.asy-cc-pill:hover:enabled{background:${c.hover};}`}</style>
+      <style>{`.asy-cc-refresh{color:${c.text2};background:transparent;border:none;padding:0;cursor:pointer;font-size:11px;font-family:${font};}.asy-cc-refresh:hover{color:${c.text};}.asy-cc-pill:hover:enabled{background:${c.hover};}.asy-cc-scan{color:${c.text2};background:transparent;border:none;padding:0;cursor:pointer;font-size:11px;font-family:${font};}.asy-cc-scan:hover:enabled{color:${c.text};}`}</style>
       <div
         style={{
           display: 'flex',
@@ -1293,18 +1568,22 @@ export function ConnectChannels(props: ConnectChannelsProps) {
             const name = row.channel.charAt(0).toUpperCase() + row.channel.slice(1);
             // @handles / addresses read best in mono; a Slack team name is prose.
             const labelMono = row.channel !== 'slack';
+            const qrOpen = cid !== null && qrOpenRow === cid;
+            const qr = cid ? linkUrls[cid] : undefined;
             return (
               <div
                 key={cid ?? row.channel}
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  padding: '10px 0',
-                  borderTop: idx === 0 ? 'none' : `1px solid ${c.border}`,
-                }}
+                style={{ borderTop: idx === 0 ? 'none' : `1px solid ${c.border}` }}
               >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    padding: '10px 0',
+                  }}
+                >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: c.text }}>
                     {name}
@@ -1416,6 +1695,55 @@ export function ConnectChannels(props: ConnectChannelsProps) {
                     </button>
                   )}
                 </div>
+                </div>
+                {row.channel === 'telegram' && !row.linked && cid && (
+                  <div style={{ paddingBottom: 10 }}>
+                    <button
+                      type="button"
+                      className="asy-cc-scan"
+                      disabled={isBusy}
+                      aria-expanded={qrOpen}
+                      onClick={() => void onScan(cid)}
+                    >
+                      {qrOpen ? 'Hide QR code' : 'or scan with your phone'}
+                    </button>
+                    {qrOpen && qr && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 6,
+                          alignItems: 'flex-start',
+                        }}
+                      >
+                        <div
+                          style={{
+                            padding: 8,
+                            borderRadius: 8,
+                            background: paper.bg,
+                            color: paper.text,
+                            border: `1px solid ${c.border}`,
+                            lineHeight: 0,
+                          }}
+                        >
+                          <QrCode value={qr.url} size={148} />
+                        </div>
+                        <span style={{ fontSize: 11, color: c.text2 }}>
+                          Scan with your phone — opens Telegram
+                        </span>
+                        <TelegramManualStart url={qr.url} c={c} mono={mono} />
+                      </div>
+                    )}
+                    {!qrOpen && !!pendingConnect[cid] && qr && (
+                      // After a Connect click: the same manual fallback, from
+                      // the same minted-url state, for t.me-blocked networks.
+                      <div style={{ marginTop: 6 }}>
+                        <TelegramManualStart url={qr.url} c={c} mono={mono} />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

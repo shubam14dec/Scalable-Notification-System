@@ -50,12 +50,28 @@ function apiBase(): string {
   return (process.env.SLACK_API_BASE ?? 'https://slack.com/api').replace(/\/$/, '');
 }
 
+/** A manifest-validation detail Slack returns on invalid_manifest. */
+interface SlackErrorDetail {
+  pointer?: string;
+  message?: string;
+}
+
 class SlackError extends Error {
   /** The raw Slack `error` code (e.g. 'invalid_blocks'), for branchable handling. */
   readonly error: string;
-  constructor(method: string, error: string) {
-    super(`slack ${method}: ${error}`);
+  /** apps.manifest.* validation pointers, when present. */
+  readonly details?: SlackErrorDetail[];
+  constructor(method: string, error: string, details?: SlackErrorDetail[]) {
+    const suffix =
+      details && details.length
+        ? ` (${details
+            .map((d) => `${d.pointer ?? ''} ${d.message ?? ''}`.trim())
+            .filter(Boolean)
+            .join('; ')})`
+        : '';
+    super(`slack ${method}: ${error}${suffix}`);
     this.error = error;
+    this.details = details;
   }
 }
 
@@ -73,6 +89,44 @@ async function call<T>(token: string, method: string, body?: Record<string, unkn
     throw new SlackError(method, json?.error ?? `HTTP ${res.status}`);
   }
   return json as T;
+}
+
+/**
+ * POST a form-urlencoded Slack call. The tooling/oauth methods this platform
+ * adds (apps.manifest.*, tooling.tokens.rotate, oauth.v2.access) all REQUIRE
+ * application/x-www-form-urlencoded — oauth.v2.access rejects JSON outright,
+ * and apps.manifest.* take the manifest as a JSON-string form field. Each call
+ * gets its own ~5s abort budget so a hung Slack request can't wedge a route.
+ * On ok:false, throws SlackError carrying Slack's `error` plus any manifest
+ * validation `errors[]` pointers.
+ */
+async function callForm<T>(
+  method: string,
+  params: Record<string, string>,
+  opts?: { bearer?: string },
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`${apiBase()}/${method}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        ...(opts?.bearer ? { authorization: `Bearer ${opts.bearer}` } : {}),
+      },
+      body: new URLSearchParams(params).toString(),
+      signal: controller.signal,
+    });
+    const json = (await res.json().catch(() => null)) as
+      | ({ ok: boolean; error?: string; errors?: SlackErrorDetail[] } & T)
+      | null;
+    if (!json || !json.ok) {
+      throw new SlackError(method, json?.error ?? `HTTP ${res.status}`, json?.errors);
+    }
+    return json as T;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -254,6 +308,97 @@ export const slack = {
       throw new SlackError('bots.info', json?.error ?? `HTTP ${res.status}`);
     }
     return { bot: json.bot };
+  },
+
+  /**
+   * Create a Slack app from a manifest, using an app-configuration token
+   * (xoxe-…, 12h TTL). Returns the app id and its brand-new OAuth credentials.
+   */
+  appsManifestCreate: async (
+    configToken: string,
+    manifest: Record<string, unknown>,
+  ): Promise<{
+    appId: string;
+    clientId: string;
+    clientSecret: string;
+    signingSecret: string;
+    verificationToken?: string;
+  }> => {
+    const json = await callForm<{
+      app_id: string;
+      credentials: {
+        client_id: string;
+        client_secret: string;
+        signing_secret: string;
+        verification_token?: string;
+      };
+    }>('apps.manifest.create', { manifest: JSON.stringify(manifest) }, { bearer: configToken });
+    return {
+      appId: json.app_id,
+      clientId: json.credentials.client_id,
+      clientSecret: json.credentials.client_secret,
+      signingSecret: json.credentials.signing_secret,
+      verificationToken: json.credentials.verification_token,
+    };
+  },
+
+  /** Update an existing app's manifest (re-point event/interactivity URLs). */
+  appsManifestUpdate: async (
+    configToken: string,
+    appId: string,
+    manifest: Record<string, unknown>,
+  ): Promise<{ appId: string }> => {
+    const json = await callForm<{ app_id: string }>(
+      'apps.manifest.update',
+      { app_id: appId, manifest: JSON.stringify(manifest) },
+      { bearer: configToken },
+    );
+    return { appId: json.app_id };
+  },
+
+  /**
+   * Rotate an app-configuration token. The refresh token is SINGLE-USE — each
+   * rotate mints a fresh access token AND a fresh refresh token, invalidating
+   * the one just spent. Callers MUST persist the new refresh token before
+   * doing anything else with the access token.
+   */
+  toolingTokensRotate: async (
+    refreshToken: string,
+  ): Promise<{ token: string; refreshToken: string; exp: number }> => {
+    const json = await callForm<{ token: string; refresh_token: string; exp: number }>(
+      'tooling.tokens.rotate',
+      { refresh_token: refreshToken },
+    );
+    return { token: json.token, refreshToken: json.refresh_token, exp: json.exp };
+  },
+
+  /**
+   * Exchange an OAuth authorization code for a bot token. redirect_uri must
+   * byte-match the one used in the authorize step. Form-encoded — Slack rejects
+   * a JSON body here.
+   */
+  oauthV2Access: async (
+    clientId: string,
+    clientSecret: string,
+    code: string,
+    redirectUri: string,
+  ): Promise<{ botToken: string; teamId: string; teamName: string; botUserId: string }> => {
+    const json = await callForm<{
+      access_token: string;
+      team: { id: string; name: string };
+      bot_user_id: string;
+    }>('oauth.v2.access', {
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: redirectUri,
+    });
+    return {
+      botToken: json.access_token,
+      teamId: json.team.id,
+      teamName: json.team.name,
+      botUserId: json.bot_user_id,
+    };
   },
 };
 

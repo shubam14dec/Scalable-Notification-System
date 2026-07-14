@@ -5,9 +5,12 @@ import { logger } from '../../shared/logger';
 import { logExec } from '../../core/execution-log';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { sealSecret, openSecret } from '../../auth/secret-box';
+import { verifyOauthState } from '../../auth/oauth-state';
+import { pool } from '../../db/pool';
 import {
   slack,
   verifySlackSignature,
+  SlackError,
   type SlackEventEnvelope,
   type SlackMessageEvent,
 } from '../../channels/slack';
@@ -24,6 +27,7 @@ import {
   findConversationByConnectionThread,
   findMessageBySlackTs,
   getAgentById,
+  getConnection,
   getConnectionById,
   insertConversationMessage,
   openChannelConversation,
@@ -429,6 +433,127 @@ export function registerSlackRoutes(app: FastifyInstance) {
 
       return { ok: true };
     },
+  );
+
+  // ---- public: Slack OAuth install callback (quick-setup) ----
+  // Slack redirects the admin's browser here after they approve the app on
+  // slack.com. We exchange the code for a bot token through the app's OWN
+  // OAuth credentials, seal it, flip the connection active, and show a bare
+  // "done" page. No tenant data ever appears in the HTML.
+  app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
+    '/webhooks/slack/oauth/callback',
+    async (req, reply) => {
+      const { code, state, error } = req.query;
+
+      // The admin clicked "Cancel" on Slack's consent screen.
+      if (error) {
+        return oauthHtml(reply, 400, 'Install cancelled', 'The Slack install was cancelled. Reopen Install from your dashboard to try again.');
+      }
+
+      const payload = state ? verifyOauthState(state) : null;
+      if (!payload || !code) {
+        return oauthHtml(reply, 400, 'Link expired', 'This link expired — reopen Install from your dashboard.');
+      }
+
+      const connection = await getConnection(payload.tenantId, payload.connectionId);
+      if (!connection || connection.channel !== 'slack') {
+        return oauthHtml(reply, 400, 'Link expired', 'This link expired — reopen Install from your dashboard.');
+      }
+
+      let creds: {
+        clientId?: string;
+        clientSecret?: string;
+        signingSecret?: string;
+        appId?: string;
+        configRefreshToken?: string;
+      };
+      try {
+        creds = JSON.parse(openSecret(connection.credentials));
+      } catch {
+        return oauthHtml(reply, 400, 'Link expired', 'This link expired — reopen Install from your dashboard.');
+      }
+      if (!creds.clientId || !creds.clientSecret) {
+        return oauthHtml(reply, 400, 'Link expired', 'This link expired — reopen Install from your dashboard.');
+      }
+
+      // redirect_uri must byte-match the authorize step — both rebuild it from
+      // the CURRENT public URL.
+      const redirectUri = `${await getPublicUrl()}/webhooks/slack/oauth/callback`;
+      let result;
+      try {
+        result = await slack.oauthV2Access(creds.clientId, creds.clientSecret, code, redirectUri);
+      } catch (err) {
+        const detail = err instanceof SlackError ? err.error : (err as Error).message;
+        return oauthHtml(reply, 400, 'Install failed', `Slack rejected the installation: ${detail}`);
+      }
+
+      const sealed = sealSecret(JSON.stringify({ ...creds, botToken: result.botToken }));
+      try {
+        await pool.query(
+          `update agent_connections
+              set credentials = $2,
+                  config = config || $3::jsonb,
+                  status = 'active',
+                  updated_at = now()
+            where id = $1`,
+          [
+            connection.id,
+            sealed,
+            JSON.stringify({
+              teamId: result.teamId,
+              teamName: result.teamName,
+              botUserId: result.botUserId,
+            }),
+          ],
+        );
+      } catch (err) {
+        // One slack connection per workspace per tenant (the Phase 12/13
+        // identity index): installing into a workspace that already has a
+        // connection trips 23505 here. The row stays PENDING with its sealed
+        // app creds intact — the admin removes the old connection and clicks
+        // Install again (a fresh click mints a fresh single-use code).
+        const dbErr = err as { code?: string; constraint?: string };
+        if (dbErr.code === '23505' && dbErr.constraint === 'agent_connections_slack_identity_uq') {
+          return oauthHtml(
+            reply,
+            409,
+            'Workspace already connected',
+            'This Slack workspace is already connected to Asyncify. Each workspace can hold one connection — remove the existing Slack connection in the dashboard, then click Install to workspace again.',
+          );
+        }
+        throw err;
+      }
+
+      logExec({
+        tenantId: connection.tenant_id,
+        transactionId: `slack-install-${connection.id}`,
+        level: 'info',
+        detail: `slack quick-setup installed: team=${result.teamId}`,
+      });
+
+      return oauthHtml(reply, 200, 'Connected', '✔ Connected — return to your dashboard.');
+    },
+  );
+}
+
+/** A minimal inline-styled result page for the OAuth callback (no tenant data). */
+function oauthHtml(
+  reply: FastifyReply,
+  status: number,
+  title: string,
+  message: string,
+): FastifyReply {
+  reply.code(status).header('content-type', 'text/html; charset=utf-8');
+  return reply.send(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+      `<meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title></head>` +
+      `<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f7f7f8;` +
+      `display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;color:#1a1a1a">` +
+      `<div style="background:#fff;border-radius:12px;padding:40px 48px;box-shadow:0 1px 4px rgba(0,0,0,.08);` +
+      `max-width:420px;text-align:center">` +
+      `<h1 style="font-size:20px;margin:0 0 12px">${title}</h1>` +
+      `<p style="font-size:15px;line-height:1.5;color:#555;margin:0">${message}</p>` +
+      `</div></body></html>`,
   );
 }
 

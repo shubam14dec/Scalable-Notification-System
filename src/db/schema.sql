@@ -273,6 +273,14 @@ do $$ begin
   end if;
 end $$;
 
+-- Phase 17: agent speaks first. welcome_message (≤2000 chars, app layer)
+-- renders client-side in the widget (zero rows until the user acts) and
+-- as the bare-/start reply on telegram (dedupe welcome-<convId>).
+-- suggested_prompts: jsonb [{title ≤40, message ≤200}] max 6 (app layer);
+-- widget chips / telegram keyboard / slack manifest suggested_prompts.
+alter table agents add column if not exists welcome_message text;
+alter table agents add column if not exists suggested_prompts jsonb;
+
 -- Channel connections: an agent's identity on an external messaging
 -- platform (v1: telegram). Credentials (bot token + the webhook secret we
 -- mint) are sealed; config holds public facts (bot username/id).
@@ -421,6 +429,27 @@ create table if not exists subscriber_link_tokens (
 
 create index if not exists link_tokens_expiry_idx
   on subscriber_link_tokens (expires_at);
+
+-- Phase 17: admin phone-handoff sessions ("set up from your phone").
+-- The dashboard mints a 5-minute single-use token; the phone opens
+-- {publicUrl}/handoff/<token>, pastes the BotFather message, and the
+-- parsed bot token is SEALED into payload until the authed dashboard
+-- poll reads it exactly once (payload nulled on read). Token stored
+-- hashed only; used_at set atomically on paste; expired rows purged by
+-- the inactivity-sweep tick alongside link tokens.
+create table if not exists setup_handoffs (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants(id),
+  channel        text not null default 'telegram',
+  token_hash     text not null unique,
+  payload_sealed text,
+  expires_at     timestamptz not null,
+  used_at        timestamptz,
+  created_at     timestamptz not null default now()
+);
+
+create index if not exists setup_handoffs_expiry_idx
+  on setup_handoffs (expires_at);
 
 -- Email auto-match's hot path: sender address -> existing real subscriber.
 create index if not exists subscribers_tenant_email_idx

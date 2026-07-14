@@ -1016,15 +1016,16 @@ describe('12. operator delete', () => {
   });
 });
 
-describe('13. reconnect is a static 400', () => {
-  test('reconnect on a slack connection reports the URLs are static', async () => {
+describe('13. reconnect without a config refresh token is a manual 400', () => {
+  test('reconnect on a pasted-token slack connection reports it must be pasted manually', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/v1/connections/${connectionId}/reconnect`,
       headers: headers(),
     });
     expect(res.statusCode).toBe(400);
-    expect(String(json(res).error)).toContain('static');
+    expect(json(res).error).toBe('slack URLs must be pasted manually for this connection');
+    expect(json(res).code).toBe('manual');
   });
 });
 

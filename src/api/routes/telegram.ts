@@ -36,6 +36,7 @@ import {
   upsertTelegramConnection,
   type Agent,
   type AgentConnection,
+  type Conversation,
 } from '../../db/conversations.repo';
 
 export interface TelegramCredentials {
@@ -302,13 +303,16 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       const agent = await resolveAgentForInbound(connection);
       if (!agent) return { ok: true, skipped: true };
 
+      const trimmedText = message.text.trim();
       // A deep-link tap arrives as `/start <token>` — the linking handshake,
-      // not a conversation turn. Bare /start (or non-token payloads) falls
-      // through to the brain like any other text.
-      const startMatch = /^\/start\s+([A-Za-z0-9_-]{20,64})$/.exec(message.text.trim());
+      // not a conversation turn.
+      const startMatch = /^\/start\s+([A-Za-z0-9_-]{20,64})$/.exec(trimmedText);
       if (startMatch) {
         return handleLinkStart(connection, message.chat.id, message.from.id, startMatch[1]);
       }
+      // Bare `/start` (or a `/start <payload>` that isn't a link token) is the
+      // onboarding greeting trigger — handled after the conversation opens.
+      const isBareStart = /^\/start(?:\s|$)/.test(trimmedText);
 
       const subscriber = await resolveTelegramSubscriber(connection.tenant_id, message.from.id);
       const conversation = await openChannelConversation({
@@ -319,6 +323,14 @@ export function registerTelegramRoutes(app: FastifyInstance) {
         channel: 'telegram',
         threadKey: String(message.chat.id),
       });
+
+      // Agent-speaks-first: greet on /start and SKIP the brain turn for this
+      // update. Idempotent on /start spam via the welcome-<conversationId>
+      // dedupe key. Welcome unset → fall through to the normal turn path,
+      // i.e. exactly the pre-welcome behavior.
+      if (isBareStart && agent.welcome_message) {
+        return handleWelcomeStart(connection, agent, conversation);
+      }
 
       // A ForceReply answer to a text_input card is that card's value, not a
       // fresh turn — thread it onto the card as an input action. The prompt is
@@ -473,6 +485,62 @@ async function handleLinkStart(
   });
 
   return { ok: true, linked: true };
+}
+
+/**
+ * Agent-speaks-first on telegram: a bare `/start` gets the agent's welcome
+ * message instead of a brain turn. The welcome is written as an AGENT row and
+ * delivered through the SAME 'deliver' queue job an operator/API push uses
+ * (mirrors POST /v1/conversations/:id/messages at agents.ts): enqueue a
+ * `kind:'deliver'` conversation job with the row's messageId, and the worker's
+ * processDeliver → deliverReply sends it (rendering suggested_prompts as an
+ * inline keyboard and stamping the telegram message id for send-once safety).
+ * The welcome-<conversationId> dedupe key makes /start spam a no-op: a second
+ * insert returns null, so there is no duplicate greeting and no duplicate job.
+ * Tapping a prompt button returns as a callback_query and flows through the
+ * existing action pipeline (handleCallback → brain), unchanged.
+ */
+async function handleWelcomeStart(
+  connection: AgentConnection,
+  agent: Agent,
+  conversation: Conversation,
+): Promise<unknown> {
+  const prompts = Array.isArray(agent.suggested_prompts) ? agent.suggested_prompts : [];
+  const buttons =
+    prompts.length > 0
+      ? prompts.map((p, i) => ({ id: `welcome-prompt-${i}`, label: p.title }))
+      : undefined;
+
+  const row = await insertConversationMessage({
+    conversationId: conversation.id,
+    tenantId: connection.tenant_id,
+    role: 'agent',
+    content: agent.welcome_message ?? '',
+    // Idempotent on /start spam: one welcome per conversation, ever.
+    dedupeKey: `welcome-${conversation.id}`,
+    raw: buttons ? { buttons } : undefined,
+  });
+  if (!row) return { ok: true, duplicate: true };
+
+  await getQueue(QUEUE.CONVERSATION).add(
+    row.id,
+    {
+      kind: 'deliver',
+      tenantId: connection.tenant_id,
+      conversationId: conversation.id,
+      messageId: row.id,
+    },
+    { jobId: `conv-deliver-${row.id}`, attempts: 5 },
+  );
+
+  logExec({
+    tenantId: connection.tenant_id,
+    transactionId: `conv-${conversation.id}`,
+    level: 'info',
+    detail: `telegram welcome sent: agent=${agent.identifier} conversation=${conversation.id}`,
+  });
+
+  return { ok: true, welcomed: true };
 }
 
 /**

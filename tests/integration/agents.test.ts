@@ -557,7 +557,11 @@ describe('widget transcript endpoint', () => {
       headers: { 'x-api-key': apiKey },
     });
     expect(res.statusCode).toBe(200);
-    expect(json(res)).toEqual({ conversation: null, messages: [] });
+    expect(json(res)).toEqual({
+      agent: { name: 'IT Support', welcomeMessage: null, suggestedPrompts: null },
+      conversation: null,
+      messages: [],
+    });
   });
 });
 

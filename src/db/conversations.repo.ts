@@ -24,6 +24,10 @@ export interface Agent {
   llm_credentials: string | null; // sealed {apiKey} — write-only via the API
   max_tokens: number | null; // per-reply output cap (null = brain default)
   auto_resolve_minutes: number | null; // idle-timeout backstop (null = off)
+  /** Agent-speaks-first: the greeting shown before the user acts (null = off). */
+  welcome_message: string | null;
+  /** Up to 6 one-tap starters offered with the welcome (null = none). */
+  suggested_prompts: Array<{ title: string; message: string }> | null;
   status: 'active' | 'disabled';
   created_at: string;
   updated_at: string;
@@ -76,13 +80,15 @@ export async function createAgent(a: {
   sealedLlmCredentials?: string;
   maxTokens?: number;
   autoResolveMinutes?: number;
+  welcomeMessage?: string | null;
+  suggestedPrompts?: Array<{ title: string; message: string }> | null;
 }): Promise<Agent | null> {
   const { rows } = await pool.query(
     `insert into agents
        (tenant_id, identifier, name, description, runtime, bridge_url,
         signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
-        auto_resolve_minutes)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        auto_resolve_minutes, welcome_message, suggested_prompts)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
     [
@@ -99,6 +105,8 @@ export async function createAgent(a: {
       a.sealedLlmCredentials ?? null,
       a.maxTokens ?? null,
       a.autoResolveMinutes ?? null,
+      a.welcomeMessage ?? null,
+      a.suggestedPrompts ? JSON.stringify(a.suggestedPrompts) : null,
     ],
   );
   return rows[0] ?? null;
@@ -141,6 +149,10 @@ export async function updateAgent(
     maxTokens?: number;
     /** null switches the backstop OFF (0 is the wire sentinel for null). */
     autoResolveMinutes?: number | null;
+    /** null clears the greeting ('' is the wire sentinel for null). */
+    welcomeMessage?: string | null;
+    /** null clears the starters (jsonb 'null' is the wire sentinel for null). */
+    suggestedPrompts?: Array<{ title: string; message: string }> | null;
   },
 ): Promise<Agent | null> {
   const { rows } = await pool.query(
@@ -159,6 +171,12 @@ export async function updateAgent(
        -- 0 sentinel clears the idle timeout (bounds are 1-43200)
        auto_resolve_minutes = case when $13::int = 0 then null
                                    else coalesce($13, auto_resolve_minutes) end,
+       -- '' sentinel clears the greeting; null param leaves it untouched
+       welcome_message = case when $14::text = '' then null
+                              else coalesce($14, welcome_message) end,
+       -- jsonb 'null' sentinel clears the starters; null param leaves them
+       suggested_prompts = case when $15::jsonb = 'null'::jsonb then null
+                                else coalesce($15::jsonb, suggested_prompts) end,
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -176,6 +194,12 @@ export async function updateAgent(
       patch.sealedLlmCredentials ?? null,
       patch.maxTokens ?? null,
       patch.autoResolveMinutes === null ? 0 : (patch.autoResolveMinutes ?? null),
+      patch.welcomeMessage === null ? '' : (patch.welcomeMessage ?? null),
+      patch.suggestedPrompts === null
+        ? 'null'
+        : patch.suggestedPrompts === undefined
+          ? null
+          : JSON.stringify(patch.suggestedPrompts),
     ],
   );
   return rows[0] ?? null;

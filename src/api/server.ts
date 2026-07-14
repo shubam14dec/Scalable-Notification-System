@@ -9,7 +9,6 @@ import { buildApp } from './app';
 async function main() {
   initTracing('notification-api');
   const app = await buildApp();
-
   await app.listen({ port: env.port, host: '0.0.0.0' });
   logger.info({ port: env.port }, 'api listening');
 

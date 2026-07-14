@@ -327,6 +327,35 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   treat "Failed to resolve host" from a webhook registration as retryable,
   not fatal.
 
+- **Slack config tokens are single-use CHAINS, per user+workspace — not
+  per app** (Phase 17 E2E, 2026-07-14): every tooling.tokens.rotate spends
+  the refresh token and issues a successor. Rules that follow: (1) persist
+  the successor BEFORE using the new access token (a crash between = dead
+  chain); (2) never reuse a token pair across setups — the 12h access
+  token still works while its refresh twin is already spent, so creation
+  succeeds and the FIRST rotation fails later ('broken' flag); (3)
+  deleting a connection loses its stored successor — the chain dies with
+  the row. Recovery = the re-arm endpoint (PUT
+  /v1/connections/:id/slack/config-token), never re-creation.
+- **Consent-screen minimalism must never prune a scope that powers a
+  silent-fallback feature** (Phase 17, docs-agent adversarial catch): the
+  manifest builder requested 12 scopes 'we use' and dropped
+  users:read.email — which users.info needs to return profile.email for
+  slack→email auto-match. Auto-match would have degraded invisibly (the
+  Phase 15 saga shape, again). When trimming scopes, grep every wrapper
+  call's RESPONSE FIELDS for scope-gated data, not just the methods.
+- **Authed 302s are unreadable by browsers** (Phase 17): fetch with auth
+  headers + redirect:'manual' yields an opaqueredirect (no Location), and
+  window.open can't carry headers. Any authed endpoint whose value IS a
+  redirect target must content-negotiate: Accept: application/json →
+  200 {url}. Same pattern next time; don't rediscover it.
+- **t.me is DNS-blocked on real ISPs (incl. the user's own)** (Phase 17
+  E2E): the phone decoded our QR perfectly; the t.me hop NXDOMAIN'd on
+  every device on the network. The Telegram APP is unaffected. Every
+  t.me deep-link surface must ship the copyable `/start <token>` fallback
+  beside it. Corollary: a QR test proves decode, not destination
+  reachability — they fail independently.
+
 ## 12. Tests own Redis db 15 — never share queues with the dev fleet
 
 Integration tests enqueue real BullMQ jobs; a dev worker fleet on the

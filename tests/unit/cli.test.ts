@@ -473,3 +473,133 @@ describe('watchdog tick', () => {
     expect(actions).toEqual(['rotate', 'rotate', 'rotate', 'rotate', 'rotate', 'rotate']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 17 Slice E — CLI slack auto-update (runtime-attempt model).
+//
+// planRewire now sends ACTIVE and PENDING slack connections to a new
+// `slackAttemptIds` list (runRewire POSTs …/reconnect for each and, on a 200,
+// drops that connection's paste rows). Pending is included because a
+// quick-setup app created but not yet installed already holds a refresh
+// chain, and a rotation before install strands its redirect/event URLs.
+// Paste rows carry `connectionId` so the runner can match them. These tests
+// cover the PURE plan output only.
+//
+// runRewire's effects (the slack attempt loop, success suppression, and the
+// refresh-expired hint line) are NOT unit-tested here: runRewire calls the
+// module-level `apiFetch` from ./api, which is not injectable through its ctx
+// (ctx exposes only log/sleep). Testing those paths would require module
+// mocking of ./api, which this slice deliberately avoids — so the behavior is
+// covered by the plan assertions below plus the integration surface.
+// ---------------------------------------------------------------------------
+describe('planRewire: slack runtime-attempt model (Phase 17 Slice E)', () => {
+  function slackConn(id: string, status: string): Connection {
+    return {
+      id,
+      channel: 'slack',
+      status,
+      config: { teamName: `Team ${id}` },
+      agent: { identifier: `a-${id}`, name: `Agent ${id}` },
+      webhook: {
+        eventsUrl: `https://x/webhooks/slack/${id}/events`,
+        interactivityUrl: `https://x/webhooks/slack/${id}/interactivity`,
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
+  function tgConn(id: string, status: string): Connection {
+    return {
+      id,
+      channel: 'telegram',
+      status,
+      config: { botUsername: `bot_${id}` },
+      agent: { identifier: `a-${id}`, name: `Agent ${id}` },
+      webhook: { url: 'https://x/hook', expectedUrl: `https://x/webhooks/telegram/${id}` },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
+  function emailConn(id: string, status: string): Connection {
+    return {
+      id,
+      channel: 'email',
+      status,
+      config: { address: `${id}@inbound.test` },
+      agent: { identifier: `a-${id}`, name: `Agent ${id}` },
+      webhook: { url: `https://x/webhooks/email/${id}?key=s` },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  test('active slack → slackAttemptIds AND still emits its two paste rows', () => {
+    const plan = planRewire([slackConn('s1', 'active')], null);
+    expect(plan.slackAttemptIds).toEqual(['s1']);
+    expect(plan.pasteRows.map((r) => r.key)).toEqual([
+      's1:slack-events',
+      's1:slack-interactivity',
+    ]);
+  });
+
+  test('pending slack → attempted too (pre-install app still holds a refresh chain) AND keeps its paste rows', () => {
+    const plan = planRewire([slackConn('s1', 'pending')], null);
+    expect(plan.slackAttemptIds).toEqual(['s1']);
+    expect(plan.pasteRows.map((r) => r.key)).toEqual([
+      's1:slack-events',
+      's1:slack-interactivity',
+    ]);
+    expect(plan.pasteRows.every((r) => r.connectionId === 's1')).toBe(true);
+  });
+
+  test('inactive/disabled slack → NOT attempted, but paste rows remain', () => {
+    const plan = planRewire([slackConn('s1', 'inactive'), slackConn('s2', 'disabled')], null);
+    expect(plan.slackAttemptIds).toEqual([]);
+    expect(plan.pasteRows.map((r) => r.key)).toEqual([
+      's1:slack-events',
+      's1:slack-interactivity',
+      's2:slack-events',
+      's2:slack-interactivity',
+    ]);
+  });
+
+  test('every slack paste row is tagged with its connectionId', () => {
+    const plan = planRewire([slackConn('s1', 'active')], null);
+    expect(plan.pasteRows.every((r) => r.connectionId === 's1')).toBe(true);
+  });
+
+  test('email paste rows are also tagged with connectionId and are never attempted', () => {
+    const plan = planRewire([emailConn('e1', 'active')], null);
+    expect(plan.slackAttemptIds).toEqual([]);
+    expect(plan.pasteRows).toHaveLength(1);
+    expect(plan.pasteRows[0].connectionId).toBe('e1');
+  });
+
+  test('telegram is unchanged: active → reconnectIds, never in slackAttemptIds', () => {
+    const plan = planRewire([tgConn('t1', 'active'), tgConn('t2', 'inactive')], null);
+    expect(plan.reconnectIds).toEqual(['t1']);
+    expect(plan.slackAttemptIds).toEqual([]);
+    expect(plan.pasteRows).toEqual([]);
+  });
+
+  test('mixed fleet: active+pending slack attempted, inactive not; telegram/email routing intact', () => {
+    const plan = planRewire(
+      [
+        tgConn('t1', 'active'),
+        slackConn('s1', 'active'),
+        slackConn('s2', 'inactive'),
+        slackConn('s3', 'pending'),
+        emailConn('e1', 'active'),
+      ],
+      null,
+    );
+    expect(plan.reconnectIds).toEqual(['t1']);
+    expect(plan.slackAttemptIds).toEqual(['s1', 's3']);
+    expect(plan.pasteRows.map((r) => r.key)).toEqual([
+      's1:slack-events',
+      's1:slack-interactivity',
+      's2:slack-events',
+      's2:slack-interactivity',
+      's3:slack-events',
+      's3:slack-interactivity',
+      'e1:email',
+    ]);
+  });
+});

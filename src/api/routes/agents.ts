@@ -59,6 +59,16 @@ const LlmConfigSchema = z.object({
   baseUrl: z.string().url().max(2048).nullable().optional(),
 });
 
+/** One agent-speaks-first starter: a chip label + the turn it sends. */
+const SuggestedPromptSchema = z.object({
+  title: z.string().min(1).max(40),
+  message: z.string().min(1).max(200),
+});
+
+/** Shared by create + patch. null clears; absent leaves untouched. */
+const welcomeMessageSchema = z.string().max(2000).nullable().optional();
+const suggestedPromptsSchema = z.array(SuggestedPromptSchema).max(6).nullable().optional();
+
 const AgentSchema = z
   .object({
     identifier: z
@@ -75,6 +85,8 @@ const AgentSchema = z
     maxTokens: z.number().int().min(256).max(8192).optional(),
     autoResolveMinutes: z.number().int().min(1).max(43_200).optional(),
     llm: LlmConfigSchema.optional(),
+    welcomeMessage: welcomeMessageSchema,
+    suggestedPrompts: suggestedPromptsSchema,
   })
   .refine((a) => a.runtime !== 'bridge' || Boolean(a.bridgeUrl), {
     message: 'bridgeUrl is required for the bridge runtime',
@@ -97,6 +109,8 @@ const AgentPatchSchema = z.object({
   /** null switches the idle-timeout backstop off. */
   autoResolveMinutes: z.number().int().min(1).max(43_200).nullable().optional(),
   llm: LlmConfigSchema.optional(),
+  welcomeMessage: welcomeMessageSchema,
+  suggestedPrompts: suggestedPromptsSchema,
 });
 
 const InboundMessageSchema = z.object({
@@ -151,6 +165,8 @@ function agentView(agent: Agent) {
     llmBaseUrl: agent.llm_base_url,
     maxTokens: agent.max_tokens,
     autoResolveMinutes: agent.auto_resolve_minutes,
+    welcomeMessage: agent.welcome_message,
+    suggestedPrompts: agent.suggested_prompts,
     hasLlmKey: Boolean(agent.llm_credentials),
     status: agent.status,
     createdAt: agent.created_at,
@@ -224,6 +240,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
       sealedLlmCredentials: parsed.data.llm?.apiKey
         ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
         : undefined,
+      welcomeMessage: parsed.data.welcomeMessage,
+      suggestedPrompts: parsed.data.suggestedPrompts,
     });
     if (!agent) {
       return reply.code(409).send({ error: `agent "${parsed.data.identifier}" already exists` });
@@ -288,6 +306,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
         sealedLlmCredentials: parsed.data.llm?.apiKey
           ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
           : undefined,
+        welcomeMessage: parsed.data.welcomeMessage,
+        suggestedPrompts: parsed.data.suggestedPrompts,
       });
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };
@@ -474,10 +494,19 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
 
+      // Agent-speaks-first: the widget renders the greeting + starters before
+      // any turn exists, so this block ships even when the conversation is null.
+      const agentBlock = {
+        name: agent.name,
+        welcomeMessage: agent.welcome_message,
+        suggestedPrompts: agent.suggested_prompts,
+      };
+
       const conversation = await findConversationByThread(agent.id, 'inapp', subscriberId);
-      if (!conversation) return { conversation: null, messages: [] };
+      if (!conversation) return { agent: agentBlock, conversation: null, messages: [] };
       const messages = await conversationTranscript(conversation.id);
       return {
+        agent: agentBlock,
         conversation: { id: conversation.id, status: conversation.status },
         messages: messages
           .filter((m) => m.role !== 'system')
