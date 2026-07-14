@@ -1,5 +1,11 @@
 # @asyncify-hq/react
 
+## 0.6.0
+
+### Minor Changes
+
+- 0c5a812: Add a QrCode component, an inline "scan with your phone" Telegram QR in ConnectChannels, and an AgentChat welcome message with tappable suggested-prompt chips.
+
 ## 0.5.0
 
 ### Minor Changes
