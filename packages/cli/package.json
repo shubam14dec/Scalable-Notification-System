@@ -1,6 +1,6 @@
 {
   "name": "@asyncify-hq/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Asyncify dev CLI — managed tunnel with automatic webhook rewiring, and an agent scaffolder",
   "homepage": "https://asyncify.org",
   "repository": {
