@@ -17,11 +17,13 @@ full tiered comparison lives there; these are the Tier-A picks):**
       default) + end-user preference center component in the widget
 - [ ] Workflow engine v2: digestKey (group digests by payload field),
       throttle step, delay-until-date/dynamic, cancel-trigger API
-- [ ] Slack agent channel: OAuth connect, threads → conversations,
-      Block Kit buttons, welcome message (our agent_connections +
-      thread_key model maps 1:1)
-- [ ] Agent replies: edit/delete (ReplyHandle) + typing indicator —
-      small; the prerequisite for streaming
+- [x] Slack agent channel: threads → conversations, Block Kit buttons,
+      per-scope routing — Phase 13 (2026-07-12). Still open from the
+      original item: OAuth Add-to-Slack one-click install (13b; today =
+      manifest paste) and welcome message → stay in backlog below
+- [x] Agent replies: edit/delete tombstones (user+operator,
+      cross-channel propagation) + typing indicators — Phase 10
+      (2026-07-12)
 - [ ] Environment promotion dev→prod with dry-run diff; outbound
       webhooks to customers (message.sent/failed/delivered/read,
       workflow.*, preference.updated)
@@ -34,14 +36,16 @@ docs/ARCHITECTURE-COMPARISON.md):**
       commit 77a4400 (2026-07-12)
 - [ ] Idempotency-Key header protocol: 409 in-flight / 422 body-hash
       mismatch / 24h cached replay (Tier A — small, rides Redis)
-- [ ] Agent cards v2: Select dropdowns + TextInput on top of the
-      buttons pipeline (Tier B)
+- [x] Agent cards v2: Select dropdowns + TextInput on top of the
+      buttons pipeline — Phase 14, incl. plan-card streaming
+      (2026-07-12)
 - [ ] Tool approval via workflow: deferred tool call fires a real
       notification; human approves from any channel; webhook resumes
       (Tier B — composes our buttons + trigger machinery)
-- [ ] `asyncify dev` CLI command: managed tunnel + sleep-drift
-      watchdog + auto PUBLIC_URL/webhook re-registration — erases the
-      cloudflared rotation drill (Tier B — our own recurring pain)
+- [x] `asyncify dev` CLI command: managed tunnel + sleep-drift
+      watchdog + auto PUBLIC_URL/webhook re-registration — Phase 16,
+      released as @asyncify-hq/cli@0.1.0 (2026-07-13); + create-agent
+      scaffolder
 - [ ] Rolling dual API keys per environment (Tier B — small)
 - [ ] API polish: map Fastify FST_ERR_CTP_* (415 unsupported media
       type) to a clean 4xx JSON error instead of 500 'internal error'
@@ -54,29 +58,31 @@ docs/ARCHITECTURE-COMPARISON.md):**
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
 
-- [ ] Streaming managed replies (parked from 3c: WS protocol + gateway +
-      widget surface for 1–2s chat replies — revisit if replies grow)
-- [ ] Auto-resolve on inactivity: scheduled sweep closes active
-      conversations idle for N hours (per-agent setting, default
-      24h?) with a system breadcrumb — the platform backstop for
-      threads that trail off, regardless of brain quality (the
-      "Thank you" judgment case from Phase 5's battle-test).
-- [ ] Subscriber linking (`tg-<id>` / email sender → real app
-      subscriber): deep-link `/start <token>` for Telegram (+ an email
-      equivalent) so a channel identity merges into an existing
-      subscriber instead of a standalone `tg-`/email-addressed one.
-      (Deferred from Phase 2.5 — see the Telegram design notes.)
+- [ ] Streaming managed replies — token-level WS streaming still open;
+      the visible-progress need is largely met by Phase 14's plan-card
+      live edits (⏳→✓→reply), so revisit only if reply latency hurts
+- [x] Auto-resolve on inactivity: per-agent sweep with system
+      breadcrumb — shipped (see tests/integration/inactivity-sweep.test.ts)
+- [x] Subscriber linking (tg deep-link `/start <token>`, email sender
+      auto-match, slack auto-match): shipped across Phases 13/15 incl.
+      <ConnectChannels> self-service UI + token-only /v1/me family
+      (2026-07-12). Remaining nicety: QR handoff for desktop t.me →
+      polish backlog
 
 - [ ] Landing page for asyncify.org (public face; domain currently unpointed)
-- [ ] Release automation: Changesets + GitHub Actions publish pipeline
-      (fresh npm token straight into GitHub Secrets)
+- [x] Release automation: Changesets + GitHub Actions — shipped, and
+      better than planned: OIDC trusted publishing, NO npm token
+      anywhere (see RELEASING.md incl. the new-package bootstrap).
+      All four packages live: node@0.2.1 agent@0.4.0 react@0.5.0
+      cli@0.1.0
 - [x] CI workflow (.github/workflows/ci.yml): postgres/redis/mailpit
       services, migrate → typecheck → 152 tests → SDK + dashboard
       builds on every push/PR; README badge. (2026-07-10)
 - [ ] Compliance gap set from email-delivery skill §5: List-Unsubscribe /
       RFC 8058 headers on P2 email, public unsubscribe endpoint, consent
       fields on subscribers, marketing footer block
-- [ ] npm workspaces wiring for packages/ (deferred from Phase D)
+- [x] npm workspaces wiring for packages/ — shipped (root
+      `workspaces: ["packages/*"]`, four packages linked)
 - [ ] Agent toolkit `@asyncify-hq/agent-toolkit` (workflows-as-LLM-tools
       + MCP server + human-in-the-loop wrapper) — superseded by the
       Conversations/Agents build below; cheap add-on later since it
@@ -84,7 +90,12 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Conversations / Agents — Phase 16: @asyncify-hq/cli (TRACK FINALE)
+(nothing — between phases; agents track complete 8/8, next work comes
+from the backlog above)
+
+## Recently finished
+
+### Conversations / Agents — Phase 16: @asyncify-hq/cli (TRACK FINALE) — COMPLETE + RELEASED
 (plan approved 2026-07-12; full plan in
 `~/.claude/plans/tranquil-swimming-acorn.md`. PUBLIC_URL becomes a
 runtime setting (redis config:public-url + env fallback, 5s
@@ -146,9 +157,10 @@ a real npm install which re-poisoned the lock (@emnapi 11→6);
 clean-room regenerated back to B's exact 49+/21− shape (fourth
 incident; order-of-operations lesson in the skill ledger). The
 rotation drill this phase existed to kill is dead: cold start =
-`npx asyncify dev` + paste ●-rows; rotation = nothing.
-
-## Recently finished
+`npx asyncify dev` + paste ●-rows; rotation = nothing. RELEASED
+2026-07-13: @asyncify-hq/cli@0.1.0 via user-merged PR #7 (first-publish
+bootstrap: manual 0.0.0 → Trusted Publisher → OIDC 0.1.0 w/ provenance
+— procedure in RELEASING.md).
 
 ### Conversations / Agents — Phase 15: connect-button components — COMPLETE
 (user-verified 2026-07-12 as his own customer's end user: telegram
