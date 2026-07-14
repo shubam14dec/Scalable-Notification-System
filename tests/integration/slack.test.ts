@@ -594,6 +594,78 @@ describe('3. DM turn', () => {
   });
 });
 
+describe('3b. DM welcome (agent-speaks-first)', () => {
+  beforeAll(async () => {
+    await pool.query(
+      `update agents set welcome_message = $2, suggested_prompts = $3
+         where tenant_id = $1 and identifier = 'slack-default'`,
+      [
+        tenantId,
+        'Hi! I can help.',
+        JSON.stringify([
+          { title: 'Track order', message: 'Where is my order?' },
+          { title: 'Human', message: 'I want a human' },
+        ]),
+      ],
+    );
+  });
+  afterAll(async () => {
+    await pool.query(
+      `update agents set welcome_message = null, suggested_prompts = null
+         where tenant_id = $1 and identifier = 'slack-default'`,
+      [tenantId],
+    );
+  });
+
+  const welcomeRows = async (convId: string) =>
+    (
+      await pool.query(
+        `select id, content, raw from conversation_messages
+           where conversation_id = $1 and role = 'agent' and dedupe_key like 'slack-welcome-%'`,
+        [convId],
+      )
+    ).rows as Array<{ id: string; content: string; raw: { buttons?: unknown } }>;
+
+  test('the first DM greets once with prompt buttons on the deliver lane; the turn still runs', async () => {
+    usersInfo.mode = 'ok';
+    usersInfo.email = null;
+    const chan = 'D0WELC01';
+    const ts = newTs();
+    const res = await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0WELC01', text: 'hello', ts }),
+    );
+    expect(res.statusCode).toBe(200);
+
+    const conv = await convByThread(chan);
+    const rows = await welcomeRows(conv!.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toBe('Hi! I can help.');
+    expect(rows[0].raw.buttons).toEqual([
+      { id: 'welcome-prompt-0', label: 'Track order' },
+      { id: 'welcome-prompt-1', label: 'Human' },
+    ]);
+    // The greeting rides the 'deliver' lane…
+    expect(await getQueue(QUEUE.CONVERSATION).getJob(`conv-deliver-${rows[0].id}`)).toBeTruthy();
+    // …and the user's own message still enqueued the normal brain turn.
+    const userRow = await rowBySlackTs(conv!.id, ts);
+    expect(userRow).toBeDefined();
+    expect(await getQueue(QUEUE.CONVERSATION).getJob(`conv-${userRow!.id}`)).toBeTruthy();
+  });
+
+  test('a second DM in the same channel does not re-greet', async () => {
+    usersInfo.mode = 'ok';
+    usersInfo.email = null;
+    const chan = 'D0WELC01';
+    const res = await postEvent(
+      messageEnvelope({ channel: chan, channel_type: 'im', user: 'U0WELC01', text: 'again', ts: newTs() }),
+    );
+    expect(res.statusCode).toBe(200);
+
+    const conv = await convByThread(chan);
+    expect(await welcomeRows(conv!.id)).toHaveLength(1);
+  });
+});
+
 describe('4. email auto-match', () => {
   test('users.info email that equals a real subscriber links the DM to that subscriber', async () => {
     const matchEmail = 'match4@example.com';

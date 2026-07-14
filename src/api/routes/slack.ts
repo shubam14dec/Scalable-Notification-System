@@ -243,6 +243,9 @@ export function registerSlackRoutes(app: FastifyInstance) {
           channel: 'slack',
           threadKey: event.channel,
         });
+        // Agent-speaks-first: greet once per DM before the turn runs. Enqueued
+        // ahead of ingestSlackTurn's brain turn so the greeting lands first.
+        await maybeSendSlackWelcome(connection, agent, conversation);
         return ingestSlackTurn(connection, agent, conversation, event, event.text);
       }
 
@@ -562,6 +565,59 @@ function oauthHtml(
  * channel paths — same dedupe wall (the Slack ts within the channel) and same
  * raw crumbs (ts + channel for edit/delete lookups, sender for display).
  */
+/**
+ * Agent-speaks-first on Slack: the first time a user DMs the bot, post the
+ * agent's welcome message — with suggested prompts as Block Kit buttons — once,
+ * then let their actual message run the brain normally. Deduped on
+ * slack-welcome-<conversationId>, so it greets once per DM ever: the Slack
+ * analog of the widget's empty-conversation bubble and telegram's /start.
+ * Prompt taps return on the interactivity webhook and flow through the existing
+ * action pipeline. DM-only (never noisy in shared channels); no-op when the
+ * agent has no welcome set. The greeting rides the 'deliver' lane (a fast
+ * postMessage), enqueued before the caller's brain turn, so it lands first.
+ */
+async function maybeSendSlackWelcome(
+  connection: AgentConnection,
+  agent: Agent,
+  conversation: Conversation,
+): Promise<void> {
+  if (!agent.welcome_message) return;
+
+  const prompts = Array.isArray(agent.suggested_prompts) ? agent.suggested_prompts : [];
+  const buttons =
+    prompts.length > 0
+      ? prompts.map((p, i) => ({ id: `welcome-prompt-${i}`, label: p.title }))
+      : undefined;
+
+  const row = await insertConversationMessage({
+    conversationId: conversation.id,
+    tenantId: connection.tenant_id,
+    role: 'agent',
+    content: agent.welcome_message,
+    dedupeKey: `slack-welcome-${conversation.id}`,
+    raw: buttons ? { buttons } : undefined,
+  });
+  if (!row) return; // this DM was already greeted
+
+  await getQueue(QUEUE.CONVERSATION).add(
+    row.id,
+    {
+      kind: 'deliver',
+      tenantId: connection.tenant_id,
+      conversationId: conversation.id,
+      messageId: row.id,
+    },
+    { jobId: `conv-deliver-${row.id}`, attempts: 5 },
+  );
+
+  logExec({
+    tenantId: connection.tenant_id,
+    transactionId: `conv-${conversation.id}`,
+    level: 'info',
+    detail: `slack welcome sent: agent=${agent.identifier} conversation=${conversation.id}`,
+  });
+}
+
 async function ingestSlackTurn(
   connection: AgentConnection,
   agent: Agent,

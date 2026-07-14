@@ -586,14 +586,19 @@ Where each surface shows them:
   conversation is still `null`.
 - **Telegram** — a bare **`/start`** gets the welcome message (delivered as a
   normal agent reply) with the prompts as an **inline keyboard**, instead of a
-  model turn. It's **idempotent**: one welcome per conversation, so `/start`
-  spam is a no-op, and tapping a chip flows through the normal action pipeline.
-  (Welcome unset → `/start` behaves exactly as before.)
-- **Slack** — the prompts render as Slack's **native suggested prompts** (the
-  manifest's `agent_view`). Because they live in the manifest they apply to apps
-  built via **Quick Setup** or the **prefilled manifest** (and refresh on
-  `reconnect`); Slack takes the **first 4**. The welcome-message *text* is not
-  posted on Slack.
+  model turn. Every `/start` press re-greets (Telegram's convention); the
+  dedupe keys on the update, so only Telegram's delivery retries are suppressed.
+  Tapping a chip flows through the normal action pipeline. (Welcome unset →
+  `/start` behaves exactly as before.)
+- **Slack** — **two surfaces.** (1) The **first DM** a user opens with the bot
+  gets the welcome message posted as a real message, with the prompts as **Block
+  Kit buttons**; it's deduped **once per DM** (the analog of the widget bubble),
+  and the user's own message still runs the model. (2) The prompts *also* ride
+  the manifest's **`agent_view`** (Slack's native suggested-prompts surface in
+  the assistant pane) — this needs the `assistant:write` scope and takes the
+  **first 4**; it applies to apps built via **Quick Setup** or the **prefilled
+  manifest** and refreshes on `reconnect`. Existing apps must **re-install** to
+  pick up the scope. DM greetings fire only in DMs, never in shared channels.
 - **Email** — no first-contact surface (there is no "open" / `/start` event to
   hang a greeting on).
 
