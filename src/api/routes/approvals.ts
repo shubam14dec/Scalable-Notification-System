@@ -44,12 +44,19 @@ function approvalView(call: AgentToolCall, identifier: string | null) {
 
 /**
  * The decider identity we record. The dashboard JWT payload only carries
- * { sub, type } (see api/jwt-auth.ts) — there is NO email on it — so the best
- * stable identifier available is the user id (sub); api-key callers have no
- * user at all. See the task report for this divergence from `req.user?.email`.
+ * { sub, type } (see api/jwt-auth.ts) — no email — so we resolve the user's
+ * email at DECISION time and store `dashboard: <email>`: unique, stable, and
+ * what an auditor would search for. Stored (not display-resolved) so the
+ * record stays truthful even if the user is later renamed or removed; if the
+ * lookup misses (deleted user, stale token) we fall back to the raw sub.
+ * Api-key callers have no user at all and record 'api-key'. Mirrors the
+ * channel formats slack:<uid> (…) / telegram:<id> (…).
  */
-function deciderOf(req: { user?: { sub?: string } }): string {
-  return req.user?.sub ?? 'api-key';
+async function deciderOf(req: { user?: { sub?: string } }): Promise<string> {
+  const sub = req.user?.sub;
+  if (!sub) return 'api-key';
+  const { rows } = await pool.query('select email from users where id = $1', [sub]);
+  return rows[0]?.email ? `dashboard: ${rows[0].email}` : sub;
 }
 
 export function registerApprovalRoutes(app: FastifyInstance) {
@@ -93,7 +100,7 @@ export function registerApprovalRoutes(app: FastifyInstance) {
         req.tenant.id,
         req.params.id,
         parsed.data.decision === 'approve' ? 'approved' : 'denied',
-        deciderOf(req),
+        await deciderOf(req),
         parsed.data.note,
       );
       if (!call) {
