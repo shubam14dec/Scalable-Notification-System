@@ -126,6 +126,18 @@ until its next run — expected).
 Login: dashboard user shubam@xmobility.ai; env API keys are in the
 dashboard (API keys page). Everything survives restarts.
 
+**`localhost` can silently die on this machine — .env pins 127.0.0.1**
+(found 2026-07-16): the api accepted TCP connections but served nothing —
+event loop idle, zero CPU, every request hung. Cause: Node resolves
+`localhost` → IPv6 `::1` first, and Docker Desktop's ::1 port proxy
+ACCEPTS connections but never pipes data (survives container restarts;
+only IPv4 works). Fresh clients on 127.0.0.1 worked while the app's
+env-configured singletons hung — that asymmetry is the tell. .env now
+uses 127.0.0.1 for REDIS_HOST and DATABASE_URL; if a "listening but
+never responds" hang reappears, test `localhost` vs `127.0.0.1` data
+flow FIRST. Beware: a hung shared redis also silently kills WORKER job
+processing while its /health still returns 200.
+
 **Memory pressure is real on this ~7GB machine** — Node processes get
 OOM-killed when free RAM drops under ~1GB (has taken down the API alone
 and the whole stack at once, several times). Symptoms: a background task
