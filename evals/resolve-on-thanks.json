@@ -1,0 +1,9 @@
+{
+  "agent": "support-demo",
+  "description": "A closing 'thanks, all good' is a resolution signal: the agent calls resolve_conversation rather than leaving the thread open. This is the one scenario that also passes against the rule-based bridge demo (it resolves on 'thanks'), so it validates the runner mechanics end-to-end even when no managed LLM is configured.",
+  "attempts": 2,
+  "turns": [
+    { "user": "thank you, all good now" },
+    { "expect": { "tool": "resolve_conversation" } }
+  ]
+}

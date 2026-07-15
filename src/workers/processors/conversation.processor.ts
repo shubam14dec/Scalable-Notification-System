@@ -11,7 +11,18 @@ import { slack, SlackError } from '../../channels/slack';
 import type { SlackCredentials } from '../../api/routes/slack';
 import { sendWithFailover } from '../../providers/registry';
 import { isSuppressed } from '../../db/repositories';
-import { runManagedTurn, type TurnUsage } from '../../core/managed-brain';
+import {
+  runManagedTurn,
+  postCustomToolCall,
+  deniedResult,
+  type TurnUsage,
+} from '../../core/managed-brain';
+import { pool } from '../../db/pool';
+import {
+  getToolCall,
+  getToolDef,
+  finishToolCall,
+} from '../../db/agent-tools.repo';
 import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
 import { PermanentError, TransientError } from '../../shared/errors';
@@ -54,11 +65,14 @@ export interface ConversationJobData {
    * What this job does. Absent = 'turn' (so jobs enqueued before this field
    * existed still dispatch correctly). 'deliver' = push a pre-inserted agent
    * message out over the channel; 'resolved' = notify the bridge a
-   * conversation closed.
+   * conversation closed; 'tool-decision' = resume a gated custom tool call
+   * after a human approved/denied it (or the sweep expired it).
    */
-  kind?: 'turn' | 'deliver' | 'resolved';
+  kind?: 'turn' | 'deliver' | 'resolved' | 'tool-decision';
   /** On 'resolved' jobs: who closed the conversation. */
   resolvedBy?: 'bridge' | 'operator' | 'sweep';
+  /** On 'tool-decision' jobs: the agent_tool_calls row to resume. */
+  toolCallId?: string;
 }
 
 const BRIDGE_TIMEOUT_MS = 10_000;
@@ -112,6 +126,7 @@ const BridgeResponseSchema = z
 export async function processConversation(job: Job<ConversationJobData>): Promise<void> {
   if (job.data.kind === 'deliver') return processDeliver(job.data);
   if (job.data.kind === 'resolved') return processResolved(job.data);
+  if (job.data.kind === 'tool-decision') return processToolDecision(job.data);
   return processTurn(job.data);
 }
 
@@ -389,6 +404,132 @@ async function processResolved(data: ConversationJobData): Promise<void> {
     level: 'info',
     detail: 'resolved event delivered to bridge',
   });
+}
+
+/**
+ * The tool-decision resume hop: a gated custom tool call was approved/denied by
+ * a human (or expired by the sweep). Execute (or record the denial/expiry),
+ * update the pause breadcrumb IN PLACE so replay stays pair-complete, drop a
+ * plain human-readable decision row, then run ONE fresh brain turn so the model
+ * composes the user-facing follow-up.
+ *
+ * Every step is content-keyed/atomically-claimed so BullMQ's attempts:5 retries
+ * are no-ops: the POST is claimed via finishToolCall (loser reuses the stored
+ * result), the decision row is dedupe-keyed, the follow-up turn is a fixed
+ * jobId, and the breadcrumb update is a deterministic overwrite.
+ */
+async function processToolDecision(data: ConversationJobData): Promise<void> {
+  const { tenantId, conversationId } = data;
+  if (!data.toolCallId) return;
+  const call = await getToolCall(tenantId, data.toolCallId);
+  if (!call) return; // row vanished (agent/tool deleted) — nothing to resume
+  // Still pending means neither a decision nor an expiry landed — the job was
+  // enqueued in error; leave the pause intact.
+  if (call.status === 'pending') return;
+
+  const conversation = await getConversation(tenantId, conversationId);
+  if (!conversation) return;
+
+  // Compute the final result string, executing the POST only for an approval.
+  let finalResult: string;
+  let outcomeWord: 'executed' | 'failed' | 'denied' | 'expired';
+  if (call.status === 'approved') {
+    const [agent, subscriber, def] = await Promise.all([
+      getAgentById(conversation.agent_id),
+      getSubscriberById(conversation.subscriber_id),
+      call.tool_def_id ? getToolDef(tenantId, call.tool_def_id) : Promise.resolve(null),
+    ]);
+    if (!agent || !subscriber) return; // deleted underneath us — retry later
+    if (!def) {
+      finalResult = 'tool definition no longer exists';
+      outcomeWord = 'failed';
+      await finishToolCall(call.id, 'failed', finalResult, 'approved');
+    } else {
+      const { result, isError } = await postCustomToolCall(
+        def,
+        call.id,
+        call.args,
+        agent,
+        conversation,
+        subscriber,
+      );
+      // Atomic claim from 'approved'; a null loser means a prior attempt already
+      // executed — reuse its stored row instead of double-counting the POST.
+      const claimed = await finishToolCall(call.id, isError ? 'failed' : 'executed', result, 'approved');
+      if (claimed) {
+        finalResult = result;
+        outcomeWord = isError ? 'failed' : 'executed';
+      } else {
+        const stored = await getToolCall(tenantId, call.id);
+        finalResult = stored?.result ?? result;
+        outcomeWord = stored?.status === 'failed' ? 'failed' : 'executed';
+      }
+    }
+  } else if (call.status === 'executed' || call.status === 'failed') {
+    // Retry after we already ran the POST: reuse the stored result.
+    finalResult = call.result ?? '';
+    outcomeWord = call.status;
+  } else if (call.status === 'denied') {
+    finalResult = deniedResult(call.decided_by, call.note);
+    outcomeWord = 'denied';
+  } else {
+    finalResult = 'approval expired';
+    outcomeWord = 'expired';
+  }
+
+  // Update the pause breadcrumb's raw.action.result IN PLACE — the replayed
+  // tool_use/tool_result pair now carries the true outcome, so the follow-up
+  // turn (and every future turn) sees the real result, not "pending".
+  if (call.breadcrumb_message_id) {
+    await updateBreadcrumbResult(call.breadcrumb_message_id, finalResult);
+  }
+
+  // A plain, human-readable transcript row (NO raw.action) — buildHistory folds
+  // action-less system rows as nothing (they never become a tool pair), so this
+  // can't be mistaken for a forged tool receipt on replay. It's also the turn
+  // trigger below: passed as the follow-up turn's inbound.
+  const decisionRow =
+    (await insertConversationMessage({
+      conversationId,
+      tenantId,
+      role: 'system',
+      content: `[approval decided: ${call.tool_name} — ${outcomeWord}]`,
+      dedupeKey: `approval-decided-${call.id}`,
+    })) ?? (await getConversationMessageByDedupe(conversationId, `approval-decided-${call.id}`));
+
+  logExec({
+    tenantId,
+    transactionId: `conv-${conversationId}`,
+    level: 'info',
+    detail: `tool ${call.tool_name} ${outcomeWord} (approval ${call.id})`,
+  });
+
+  if (!decisionRow) return; // unreachable (insert-or-recover)
+
+  // Run ONE fresh brain turn off the decision signal — a normal 'turn' job
+  // keyed to the decision row, so it reuses the full reply/plan-card/delivery
+  // machinery with a fresh MAX_MODEL_CALLS budget. jobId is deterministic, so a
+  // retried decision job re-enqueues a no-op.
+  await getQueue(QUEUE.CONVERSATION).add(
+    decisionRow.id,
+    { tenantId, conversationId, messageId: decisionRow.id },
+    { jobId: `conv-${decisionRow.id}`, attempts: 5 },
+  );
+}
+
+/**
+ * Surgically overwrite a breadcrumb row's `raw.action.result` (jsonb_set) so a
+ * replayed tool pair reflects a decision made after the turn. Content and
+ * created_at are untouched — only the result string moves. Tiny helper (not in
+ * the frozen repo) because it's specific to the approval-resume flow.
+ */
+async function updateBreadcrumbResult(messageId: string, result: string): Promise<void> {
+  await pool.query(
+    `update conversation_messages
+        set raw = jsonb_set(raw, '{action,result}', to_jsonb($2::text))
+      where id = $1 and raw ? 'action'`,
+    [messageId, result],
+  );
 }
 
 type BridgeSignal = z.infer<typeof BridgeResponseSchema>['signals'][number];

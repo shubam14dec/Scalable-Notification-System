@@ -209,6 +209,12 @@ single **card** — a select menu or a text-input field, via
 `present_choices` / `request_input` — rendered natively per channel; see
 [docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md#cards-and-plan-cards).
 
+Managed agents can also call **custom tools** — your own HTTPS endpoints,
+registered per agent (signed calls, optional **human approval** that pauses on
+the dashboard before a tool runs) — and you can test the whole thing with a
+prompt **eval harness** (`npm run eval`) that asserts tool-call traces, not
+prose. See [docs/AGENT-TOOLS.md](docs/AGENT-TOOLS.md).
+
 **The house rule for managed-agent prompts — explicit instruction beats
 implied judgment.** Especially on smaller/compat models, a behavior you
 merely imply will be applied inconsistently; a behavior you name is

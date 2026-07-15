@@ -19,6 +19,7 @@ import InboxPreviewPage from './pages/InboxPreview';
 import AgentsPage from './pages/Agents';
 import ConnectionsPage from './pages/Connections';
 import ConversationsPage, { ConversationDetailPage } from './pages/Conversations';
+import ApprovalsPage from './pages/Approvals';
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   return session.authed ? children : <Navigate to="/login" replace />;
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="/connections" element={<ConnectionsPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/conversations/:id" element={<ConversationDetailPage />} />
+          <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/keys" element={<ApiKeysPage />} />
           <Route path="/inbox-preview" element={<InboxPreviewPage />} />

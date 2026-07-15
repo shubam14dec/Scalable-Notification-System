@@ -4,6 +4,7 @@ import { logExec } from '../core/execution-log';
 import { inAppPubSubChannel } from '../providers/inapp';
 import { sweepInactiveConversations } from '../db/conversations.repo';
 import { purgeDeadLinkTokens } from '../db/identities.repo';
+import { expirePendingToolCalls } from '../db/agent-tools.repo';
 import { getQueue, QUEUE } from '../shared/queues';
 
 /**
@@ -94,6 +95,32 @@ export async function runInactivitySweep(): Promise<number> {
   await purgeDeadLinkTokens().catch((err) =>
     logger.warn({ err: (err as Error).message }, 'link token purge failed'),
   );
+
+  // Piggybacked: approval-gated tool calls past their 24h deadline flip to
+  // 'expired' (set-based, capped) and each enqueues one tool-decision job — the
+  // decision handler records the expiry outcome and runs the follow-up turn.
+  // The jobId is the call id, so a re-swept row (expiry is idempotent via the
+  // status guard) can't double-enqueue.
+  try {
+    const expired = await expirePendingToolCalls(500);
+    if (expired.length > 0) {
+      await getQueue(QUEUE.CONVERSATION).addBulk(
+        expired.map((c) => ({
+          name: `tool-decision-${c.id}`,
+          data: {
+            kind: 'tool-decision',
+            tenantId: c.tenant_id,
+            conversationId: c.conversation_id,
+            toolCallId: c.id,
+          },
+          opts: { jobId: `tool-decision-${c.id}`, attempts: 5 },
+        })),
+      );
+      logger.info({ expired: expired.length }, 'expired pending tool approvals');
+    }
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'tool-call expiry sweep failed');
+  }
 
   return total;
 }

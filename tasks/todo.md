@@ -103,7 +103,95 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — between phases; next work comes from the backlog)
+(Phase 19 Channel Approvals — planning; scout in flight)
+
+## Recently finished
+
+### Agents — Phase 18: Agent Tools (registry + execution + approval + evals) — COMPLETE
+(plan approved 2026-07-15 auto mode; full plan in
+`~/.claude/plans/phase18-agent-tools.md`. Customers register tools on
+managed agents (name/description/JSON-schema params/endpoint/approval
+tier; per-tool sealed secret, SSRF-gated, reserved-name guard); worker
+merges them into the brain's tool list and executes as signed HTTP
+POSTs (bridge HMAC pattern, content-keyed idempotency, 16KB result
+cap); approval='required' pauses via COMPLETE-THE-PAIR-NOW (breadcrumb
+result "pending human approval", force-exit loop, deterministic note)
+then UPDATE-IN-PLACE at decision + fresh resume turn — no suspended
+jobs, no replay changes, fresh turn budget; dashboard Approvals page +
+reserved `agent-approvals` trigger convention; sweep-piggybacked
+24h expiry; eval harness (scripts/eval.ts, scripted+live modes).
+Erases novu's tool-approval lead. ALL COMMITS LOCAL. All Opus.)
+
+- [x] Manager foundation: schema (agent_tool_defs, agent_tool_calls) +
+      agent-tools.repo.ts (atomic transitions, conflict-reuse insert)
+      (applied + live-verified via psql; tsc green)
+- [x] A. Backend routes: tools CRUD + approvals list/decision
+      (Opus, audited; full 400/409 matrix curl-proven on :3033, no
+      secret leak in lists, frozen tool-decision job shape verified in
+      redis; decidedBy = JWT sub not email (JWT carries none) —
+      id→email resolution = polish)
+- [x] B. Worker/brain: tool merge, customer execute branch, approval
+      pause, tool-decision job + resume, sweep expiry
+      (Opus, audited + 1 revision: agent-approvals trigger now fires
+      to reserved subscriber 'approvals' (lookup-first — blind fire
+      would MINT a phantom subscriber via fanout upsert), payload
+      +conversationId; decision row raw=null so replay can never
+      forge a pair; force-exit via pausedToolName; note rides the
+      normal finalize path; 24+8 live assertions green; 35/35
+      agents.test intact)
+- [x] C. Dashboard: Tools section on agent, Approvals page + nav
+      (Opus, audited; build green, contracts type-checked, client
+      validation matrix exercised; Tools gated to managed agents;
+      live round-trips deferred to post-B api restart — covered by
+      the E2E; approvals history renders `result` only-if-present —
+      consider adding result to the GET view = polish)
+- [x] D. Tests: CRUD matrix + execution/approval lifecycle integration
+      + unit validation
+      (Opus, audited; 38 new, suite 430→468 green 2x; SOLVED the
+      flaky-suite mystery — 10,620 stale bull:* keys in test db 15,
+      not parallel contention → manager added tests/global-setup.ts
+      one-time flush; adversarial finds: dedupe key needs canonical
+      JSON (revision dispatched to B), decidedBy uuid noted)
+- [x] E. Eval harness: scripts/eval.ts + evals/ scenarios + npm run eval
+      (Opus, audited; drives the REAL product path, reconstructs tool
+      traces from raw.action + metadata deltas + reply buttons (DB
+      read — no HTTP route exposes raw.action, documented); attempts +
+      skip + exit codes; honest live run: 2 pass / 3 correct-fails
+      (seed tenant runs the bridge demo, scenarios describe the
+      managed one — flips on the user's tenant in E2E) / 1 skip;
+      failure output prints the actual trace = debuggable)
+- [x] F. Docs: AGENT-TOOLS.md + README
+      (Opus, audited; every claim cited file:line incl. the REAL POST
+      body shape ({identifier}/{id,subscriberId} — spec was looser),
+      verify-signature snippet mirrors packages/agent exactly,
+      retries-can-re-POST honesty, opt-in convention documented)
+- [x] G. User E2E (steps 1-5 "everything was smooth" 2026-07-15) +
+      review + single LOCAL commit + memory
+
+**Phase 18 review — COMPLETE (user-verified 2026-07-15):** The full
+loop ran live on his tenant: registered refund_customer (approval
+required, endpoint = a local fake Acme API), rewrote the prompt's
+refund branch to use it, asked on TELEGRAM → agent paused with the
+deterministic note and NOTHING hit the endpoint → approved on the new
+dashboard Approvals page → the signed POST landed (timestamp/signature/
+idempotency-key all visible in the endpoint log) → agent followed up
+on telegram with the refund result. Deny path clean (no POST, agent
+relays the note). THE EVAL HARNESS PROVED ITSELF THE SAME DAY: his
+first `npm run eval` failed refund-path with a perfect diagnosis — the
+scenario encoded the OLD prompt behavior and the E2E's prompt edit
+changed it; exactly the "prompt edits are deploys" catch the harness
+exists for. Scenarios updated (refund-path now asserts the gated
+pause; approval-pause un-skipped). Design wins that made it clean:
+complete-the-pair-now/update-in-place (no suspended jobs, replay
+stays honest, fresh turn budget); one table = execution log +
+approval queue; content-keyed idempotency HARDENED to canonical JSON
+mid-phase (D's adversarial catch: key-order-sensitive hashing could
+double-POST on retry); reserved-recipient revision (blind trigger
+would MINT a phantom subscriber via fanout upsert — B's lookup-first
+catch); D also SOLVED the 3-phase-old flaky-suite mystery (10,620
+stale bull:* keys in test db 15, not parallelism) → global-setup
+flush. Suite 430→470 green. decidedBy=JWT sub (email = polish);
+channel-tap approvals = Phase 19 (planned same day). NO PUSH yet.
 
 ## Recently finished
 

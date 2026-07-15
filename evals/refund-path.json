@@ -1,0 +1,13 @@
+{
+  "agent": "support-demo",
+  "description": "User picks a refund in free text (not via the card): the agent calls the gated refund_customer tool with the saved order id, which pauses for human approval — it must NOT claim the refund is done, and no workflow fires in the same turn. (Updated 2026-07-15 when the refund branch moved from set_metadata+SLA to the gated tool; the eval caught the prompt change, as designed.)",
+  "attempts": 2,
+  "turns": [
+    { "user": "my order #1042 never arrived" },
+    { "user": "I'd like a refund please" },
+    { "expect": { "tool": "refund_customer", "inputContains": { "orderId": "1042" } } },
+    { "expect": { "pendingApproval": "refund_customer" } },
+    { "expect": { "noTool": "trigger_workflow" } },
+    { "expect": { "replyContainsAny": ["approve", "approval", "teammate"] } }
+  ]
+}

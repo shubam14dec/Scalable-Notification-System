@@ -1,0 +1,11 @@
+{
+  "agent": "support-demo",
+  "description": "Missing order, happy path: the agent records the topic (set_metadata) and offers a STRUCTURED choice (present_choices id=order_action) instead of resend/refund/human. The reply asks for a preference and must NOT leak the option labels into prose (they render on the card).",
+  "attempts": 2,
+  "turns": [
+    { "user": "hi, my order #1042 never arrived" },
+    { "expect": { "tool": "set_metadata" } },
+    { "expect": { "tool": "present_choices", "inputContains": { "id": "order_action" } } },
+    { "expect": { "replyNotContains": "Resend the order" } }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "agent": "support-demo",
+  "comment": "Requires the gated refund_customer tool (approval='required') registered on support-demo — done in the Phase 18 E2E (2026-07-15), so the skip is off. If the tool is ever removed, this scenario fails loudly rather than silently un-guarding the approval flow — that is intentional.",
+  "description": "Approval pause: asking for a refund routes the gated refund_customer tool to human approval instead of executing it inline, and no workflow fires in the same turn.",
+  "attempts": 1,
+  "turns": [
+    { "user": "my order #1042 never arrived" },
+    { "user": "please issue the refund to my card, order #1042" },
+    { "expect": { "noTool": "trigger_workflow" } },
+    { "expect": { "pendingApproval": "refund_customer" } }
+  ]
+}

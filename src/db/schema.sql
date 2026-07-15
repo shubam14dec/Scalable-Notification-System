@@ -451,6 +451,64 @@ create table if not exists setup_handoffs (
 create index if not exists setup_handoffs_expiry_idx
   on setup_handoffs (expires_at);
 
+-- Phase 18: customer-defined agent tools. A tool def is prompt-facing
+-- metadata (name/description/parameters tell the MODEL when and how to call
+-- it) plus an execution contract (the customer's HTTPS endpoint we POST to,
+-- signed with the per-tool sealed secret — bridge HMAC scheme). approval
+-- 'required' gates execution behind a human decision. endpoint_url is
+-- SSRF-validated at write time (app layer); name is app-validated against
+-- ^[a-z][a-z0-9_]{0,63}$ and the built-in tool names.
+create table if not exists agent_tool_defs (
+  id           uuid primary key default gen_random_uuid(),
+  tenant_id    uuid not null references tenants(id),
+  agent_id     uuid not null references agents(id) on delete cascade,
+  name         text not null,
+  description  text not null,
+  parameters   jsonb not null default '{"type":"object","properties":{}}',
+  endpoint_url text not null,
+  secret       text not null,           -- sealed (AES-256-GCM, secret-box)
+  approval     text not null default 'auto',   -- auto | required
+  status       text not null default 'active', -- active | disabled
+  timeout_ms   int not null default 10000,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  unique (agent_id, name)
+);
+
+-- Every customer-tool invocation, auto or gated: one table is both the
+-- execution/audit log and the approval queue. dedupe_key is content-keyed
+-- (tc-<inboundMsgId>-<tool>-<argsHash>) so a retried worker job reuses the
+-- stored row/result instead of double-POSTing a side effect. Pending rows
+-- expire via the inactivity sweep (default 24h). breadcrumb_message_id
+-- points at the transcript system row whose raw.action.result is updated
+-- in place at decision time (the replay stays pair-complete throughout).
+create table if not exists agent_tool_calls (
+  id                    uuid primary key default gen_random_uuid(),
+  tenant_id             uuid not null references tenants(id),
+  agent_id              uuid not null references agents(id) on delete cascade,
+  conversation_id       uuid not null references conversations(id) on delete cascade,
+  tool_def_id           uuid references agent_tool_defs(id) on delete set null,
+  tool_name             text not null,
+  args                  jsonb not null default '{}',
+  dedupe_key            text not null unique,
+  status                text not null default 'pending',
+    -- pending | approved | denied | expired | executed | failed
+  result                text,            -- truncated (≤16KB) result string
+  note                  text,            -- approver note
+  decided_by            text,
+  breadcrumb_message_id uuid,
+  requested_at          timestamptz not null default now(),
+  decided_at            timestamptz,
+  expires_at            timestamptz
+);
+
+create index if not exists agent_tool_calls_pending_idx
+  on agent_tool_calls (tenant_id, requested_at desc) where status = 'pending';
+create index if not exists agent_tool_calls_expiry_idx
+  on agent_tool_calls (expires_at) where status = 'pending';
+create index if not exists agent_tool_calls_conversation_idx
+  on agent_tool_calls (conversation_id);
+
 -- Email auto-match's hot path: sender address -> existing real subscriber.
 create index if not exists subscribers_tenant_email_idx
   on subscribers (tenant_id, email) where email is not null;

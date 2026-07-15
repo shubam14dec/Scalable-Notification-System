@@ -1,14 +1,25 @@
+import { createHash } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { fetch as undiciFetch } from 'undici';
 import { openSecret } from '../auth/secret-box';
+import { signWebhook } from '../api/webhook-signature';
 import { assertSafeOutboundUrl, safeDispatcher, UnsafeOutboundUrlError } from './safe-url';
 import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
 import { listWorkflows } from '../db/repositories';
+import { pool } from '../db/pool';
 import { internalTrigger } from './internal-trigger';
+import {
+  listToolDefs,
+  recordToolCall,
+  finishToolCall,
+  setToolCallBreadcrumb,
+  type AgentToolDef,
+} from '../db/agent-tools.repo';
 import type { Card, CardOption } from '../shared/cards';
 import {
   insertConversationMessage,
+  getConversationMessageByDedupe,
   resolveConversation,
   updateConversationMetadata,
   type Agent,
@@ -43,6 +54,14 @@ const REQUEST_TIMEOUT_MS = 60_000;
  * tokens and a worker slot.
  */
 const MAX_MODEL_CALLS = 5;
+/** How long a `approval='required'` call waits before the sweep expires it. */
+const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
+/** Cap a customer tool's response body stored as the model-facing result. */
+const CUSTOM_TOOL_RESULT_MAX = 16 * 1024;
+/** Cap a failing tool's error body echoed back to the model (self-correction). */
+const CUSTOM_TOOL_ERROR_SNIPPET_MAX = 512;
+/** Custom-tool POSTs get their own bound (defs also carry a per-tool timeout). */
+const CUSTOM_TOOL_DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Token spend for one turn, summed across every model call in the loop. */
 export interface TurnUsage {
@@ -125,7 +144,11 @@ export async function runManagedTurn(
   const workflowKeys = (await listWorkflows(conversation.tenant_id)).map(
     (w: { key: string }) => w.key,
   );
-  const tools = buildTools(workflowKeys);
+  // Customer-registered tools, loaded ONCE per turn and merged into the model's
+  // tool menu; a name->def map hands executeTool the routing + endpoint/secret.
+  const toolDefs = await listToolDefs(conversation.tenant_id, agent.id, { activeOnly: true });
+  const defsByName = new Map(toolDefs.map((d) => [d.name, d]));
+  const tools = buildTools(workflowKeys, toolDefs);
 
   // The last tokens before generation win with weak models: a per-turn
   // reminder rides the CURRENT message only — synthesized at request time,
@@ -224,11 +247,15 @@ export async function runManagedTurn(
       // Execute ALL requested tools; return ALL results in ONE user message
       // (splitting them trains the model out of parallel calls).
       const results: Anthropic.ToolResultBlockParam[] = [];
+      // A `approval='required'` custom tool records a pending row and forces the
+      // turn to END after this round (no reply the model composes — a
+      // deterministic "asked a teammate" note ships instead).
+      const pausedTools: string[] = [];
       for (const use of toolUses) {
         // Per-tool interleave (call → exec → result) so the plan card's
         // "close the last pending step" always lands on THIS tool's step.
         await hooks?.onToolCall?.(use.name, use.input as Record<string, unknown>);
-        const outcome = await executeTool(use, agent, conversation, subscriber, inbound, {
+        const outcome = await executeTool(use, agent, conversation, subscriber, inbound, defsByName, {
           onResolve: () => {
             resolved = true;
           },
@@ -246,8 +273,21 @@ export async function runManagedTurn(
           content: outcome.message,
           ...(outcome.isError ? { is_error: true } : {}),
         });
+        if (outcome.pausedToolName) pausedTools.push(outcome.pausedToolName);
       }
       messages.push({ role: 'user', content: results });
+      // Force-exit: one or more approval-gated tools paused this turn. Ship the
+      // deterministic note as the reply through the normal reply/plan-card path
+      // (one job = one finalize); the follow-up turn runs at decision time.
+      if (pausedTools.length > 0) {
+        const names = [...new Set(pausedTools)];
+        const note =
+          names.length === 1
+            ? `I've asked a teammate to approve ${names[0]} — I'll follow up here as soon as it's decided.`
+            : `I've asked a teammate to approve these actions (${names.join(', ')}) — ` +
+              `I'll follow up here as soon as they're decided.`;
+        return { reply: note, resolved, usage };
+      }
       continue;
     }
 
@@ -437,7 +477,7 @@ export function sanitizeReply(text: string): { text: string; forged: boolean } {
 }
 
 /** The tool menu — descriptions say WHEN to call, not just what it does. */
-function buildTools(workflowKeys: string[]): Anthropic.Tool[] {
+function buildTools(workflowKeys: string[], toolDefs: AgentToolDef[] = []): Anthropic.Tool[] {
   const tools: Anthropic.Tool[] = [
     {
       name: 'set_metadata',
@@ -584,7 +624,27 @@ function buildTools(workflowKeys: string[]): Anthropic.Tool[] {
       },
     });
   }
+
+  // Customer-registered tools ride the same menu. `parameters` IS the JSON
+  // schema the customer stored; a name collision with a built-in never happens
+  // in practice (the built-ins own their names), and if it did the built-in
+  // dispatch wins in executeTool — so the customer entry would just be inert.
+  for (const def of toolDefs) {
+    tools.push({
+      name: def.name,
+      description: def.description,
+      input_schema: def.parameters as Anthropic.Tool.InputSchema,
+    });
+  }
   return tools;
+}
+
+/** The outcome of one tool call. `pausedToolName` is set only when an
+ * approval-gated custom tool recorded a pending row and the turn must end. */
+interface ToolOutcome {
+  message: string;
+  isError?: boolean;
+  pausedToolName?: string;
 }
 
 /** Execute one tool call; failures come back as is_error results, not throws. */
@@ -594,13 +654,20 @@ async function executeTool(
   conversation: Conversation,
   subscriber: Subscriber,
   inbound: ConversationMessage,
+  defsByName: Map<string, AgentToolDef>,
   hooks: {
     onResolve: () => void;
     onButtons: (buttons: ReplyButton[]) => void;
     onCard: (card: Card) => void;
   },
-): Promise<{ message: string; isError?: boolean }> {
+): Promise<ToolOutcome> {
   const input = use.input as Record<string, unknown>;
+
+  // Customer-registered tools dispatch here (built-ins above own their names).
+  const def = defsByName.get(use.name);
+  if (def) {
+    return executeCustomTool(use, def, agent, conversation, subscriber, inbound);
+  }
 
   if (use.name === 'present_buttons') {
     // Presentation, not an effect: no txn, no breadcrumb — validation only,
@@ -768,22 +835,286 @@ async function executeTool(
 }
 
 /**
+ * A customer tool call. `auto` tools POST immediately; `required` tools record
+ * a pending approval, breadcrumb the pause, notify staff, and force the turn to
+ * end. Either way the breadcrumb stays pair-complete so history replay reads as
+ * a real tool_use/tool_result pair (never a bare claim or imitable prose).
+ *
+ * Idempotency rides the agent_tool_calls dedupe_key (tc-<inboundId>-<tool>-
+ * <argsHash16>): a retried job reuses the ORIGINAL row instead of double-POSTing
+ * a side effect.
+ */
+async function executeCustomTool(
+  use: Anthropic.ToolUseBlock,
+  def: AgentToolDef,
+  agent: Agent,
+  conversation: Conversation,
+  subscriber: Subscriber,
+  inbound: ConversationMessage,
+): Promise<ToolOutcome> {
+  const args = use.input as Record<string, unknown>;
+  // stableStringify, NOT JSON.stringify: a job retry re-invokes a
+  // NONDETERMINISTIC model, which may emit the same args with a different
+  // object key order — insertion-ordered serialization would mint a second
+  // dedupe key and double-fire a side-effecting customer POST.
+  const argsHash = createHash('sha256').update(stableStringify(args)).digest('hex');
+  const dedupeKey = `tc-${inbound.id}-${def.name}-${argsHash.slice(0, 16)}`;
+  const crumbKey = `signal-${inbound.id}-tool-${def.name}-${argsHash.slice(0, 8)}`;
+
+  if (def.approval === 'required') {
+    const { call, fresh } = await recordToolCall({
+      tenantId: conversation.tenant_id,
+      agentId: agent.id,
+      conversationId: conversation.id,
+      toolDefId: def.id,
+      toolName: def.name,
+      args,
+      dedupeKey,
+      status: 'pending',
+      expiresAt: new Date(Date.now() + APPROVAL_TTL_MS),
+    });
+    // A retried job whose row was already decided returns the stored outcome as
+    // a completed pair (no second pause, no duplicate notification).
+    if (!fresh) {
+      if (call.status === 'executed' || call.status === 'failed') {
+        return { message: call.result ?? '', isError: call.status === 'failed' };
+      }
+      if (call.status === 'denied') {
+        return { message: deniedResult(call.decided_by, call.note) };
+      }
+      if (call.status === 'expired') {
+        return { message: 'approval expired' };
+      }
+      // still pending (or approved but not yet executed by the decision job):
+      // re-pause on the SAME row without re-notifying.
+      return { message: `pending human approval (${call.id})`, pausedToolName: def.name };
+    }
+
+    const result = `pending human approval (${call.id})`;
+    const crumbId = await breadcrumb(conversation, crumbKey, result, {
+      tool: def.name,
+      input: args,
+      result,
+    });
+    if (crumbId) await setToolCallBreadcrumb(call.id, crumbId);
+
+    // Reserved staff notification — convention over config, mirroring the
+    // reserved workflow key: it fires at the tenant's OPS audience, the
+    // reserved subscriber externalId 'approvals' (NEVER the conversation
+    // subscriber — the end customer must not be told their own refund needs
+    // approval). A tenant opts in by creating BOTH the 'agent-approvals'
+    // workflow and an 'approvals' subscriber wired to their channels; missing
+    // either is a silent no-op. Lookup-first because the trigger pipeline
+    // upserts unknown recipients — firing blind would mint a phantom,
+    // channel-less 'approvals' subscriber for tenants who never opted in.
+    // Content-keyed (approval-note-<call.id>) so retries dedupe.
+    const approver = await getApprovalsSubscriber(conversation.tenant_id);
+    if (approver) {
+      await internalTrigger({
+        tenantId: conversation.tenant_id,
+        workflowKey: 'agent-approvals',
+        to: [
+          {
+            subscriberId: approver.external_id,
+            email: approver.email ?? undefined,
+            phone: approver.phone ?? undefined,
+            pushToken: approver.push_token ?? undefined,
+          },
+        ],
+        payload: {
+          approvalId: call.id,
+          agentIdentifier: agent.identifier,
+          toolName: def.name,
+          argsSummary: JSON.stringify(args).slice(0, 280),
+          requestedAt: call.requested_at,
+          conversationId: conversation.id,
+        },
+        transactionId: `approval-note-${call.id}`,
+        source: `managed agent ${agent.identifier} approval`,
+      }).catch((err) => {
+        // A notification hiccup must not fail the pause — the row is the record.
+        logger.warn({ err: (err as Error).message }, 'agent-approvals notification failed');
+      });
+    }
+
+    return { message: result, pausedToolName: def.name };
+  }
+
+  // approval === 'auto': record as pre-approved, then POST now.
+  const { call, fresh } = await recordToolCall({
+    tenantId: conversation.tenant_id,
+    agentId: agent.id,
+    conversationId: conversation.id,
+    toolDefId: def.id,
+    toolName: def.name,
+    args,
+    dedupeKey,
+    status: 'approved',
+  });
+  if (!fresh && (call.status === 'executed' || call.status === 'failed')) {
+    // Completed on a prior attempt — reuse the stored result, no second POST.
+    return { message: call.result ?? '', isError: call.status === 'failed' };
+  }
+
+  const { result, isError } = await postCustomToolCall(def, call.id, args, agent, conversation, subscriber);
+  // Atomic claim from 'approved'; a null loser (already executed) reuses stored.
+  const claimed = await finishToolCall(call.id, isError ? 'failed' : 'executed', result);
+  const finalResult = claimed?.result ?? result;
+  const finalIsError = (claimed?.status ?? (isError ? 'failed' : 'executed')) === 'failed';
+  const crumbId = await breadcrumb(conversation, crumbKey, finalResult, {
+    tool: def.name,
+    input: args,
+    result: finalResult,
+  });
+  if (crumbId) await setToolCallBreadcrumb(call.id, crumbId);
+  return { message: finalResult, isError: finalIsError };
+}
+
+/** The result string stored/replayed when an approval is denied. */
+export function deniedResult(decidedBy: string | null, note: string | null): string {
+  return `denied by ${decidedBy ?? 'unknown'}${note ? `: ${note}` : ''}`;
+}
+
+/**
+ * Canonical JSON for content hashing: object keys recursively sorted, arrays
+ * keep their order, primitives serialize as JSON.stringify would. Only for
+ * JSON-shaped values (tool args are parsed JSON — no Dates/functions/cycles).
+ * Exists because the dedupe key must be identical across job retries even
+ * when the re-invoked model emits the same args in a different key order.
+ */
+export function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    // JSON semantics: undefined inside an array serializes as null.
+    return `[${value.map((v) => (v === undefined ? 'null' : stableStringify(v))).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const entries = Object.keys(obj)
+      .sort()
+      // JSON semantics: undefined-valued keys are omitted.
+      .filter((k) => obj[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * The tenant's reserved ops-side subscriber for approval notifications
+ * (externalId 'approvals'): find-not-create, so a tenant who never opted in
+ * gets no phantom subscriber and no notification. Inline query (not a repo
+ * addition) because the data layer is frozen for this slice.
+ */
+async function getApprovalsSubscriber(tenantId: string): Promise<Subscriber | null> {
+  const { rows } = await pool.query(
+    `select external_id, email, phone, push_token
+       from subscribers where tenant_id = $1 and external_id = 'approvals'`,
+    [tenantId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * POST a customer tool's invocation to its endpoint, signed exactly like the
+ * bridge transport (x-asyncify-timestamp + -signature over `${ts}.${body}`),
+ * plus an idempotency key (the call id) so the customer can dedupe our retries.
+ * NEVER throws: every failure (non-2xx, network, timeout, blocked URL) comes
+ * back as {isError:true} so the model self-corrects — side-effecting POSTs are
+ * not auto-retried within a turn. Shared with the tool-decision resume path.
+ */
+export async function postCustomToolCall(
+  def: Pick<AgentToolDef, 'name' | 'endpoint_url' | 'secret' | 'timeout_ms'>,
+  callId: string,
+  args: Record<string, unknown>,
+  agent: Pick<Agent, 'identifier'>,
+  conversation: Pick<Conversation, 'id'>,
+  subscriber: Pick<Subscriber, 'external_id'>,
+): Promise<{ result: string; isError: boolean }> {
+  // Defense in depth: the endpoint was SSRF-checked at registration, re-check
+  // literal private IPs here (they bypass the dispatcher's DNS hook).
+  try {
+    await assertSafeOutboundUrl(def.endpoint_url, { resolve: false });
+  } catch (err) {
+    if (err instanceof UnsafeOutboundUrlError) {
+      return { result: `endpoint blocked: ${err.message}`, isError: true };
+    }
+    return { result: `endpoint check failed: ${(err as Error).message}`, isError: true };
+  }
+
+  const rawBody = JSON.stringify({
+    toolCallId: callId,
+    tool: def.name,
+    arguments: args,
+    agent: { identifier: agent.identifier },
+    conversation: { id: conversation.id, subscriberId: subscriber.external_id },
+  });
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = signWebhook(openSecret(def.secret), timestamp, rawBody);
+
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    def.timeout_ms > 0 ? def.timeout_ms : CUSTOM_TOOL_DEFAULT_TIMEOUT_MS,
+  );
+  try {
+    const response = await undiciFetch(def.endpoint_url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-asyncify-timestamp': timestamp,
+        'x-asyncify-signature': signature,
+        'x-asyncify-idempotency-key': callId,
+      },
+      body: rawBody,
+      signal: controller.signal,
+      dispatcher: safeDispatcher(),
+      // A tool endpoint must answer directly; a redirect could bounce us to a
+      // private host (SSRF), so never follow one.
+      redirect: 'manual',
+    });
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      return {
+        result: `HTTP ${response.status}: ${text.slice(0, CUSTOM_TOOL_ERROR_SNIPPET_MAX)}`,
+        isError: true,
+      };
+    }
+    return { result: text.slice(0, CUSTOM_TOOL_RESULT_MAX), isError: false };
+  } catch (err) {
+    // undici wraps connect-time SSRF blocks in the cause chain.
+    for (let e: unknown = err; e instanceof Error; e = e.cause) {
+      if (e instanceof UnsafeOutboundUrlError) {
+        return { result: `endpoint blocked: ${e.message}`, isError: true };
+      }
+    }
+    const msg = controller.signal.aborted ? `timed out after ${def.timeout_ms}ms` : (err as Error).message;
+    return { result: `tool request failed: ${msg}`, isError: true };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Transcript breadcrumb, content-keyed so retries can't repeat it. `action`
  * records the structured tool call so history replay can reconstruct REAL
- * tool_use blocks instead of imitable prose.
+ * tool_use blocks instead of imitable prose. Returns the breadcrumb row id
+ * (recovered from the dedupe key on a retry that lost the insert) so a caller
+ * can point an agent_tool_calls row at it for in-place result updates.
  */
 async function breadcrumb(
   conversation: Conversation,
   dedupeKey: string,
   content: string,
   action?: { tool: string; input: Record<string, unknown>; result: string },
-): Promise<void> {
-  await insertConversationMessage({
-    conversationId: conversation.id,
-    tenantId: conversation.tenant_id,
-    role: 'system',
-    content,
-    dedupeKey,
-    raw: action ? { action } : undefined,
-  });
+): Promise<string | null> {
+  const row =
+    (await insertConversationMessage({
+      conversationId: conversation.id,
+      tenantId: conversation.tenant_id,
+      role: 'system',
+      content,
+      dedupeKey,
+      raw: action ? { action } : undefined,
+    })) ?? (await getConversationMessageByDedupe(conversation.id, dedupeKey));
+  return row?.id ?? null;
 }
