@@ -54,6 +54,18 @@ docs/ARCHITECTURE-COMPARISON.md):**
       counts on list endpoints; mandatory column projection on hot
       queries; cache-set TTL jitter (Tier B — adopt incrementally)
 
+**Phase 18/19 polish leftovers (small, non-blocking):**
+- [ ] sdk-node wrappers for the new surfaces: client.agents.tools.*
+      (CRUD/rotate), client.approvals.* (list/decide),
+      client.settings.approvals (get/put) — the APIs exist, the SDK
+      doesn't wrap them yet (dashboard/REST cover it today); ship with
+      a changeset when done
+- [ ] decidedBy shows the JWT sub (uuid) for dashboard deciders —
+      resolve to name/email in the approvals view
+- [ ] approval-pause eval scenario assumes the gated refund_customer
+      stays registered on support-demo (fails loudly if removed — by
+      design, but worth remembering)
+
 **Phase 17 polish leftovers (small, non-blocking):**
 - [ ] GET /v1/connections: expose quickSetup flag on slack rows so the
       dashboard hides re-arm on manual connections (today it 409s
