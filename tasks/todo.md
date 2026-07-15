@@ -59,8 +59,11 @@ docs/ARCHITECTURE-COMPARISON.md):**
       client.settings.{getApprovals,putApprovals} + types + README —
       shipped 2026-07-16 (Opus, audited; live-smoked via the BUILT
       package against :3000; changeset minor → node 0.3.0)
-- [ ] decidedBy shows the JWT sub (uuid) for dashboard deciders —
-      resolve to name/email in the approvals view
+- [x] decidedBy for dashboard deciders now resolves to
+      `dashboard: <email>` at decision time (stored, not
+      display-resolved; missing user → raw sub; api-key unchanged) —
+      shipped + user-verified 2026-07-16 ("dashboard:
+      shubam@xmobility.ai" in History)
 - [ ] approval-pause eval scenario assumes the gated refund_customer
       stays registered on support-demo (fails loudly if removed — by
       design, but worth remembering)
