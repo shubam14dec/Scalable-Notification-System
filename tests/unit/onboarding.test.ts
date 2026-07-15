@@ -190,8 +190,12 @@ describe('oauth-state mint/verify', () => {
   test('a tampered signature verifies to null', () => {
     const state = mintOauthState(payload);
     const [body, mac] = state.split('.');
-    // Flip the last char of the MAC (still base64url-legal, but wrong).
-    const flipped = mac.slice(0, -1) + (mac.at(-1) === 'A' ? 'B' : 'A');
+    // Flip the FIRST char of the MAC. Not the last: base64url's final char
+    // carries only 4 significant bits (the rest is padding decoders ignore),
+    // so an A↔B flip there can decode to the SAME bytes and legitimately
+    // verify — which made this test fail ~6% of runs. Every bit of the first
+    // char is significant, so this tamper always changes the decoded MAC.
+    const flipped = (mac[0] === 'A' ? 'B' : 'A') + mac.slice(1);
     expect(verifyOauthState(`${body}.${flipped}`)).toBeNull();
     // A tampered body (payload swap) also fails the MAC check.
     const other = mintOauthState({ ...payload, tenantId: 'someone-else' });
