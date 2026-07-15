@@ -37,6 +37,7 @@ import {
   conversationTranscriptBefore,
   finalizeAgentMessage,
   getAgentById,
+  getConnectionById,
   getConnectionForConversation,
   getConversation,
   getConversationMessage,
@@ -482,6 +483,44 @@ async function processToolDecision(data: ConversationJobData): Promise<void> {
   // turn (and every future turn) sees the real result, not "pending".
   if (call.breadcrumb_message_id) {
     await updateBreadcrumbResult(call.breadcrumb_message_id, finalResult);
+  }
+
+  // Finalize any channel approval cards posted at pause time: rewrite each to
+  // its outcome text-only (which strips the Approve/Deny buttons on Slack, and
+  // omits the keyboard on Telegram). WHOLLY best-effort per card — a failed
+  // edit is logged and skipped; the decision has already landed in Postgres.
+  for (const ref of call.cards ?? []) {
+    try {
+      const conn = await getConnectionById(ref.connectionId);
+      if (!conn || conn.status !== 'active' || conn.tenant_id !== tenantId) continue;
+      const { botToken } = JSON.parse(openSecret(conn.credentials)) as { botToken: string };
+      let cardText: string;
+      if (outcomeWord === 'executed') {
+        // finalResult (not call.result): on the fresh-approval path the local
+        // call row predates the POST, so its result is still null — finalResult
+        // is the freshly computed, accurate execution result.
+        const snippet = finalResult.slice(0, 140);
+        cardText = `✓ approved by ${call.decided_by} — executed${snippet ? `\n${snippet}` : ''}`;
+      } else if (outcomeWord === 'failed') {
+        cardText = `✓ approved by ${call.decided_by} — execution failed`;
+      } else if (outcomeWord === 'denied') {
+        cardText = `✗ denied by ${call.decided_by}${call.note ? `: ${call.note}` : ''}`;
+      } else {
+        cardText = `⏱ expired (24h) — no decision`;
+      }
+      if (ref.channel === 'slack') {
+        await slack.update(botToken, ref.channelId, ref.ts, cardText);
+      } else {
+        await telegram.editMessageText(botToken, ref.chatId, ref.messageId, cardText);
+      }
+    } catch (err) {
+      logExec({
+        tenantId,
+        transactionId: `conv-${conversationId}`,
+        level: 'warn',
+        detail: `approval card finalize failed (${ref.channel}): ${(err as Error).message}`,
+      });
+    }
   }
 
   // A plain, human-readable transcript row (NO raw.action) — buildHistory folds

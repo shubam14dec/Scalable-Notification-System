@@ -21,6 +21,7 @@ import {
   resolveChannelIdentity,
   upsertChannelIdentity,
 } from '../../db/identities.repo';
+import { getToolCall, decideToolCall } from '../../db/agent-tools.repo';
 import { resolveAgentForInbound } from '../../core/inbound-routing';
 import {
   editConversationMessage,
@@ -345,6 +346,76 @@ export function registerSlackRoutes(app: FastifyInstance) {
         !payload.message?.ts
       ) {
         return { ok: true, skipped: true };
+      }
+
+      // ---- approval taps: a channel approval-card button decides a pending
+      // tool call and short-circuits the whole inbound pipeline. It must NOT
+      // open a conversation or ingest a turn. The signature check above already
+      // covers this request, so a tap is as trusted as any other interaction.
+      const approvalMatch = /^approval:(approve|deny):([0-9a-f-]{36})$/.exec(action.action_id);
+      if (approvalMatch) {
+        const approve = approvalMatch[1] === 'approve';
+        const callId = approvalMatch[2];
+        const tenant = connection.tenant_id;
+
+        const call = await getToolCall(tenant, callId);
+        // A card for a call this tenant doesn't own (foreign/stale) — ack silently.
+        if (!call) return { ok: true };
+
+        const identity = await resolveChannelIdentity(tenant, 'slack', payload.user.id);
+        const decidedBy = identity
+          ? `slack:${payload.user.id} (${identity.external_id})`
+          : `slack:${payload.user.id}`;
+
+        // Atomic pending → approved|denied; null = someone (or expiry) beat us.
+        const decided = await decideToolCall(
+          tenant,
+          callId,
+          approve ? 'approved' : 'denied',
+          decidedBy,
+        );
+
+        if (decided) {
+          // Optimistic "processing…" edit BEFORE the enqueue: a fast worker's
+          // finalizer edit must land strictly after this one, or the card
+          // would stick on "processing…" forever. Edit failure never blocks
+          // the decision — the job still goes out.
+          try {
+            await slack.update(
+              creds.botToken,
+              payload.channel.id,
+              payload.message.ts,
+              `${approve ? 'Approving' : 'Denying'} — by ${decidedBy}, processing…`,
+            );
+          } catch (err) {
+            logger.warn({ err: (err as Error).message }, 'slack approval card update failed');
+          }
+          await getQueue(QUEUE.CONVERSATION).add(
+            decided.id,
+            {
+              kind: 'tool-decision',
+              tenantId: tenant,
+              conversationId: decided.conversation_id,
+              toolCallId: decided.id,
+            },
+            { jobId: `tool-decision-${decided.id}`, attempts: 5 },
+          );
+        } else {
+          // Lost the race: re-read to report who actually decided it.
+          const current = (await getToolCall(tenant, callId)) ?? call;
+          try {
+            await slack.update(
+              creds.botToken,
+              payload.channel.id,
+              payload.message.ts,
+              `already ${current.status} by ${current.decided_by ?? 'someone'}`,
+            );
+          } catch (err) {
+            logger.warn({ err: (err as Error).message }, 'slack approval card update failed');
+          }
+        }
+
+        return { ok: true };
       }
 
       // Channel/group ids (C…/G…) are routable scopes; a DM (D…) never is.

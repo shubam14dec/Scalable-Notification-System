@@ -509,6 +509,29 @@ create index if not exists agent_tool_calls_expiry_idx
 create index if not exists agent_tool_calls_conversation_idx
   on agent_tool_calls (conversation_id);
 
+-- Phase 19: channel approvals. cards tracks every approval card posted to
+-- an external channel so taps can be correlated and the cards edited in
+-- place to the final outcome. Entries:
+--   {channel:'slack',    connectionId, channelId, ts}
+--   {channel:'telegram', connectionId, chatId, messageId}
+-- connectionId is load-bearing: tap webhooks route by :connectionId, and
+-- the finalizer needs it to pick the right bot token.
+alter table agent_tool_calls add column if not exists
+  cards jsonb not null default '[]';
+
+-- The first tenant-WIDE settings store (everything before this was
+-- per-agent or per-connection). Generic key/value so future tenant-level
+-- config (branding, defaults) reuses it instead of sprouting columns.
+-- Phase 19 uses key 'approvals':
+--   {slackConnectionId, slackChannelId, telegramConnectionId}
+create table if not exists tenant_settings (
+  tenant_id  uuid not null references tenants(id) on delete cascade,
+  key        text not null,
+  value      jsonb not null default '{}',
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, key)
+);
+
 -- Email auto-match's hot path: sender address -> existing real subscriber.
 create index if not exists subscribers_tenant_email_idx
   on subscribers (tenant_id, email) where email is not null;

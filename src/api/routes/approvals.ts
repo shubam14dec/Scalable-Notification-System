@@ -33,6 +33,7 @@ function approvalView(call: AgentToolCall, identifier: string | null) {
     args: call.args,
     conversationId: call.conversation_id,
     status: call.status,
+    result: call.result === null ? null : call.result.slice(0, 500),
     note: call.note,
     requestedAt: call.requested_at,
     decidedAt: call.decided_at,

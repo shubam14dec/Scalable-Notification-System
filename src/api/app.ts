@@ -27,6 +27,7 @@ import { registerIdentityRoutes } from './routes/identities';
 import { registerMeRoutes } from './routes/me';
 import { registerConnectionRoutes } from './routes/connections';
 import { registerHandoffRoutes } from './routes/handoff';
+import { registerSettingsRoutes } from './routes/settings';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -83,6 +84,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerIdentityRoutes(app);
   registerMeRoutes(app);
   registerConnectionRoutes(app);
+  registerSettingsRoutes(app);
   registerTriggerRoutes(app);
   registerAdminRoutes(app);
   registerEventRoutes(app);

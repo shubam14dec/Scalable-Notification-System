@@ -30,6 +30,12 @@ export interface AgentToolDef {
   updated_at: string;
 }
 
+/** A posted channel approval card, tracked so taps correlate and the card
+ *  can be edited to the outcome. connectionId picks the bot token. */
+export type ApprovalCardRef =
+  | { channel: 'slack'; connectionId: string; channelId: string; ts: string }
+  | { channel: 'telegram'; connectionId: string; chatId: string; messageId: number };
+
 export interface AgentToolCall {
   id: string;
   tenant_id: string;
@@ -44,6 +50,7 @@ export interface AgentToolCall {
   note: string | null;
   decided_by: string | null;
   breadcrumb_message_id: string | null;
+  cards: ApprovalCardRef[];
   requested_at: string;
   decided_at: string | null;
   expires_at: string | null;
@@ -279,6 +286,17 @@ export async function finishToolCall(
     [callId, outcome, result, fromStatus],
   );
   return rows[0] ?? null;
+}
+
+/** Record the channel approval cards posted for a call (one write, once). */
+export async function setToolCallCards(
+  callId: string,
+  cards: ApprovalCardRef[],
+): Promise<void> {
+  await pool.query('update agent_tool_calls set cards = $2 where id = $1', [
+    callId,
+    JSON.stringify(cards),
+  ]);
 }
 
 export async function setToolCallBreadcrumb(

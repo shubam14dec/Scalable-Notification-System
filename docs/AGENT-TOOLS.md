@@ -221,6 +221,53 @@ firing blind would mint a phantom, channel-less `approvals` subscriber). A
 notification failure never fails the pause — the Approvals page is the
 authoritative record.
 
+### Approve from Slack / Telegram
+
+The convention above only *pings* your approvers; to let them **decide** in the
+chat itself, route each pending call as an in-channel **Approve/Deny card**. The
+card is an accelerator, not the source of truth — every failure is swallowed so
+no channel hiccup can break the pause, and the Approvals page stays authoritative.
+
+**Setup — dashboard → Approvals → Channel approvals** (the collapsible panel at
+the top). Configure Slack, Telegram, or both:
+
+- **Slack** — pick a Slack **connection** and paste the **channel ID** (open the
+  channel → details → About; it looks like `C0123456789`). `/invite` the bot into
+  that channel first — a `not_in_channel` / `channel_not_found` post fails with a
+  logged hint (`invite the bot to <channel>`) and never blocks the pause.
+- **Telegram** — pick a Telegram **connection**. Cards go to **every telegram
+  identity linked to the reserved `approvals` subscriber** (the *same* subscriber
+  as the notification convention above) — each approver gets a private-chat card,
+  and each must have `/start`ed the bot (unreachable approvers are logged and
+  skipped).
+
+Or set it over the API — `PUT /v1/settings/approvals` with any of
+`{slackConnectionId, slackChannelId, telegramConnectionId}`; an explicit `null`
+clears a field (nulling the Slack connection also clears its channel id), and a
+`slackChannelId` requires an active `slackConnectionId`. `GET` returns the
+current settings plus `telegramApproverCount`.
+
+**What happens.** Each pending approval posts a card carrying **Approve** and
+**Deny** buttons (Slack: one card in the channel; Telegram: one per linked
+approver):
+
+- **Any channel member / linked approver can tap** — channel membership *is* the
+  authorization boundary (the webhook signature already trusts the request).
+- The tap records **exactly who**: `slack:U…` / `telegram:<id>`, plus the linked
+  subscriber id when the tapper is connected via identity links
+  (`slack:U… (jane@acme.com)`).
+- Taps **race safely with the dashboard** — the decision is a single atomic
+  claim, so one tap (or one dashboard click) wins and every late tapper sees
+  `already <status> by <who>`.
+- Every posted card is **edited in place to the final outcome**: `✓ approved by
+  … — executed` (with a result snippet), `✗ denied by … : <note>`, or
+  `⏱ expired (24h)`. The winner's card first flips to `Approving — by …,
+  processing…` while the follow-up turn runs, then settles to the outcome.
+
+**Audit trail.** However a call is decided — dashboard, Slack, or Telegram — the
+`decided_by` on the approval record carries that tapper's identity, and the
+dashboard **History** tab shows it alongside the decision and any note.
+
 ## Evals: test your prompt like you test your code
 
 The eval harness proves your **real configured LLM**, given your **real

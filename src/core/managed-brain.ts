@@ -14,12 +14,20 @@ import {
   recordToolCall,
   finishToolCall,
   setToolCallBreadcrumb,
+  setToolCallCards,
   type AgentToolDef,
+  type ApprovalCardRef,
 } from '../db/agent-tools.repo';
+import { getTenantSetting } from '../db/tenant-settings.repo';
+import { listChannelIdentities } from '../db/identities.repo';
+import { logExec } from './execution-log';
+import { slack, SlackError } from '../channels/slack';
+import { telegram } from '../channels/telegram';
 import type { Card, CardOption } from '../shared/cards';
 import {
   insertConversationMessage,
   getConversationMessageByDedupe,
+  getConnectionById,
   resolveConversation,
   updateConversationMetadata,
   type Agent,
@@ -935,6 +943,118 @@ async function executeCustomTool(
         // A notification hiccup must not fail the pause — the row is the record.
         logger.warn({ err: (err as Error).message }, 'agent-approvals notification failed');
       });
+    }
+
+    // Channel approval cards: post an in-channel Approve/Deny card to the
+    // tenant's configured Slack channel and/or Telegram approvers, tracking
+    // each posted message on the call row so a tap correlates and the card can
+    // later be edited to the outcome (slice B finalizer). WHOLLY best-effort —
+    // every failure is swallowed so no channel hiccup can break the pause; the
+    // agent_tool_calls row is the record, the cards are only an accelerator.
+    try {
+      const settings = await getTenantSetting<{
+        slackConnectionId?: string;
+        slackChannelId?: string;
+        telegramConnectionId?: string;
+      }>(conversation.tenant_id, 'approvals');
+      if (settings) {
+        const argsSummary = JSON.stringify(args).slice(0, 280);
+        const cardText =
+          `Approval needed\n${agent.identifier} wants to run ${def.name}\n` +
+          `Customer: ${subscriber.external_id}\n` +
+          `${argsSummary}\nAlso in the dashboard → Approvals.`;
+        const cards: ApprovalCardRef[] = [];
+
+        // --- Slack: one card in the configured channel ---
+        if (settings.slackConnectionId && settings.slackChannelId) {
+          const channelId = settings.slackChannelId;
+          try {
+            const conn = await getConnectionById(settings.slackConnectionId);
+            if (
+              conn &&
+              conn.tenant_id === conversation.tenant_id &&
+              conn.channel === 'slack' &&
+              conn.status === 'active'
+            ) {
+              const { botToken } = JSON.parse(openSecret(conn.credentials)) as { botToken: string };
+              const sent = await slack.postMessage(botToken, channelId, cardText, {
+                buttons: [
+                  { id: `approval:approve:${call.id}`, label: 'Approve' },
+                  { id: `approval:deny:${call.id}`, label: 'Deny' },
+                ],
+              });
+              cards.push({ channel: 'slack', connectionId: conn.id, channelId, ts: sent.ts });
+            }
+          } catch (err) {
+            const code = err instanceof SlackError ? err.error : '';
+            const detail =
+              code === 'not_in_channel' || code === 'channel_not_found'
+                ? `slack approval card failed: invite the bot to ${channelId} (${code})`
+                : `slack approval card failed: ${(err as Error).message}`;
+            logExec({
+              tenantId: conversation.tenant_id,
+              transactionId: `conv-${conversation.id}`,
+              level: 'warn',
+              detail,
+            });
+          }
+        }
+
+        // --- Telegram: one card per registered approver (private chat) ---
+        if (settings.telegramConnectionId) {
+          try {
+            const conn = await getConnectionById(settings.telegramConnectionId);
+            if (
+              conn &&
+              conn.tenant_id === conversation.tenant_id &&
+              conn.channel === 'telegram' &&
+              conn.status === 'active'
+            ) {
+              const { botToken } = JSON.parse(openSecret(conn.credentials)) as { botToken: string };
+              const approvers = (
+                await listChannelIdentities(conversation.tenant_id, 'approvals')
+              ).filter((i) => i.channel === 'telegram');
+              for (const ident of approvers) {
+                // external_key is the approver's private chat id (== their user id).
+                try {
+                  const sent = await telegram.sendMessage(botToken, ident.external_key, cardText, {
+                    buttons: [
+                      { id: `apv:a:${call.id}`, label: 'Approve' },
+                      { id: `apv:d:${call.id}`, label: 'Deny' },
+                    ],
+                  });
+                  cards.push({
+                    channel: 'telegram',
+                    connectionId: conn.id,
+                    chatId: ident.external_key,
+                    messageId: sent.message_id,
+                  });
+                } catch (err) {
+                  // Bot not /start'ed by this approver, blocked, etc. — skip them.
+                  logExec({
+                    tenantId: conversation.tenant_id,
+                    transactionId: `conv-${conversation.id}`,
+                    level: 'warn',
+                    detail: `telegram approval card failed for ${ident.external_key}: ${(err as Error).message}`,
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            logExec({
+              tenantId: conversation.tenant_id,
+              transactionId: `conv-${conversation.id}`,
+              level: 'warn',
+              detail: `telegram approval cards failed: ${(err as Error).message}`,
+            });
+          }
+        }
+
+        if (cards.length) await setToolCallCards(call.id, cards);
+      }
+    } catch (err) {
+      // Belt-and-braces: even a settings-read blip must not break the pause.
+      logger.warn({ err: (err as Error).message }, 'approval card posting failed');
     }
 
     return { message: result, pausedToolName: def.name };

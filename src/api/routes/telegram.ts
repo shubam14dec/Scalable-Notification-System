@@ -19,6 +19,7 @@ import {
   resolveChannelIdentity,
   upsertChannelIdentity,
 } from '../../db/identities.repo';
+import { getToolCall, decideToolCall } from '../../db/agent-tools.repo';
 import { resolveAgentForInbound } from '../../core/inbound-routing';
 import {
   deleteConnection,
@@ -562,13 +563,90 @@ async function handleCallback(
   if (!callback.data || !callback.message || callback.from.is_bot) {
     return { ok: true, skipped: true };
   }
-  const agent = await resolveAgentForInbound(connection);
-  if (!agent) return { ok: true, skipped: true };
-
   // Clear the client-side spinner regardless of what happens next.
   await telegram
     .answerCallbackQuery(credentials(connection).botToken, callback.id)
     .catch((err) => logger.warn({ err: (err as Error).message }, 'answerCallbackQuery failed'));
+
+  // ---- approval taps: a channel approval-card button decides a pending tool
+  // call and short-circuits. No subscriber, conversation, or turn is created —
+  // and no agent resolution either: an approval must land even when the
+  // connection's default agent is disabled or deleted.
+  const apvMatch = /^apv:(a|d):([0-9a-f-]{36})$/.exec(callback.data);
+  if (apvMatch) {
+    const approve = apvMatch[1] === 'a';
+    const callId = apvMatch[2];
+    const tenant = connection.tenant_id;
+    const botToken = credentials(connection).botToken;
+    const chatId = callback.message.chat.id;
+    const messageId = callback.message.message_id;
+
+    const call = await getToolCall(tenant, callId);
+    // A card for a call this tenant doesn't own (foreign/stale) — ack silently.
+    if (!call) return { ok: true };
+
+    const identity = await resolveChannelIdentity(
+      tenant,
+      'telegram',
+      String(callback.from.id),
+    );
+    const decidedBy = identity
+      ? `telegram:${callback.from.id} (${identity.external_id})`
+      : `telegram:${callback.from.id}`;
+
+    // Atomic pending → approved|denied; null = someone (or expiry) beat us.
+    const decided = await decideToolCall(
+      tenant,
+      callId,
+      approve ? 'approved' : 'denied',
+      decidedBy,
+    );
+
+    if (decided) {
+      // Optimistic "processing…" edit BEFORE the enqueue: a fast worker's
+      // finalizer edit must land strictly after this one, or the card would
+      // stick on "processing…" forever. Edit failure never blocks the
+      // decision — the job still goes out.
+      await telegram
+        .editMessageText(
+          botToken,
+          chatId,
+          messageId,
+          `${approve ? 'Approving' : 'Denying'} — by ${decidedBy}, processing…`,
+        )
+        .catch((err) =>
+          logger.warn({ err: (err as Error).message }, 'telegram approval card edit failed'),
+        );
+      await getQueue(QUEUE.CONVERSATION).add(
+        decided.id,
+        {
+          kind: 'tool-decision',
+          tenantId: tenant,
+          conversationId: decided.conversation_id,
+          toolCallId: decided.id,
+        },
+        { jobId: `tool-decision-${decided.id}`, attempts: 5 },
+      );
+    } else {
+      // Lost the race: re-read to report who actually decided it.
+      const current = (await getToolCall(tenant, callId)) ?? call;
+      await telegram
+        .editMessageText(
+          botToken,
+          chatId,
+          messageId,
+          `already ${current.status} by ${current.decided_by ?? 'someone'}`,
+        )
+        .catch((err) =>
+          logger.warn({ err: (err as Error).message }, 'telegram approval card edit failed'),
+        );
+    }
+
+    return { ok: true };
+  }
+
+  const agent = await resolveAgentForInbound(connection);
+  if (!agent) return { ok: true, skipped: true };
 
   const subscriber = await resolveTelegramSubscriber(connection.tenant_id, callback.from.id);
   const conversation = await openChannelConversation({

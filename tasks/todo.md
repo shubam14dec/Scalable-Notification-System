@@ -103,7 +103,74 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(Phase 19 Channel Approvals — planning; scout in flight)
+(nothing — between phases; next work comes from the backlog)
+
+## Recently finished
+
+### Agents — Phase 19: Channel Approvals (tap Approve/Deny in Slack/Telegram) — COMPLETE
+(plan approved 2026-07-15 auto mode; full plan in
+`~/.claude/plans/phase19-channel-approvals.md`. Approval cards post to a
+configured Slack channel (membership = authz boundary, per-tap identity
+recorded + enriched via Phase-15 links) and to telegram identities
+linked to the 'approvals' subscriber; taps reuse the atomic
+decideToolCall + the same tool-decision job (all entry points
+converge); cards edited in place to the outcome; first tenant-wide
+setting (tenant_settings table). callback_data scheme apv:a:<uuid>
+fits telegram's 64-byte cap. ALL COMMITS LOCAL. All Opus.)
+
+- [x] Foundation (manager): tenant_settings + cards column + repo bits
+      (schema live-verified; tenant-settings.repo.ts new; ApprovalCardRef
+      + setToolCallCards in agent-tools.repo; tsc green)
+- [x] A. API: settings GET/PUT + approvals view +result
+      (Opus, audited; validation matrix curl-proven on :3044;
+      explicit-null cascades slackChannelId, inherited-null + channel
+      set = 400; approver count from linked identities; result
+      truncated 500 in view)
+- [x] B. Worker/brain: card poster + decision finalizer
+      (Opus, audited; 4/4 live scenarios incl. not_in_channel
+      graceful degrade w/ invite hint + telegram-still-posts;
+      correct divergence: executed snippet uses finalResult, not the
+      stale pre-POST call.result)
+- [x] C. Inbound: slack interactivity + telegram callback branches
+      (Opus, audited; 22/22 live proof — winners/losers/identity/
+      foreign-ack/regression; branches slot BEFORE conversation
+      machinery (taps never open threads); frozen job byte-exact;
+      71 existing slack+telegram tests intact)
+- [ ] D. Dashboard: settings section on Approvals page
+- [x] E. Tests: posting/taps/race/not_in_channel + parse unit
+      (Opus, audited; suite 470→492 green 2x; 22 new incl. the full
+      loop pending→tap→POST→cards-finalized→follow-up; adversarial
+      find: telegram branch ordered after agent resolution → revision
+      dispatched to C; decidedBy-verbatim note = plain-text-safe)
+- [x] F. Docs (done, cited) + user E2E + review + LOCAL commit + memory
+
+**Phase 19 review — COMPLETE (user-verified 2026-07-16):** The full
+loop ran live in his workspace: gated refund from the widget (customer
+e2e-19) → the approval card appeared on THREE surfaces at once (his
+Slack channel, his Telegram DM as a linked approver, the dashboard);
+tapped Approve in Slack → signed POST hit the fake Acme endpoint →
+BOTH channel cards flipped to "✓ approved by slack:U0BGL10B3EX
+(connect-test-1) — executed" with the result — the (connect-test-1)
+suffix being Phase 15's identity links enriching the audit trail
+automatically. Race test clean (dashboard first → Slack tap sees
+"already approved"). E2E found TWO issues, both fixed+re-verified
+same session: (1) the tapped Slack card stuck on "processing…" — the
+tap handler enqueued the decision job BEFORE its optimistic edit, so
+a fast worker's final edit got overwritten; fix = await the edit,
+THEN enqueue (the bad interleaving is no longer expressible); (2) the
+card lacked the CUSTOMER — approvers decided blind; Customer: line
+added + the test now pins the exact card text. His onboarding
+question ("how does Acme add approvers? the curl is a dev path")
+became the [Add approver] button: QR + /start fallback in the
+settings panel, reusing Phase 17's machinery — mint auto-upserts the
+'approvals' subscriber. Also fixed from E's adversarial read: the
+telegram tap branch ordered after agent resolution (would silently
+dead-end on a disabled agent) — proven fixed with the agent disabled
+via SQL. Suite 470→492. Design: one atomic decideToolCall converges
+dashboard/Slack/Telegram; channel membership = authz boundary,
+per-tap identity = audit; cards best-effort so posting can never
+break the pause. novu has no answer to approve-from-your-own-Slack.
+LOCAL COMMIT ONLY per no-push rule.
 
 ## Recently finished
 
