@@ -50,6 +50,29 @@ your frontend — API keys never reach the browser:
 const { token } = await asyncify.subscriberToken('user-42');
 ```
 
+## Agent tools & approvals
+
+Give a managed agent a custom tool, then review the calls it wants to make:
+
+```ts
+// Register a tool — the secret is returned ONCE; store it to verify our
+// signed calls to your endpoint.
+const { secret } = await asyncify.agents.tools.create('acme-support', {
+  name: 'lookup_order',
+  description: 'Fetch an order by id',
+  parameters: { type: 'object', properties: { orderId: { type: 'string' } } },
+  endpointUrl: 'https://api.acme.com/tools/lookup-order',
+  approval: 'required',
+});
+
+// Work the human-in-the-loop queue
+const { approvals } = await asyncify.approvals.list({ status: 'pending' });
+await asyncify.approvals.decide(approvals[0].id, 'approve');
+
+// Route approval cards to a Slack channel
+await asyncify.settings.putApprovals({ slackConnectionId, slackChannelId: 'C0123' });
+```
+
 ## API surface
 
 | Method | Purpose |
@@ -60,6 +83,10 @@ const { token } = await asyncify.subscriberToken('user-42');
 | `subscribers.upsert({ subscriberId, email?, phone?, pushToken? })` | Create/update a subscriber |
 | `topics.upsert / addSubscribers / removeSubscribers / list / delete` | Manage segments |
 | `workflows.upsert / list` · `templates.upsert / get / list / delete` | Manage workflows & MJML templates |
+| `agents.create / list / get / update / rotateSecret / delete / linkToken` | Manage AI agents |
+| `agents.tools.create / list / update / delete / rotateSecret` | Per-agent custom tool registry |
+| `approvals.list / decide` | Human-in-the-loop tool-call queue |
+| `settings.getApprovals / putApprovals` | Which channels carry approval cards |
 | `subscriberToken(subscriberId, ttlSeconds?)` | Browser-safe inbox token |
 
 Errors throw `AsyncifyError` with `status` and the API's message.

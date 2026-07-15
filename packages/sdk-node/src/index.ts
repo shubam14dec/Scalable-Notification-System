@@ -101,6 +101,59 @@ export interface ConversationSummary {
   lastMessageAt: string;
 }
 
+/** A custom tool in an agent's registry — the managed brain dispatches these. */
+export interface AgentTool {
+  id: string;
+  name: string;
+  description: string;
+  /** JSON Schema object ({ type: 'object', ... }) describing the tool's args. */
+  parameters: Record<string, unknown>;
+  endpointUrl: string;
+  /** 'required' routes every call through the human approval queue first. */
+  approval: 'auto' | 'required';
+  timeoutMs: number;
+  status: 'active' | 'disabled';
+  createdAt: string;
+}
+
+export interface CreateAgentToolOptions {
+  /** Lowercase `^[a-z][a-z0-9_]{0,63}$`; reserved built-in names are rejected. */
+  name: string;
+  description: string;
+  /** JSON Schema; must be an object with `type: 'object'`. */
+  parameters: Record<string, unknown>;
+  /** We POST tool calls here — must be a public URL (SSRF-checked write-time). */
+  endpointUrl: string;
+  /** 'auto' (default) runs immediately; 'required' gates on human approval. */
+  approval?: 'auto' | 'required';
+  /** Per-call timeout in ms, 1000–30000 (default 10000). */
+  timeoutMs?: number;
+}
+
+/** A gated tool call in the approvals queue — pending, or already decided. */
+export interface ToolApproval {
+  id: string;
+  agentIdentifier: string | null;
+  toolName: string;
+  args: Record<string, unknown>;
+  conversationId: string;
+  status: 'pending' | 'approved' | 'denied' | 'expired' | 'executed' | 'failed';
+  /** Tool result, truncated to 500 chars; null until the call has executed. */
+  result: string | null;
+  note: string | null;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  expiresAt: string | null;
+}
+
+/** Which connections carry approval cards; each field null when unset. */
+export interface ApprovalSettings {
+  slackConnectionId: string | null;
+  slackChannelId: string | null;
+  telegramConnectionId: string | null;
+}
+
 export class AsyncifyError extends Error {
   constructor(
     readonly status: number,
@@ -219,6 +272,84 @@ export class AsyncifyClient {
         'POST',
         `/v1/agents/${encodeURIComponent(agentIdentifier)}/subscribers/${encodeURIComponent(subscriberId)}/link-token`,
       ),
+
+    /**
+     * The per-agent custom tool registry (managed runtime dispatches these).
+     * Reads as `client.agents.tools.create('acme-support', {...})`.
+     */
+    tools: {
+      /**
+       * Register a tool. The secret is returned EXACTLY ONCE — store it; it is
+       * used to verify our signed calls to your endpoint.
+       */
+      create: (identifier: string, options: CreateAgentToolOptions) =>
+        this.request<{ tool: AgentTool; secret: string }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/tools`,
+          options,
+        ),
+      /** Every tool registered on this agent. */
+      list: (identifier: string) =>
+        this.request<{ tools: AgentTool[] }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/tools`,
+        ),
+      /** Patch any subset; `status: 'disabled'` hides the tool from the model. */
+      update: (
+        identifier: string,
+        toolId: string,
+        patch: Partial<Omit<CreateAgentToolOptions, 'name'>> & {
+          status?: 'active' | 'disabled';
+        },
+      ) =>
+        this.request<{ tool: AgentTool }>(
+          'PATCH',
+          `/v1/agents/${encodeURIComponent(identifier)}/tools/${encodeURIComponent(toolId)}`,
+          patch,
+        ),
+      delete: (identifier: string, toolId: string) =>
+        this.request<{ deleted: boolean }>(
+          'DELETE',
+          `/v1/agents/${encodeURIComponent(identifier)}/tools/${encodeURIComponent(toolId)}`,
+        ),
+      /** New call secret, shown once; the old one stops working immediately. */
+      rotateSecret: (identifier: string, toolId: string) =>
+        this.request<{ secret: string }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/tools/${encodeURIComponent(toolId)}/rotate-secret`,
+        ),
+    },
+  };
+
+  readonly approvals = {
+    /** Gated tool calls: `pending` (default) awaiting review, or `decided`. */
+    list: (filters: { status?: 'pending' | 'decided' } = {}) => {
+      const qs = filters.status ? `?status=${filters.status}` : '';
+      return this.request<{ approvals: ToolApproval[] }>('GET', `/v1/approvals${qs}`);
+    },
+    /** Approve or deny a pending call — atomic: 409 once already decided. */
+    decide: (id: string, decision: 'approve' | 'deny', note?: string) =>
+      this.request<{ id: string; status: string }>(
+        'POST',
+        `/v1/approvals/${encodeURIComponent(id)}/decision`,
+        { decision, note },
+      ),
+  };
+
+  readonly settings = {
+    /** Current approval-channel config + count of linked telegram approvers. */
+    getApprovals: () =>
+      this.request<{ settings: ApprovalSettings; telegramApproverCount: number }>(
+        'GET',
+        '/v1/settings/approvals',
+      ),
+    /**
+     * Merge-patch approval channels (an absent field is kept). An explicit
+     * `null` CLEARS a field; `slackChannelId` requires an active
+     * `slackConnectionId` (and is cleared when that connection is nulled).
+     */
+    putApprovals: (patch: Partial<ApprovalSettings>) =>
+      this.request<{ settings: ApprovalSettings }>('PUT', '/v1/settings/approvals', patch),
   };
 
   readonly conversations = {

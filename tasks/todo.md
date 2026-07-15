@@ -55,11 +55,10 @@ docs/ARCHITECTURE-COMPARISON.md):**
       queries; cache-set TTL jitter (Tier B — adopt incrementally)
 
 **Phase 18/19 polish leftovers (small, non-blocking):**
-- [ ] sdk-node wrappers for the new surfaces: client.agents.tools.*
-      (CRUD/rotate), client.approvals.* (list/decide),
-      client.settings.approvals (get/put) — the APIs exist, the SDK
-      doesn't wrap them yet (dashboard/REST cover it today); ship with
-      a changeset when done
+- [x] sdk-node wrappers: client.agents.tools.* / client.approvals.* /
+      client.settings.{getApprovals,putApprovals} + types + README —
+      shipped 2026-07-16 (Opus, audited; live-smoked via the BUILT
+      package against :3000; changeset minor → node 0.3.0)
 - [ ] decidedBy shows the JWT sub (uuid) for dashboard deciders —
       resolve to name/email in the approvals view
 - [ ] approval-pause eval scenario assumes the gated refund_customer
