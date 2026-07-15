@@ -1,6 +1,6 @@
 {
   "name": "@asyncify-hq/node",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Server-side SDK for Asyncify — multi-channel notification infrastructure (email, SMS, push, in-app)",
   "keywords": [
     "notifications",
