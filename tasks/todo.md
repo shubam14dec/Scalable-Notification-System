@@ -85,9 +85,13 @@ docs/ARCHITECTURE-COMPARISON.md):**
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
 
-- [ ] Streaming managed replies — token-level WS streaming still open;
-      the visible-progress need is largely met by Phase 14's plan-card
-      live edits (⏳→✓→reply), so revisit only if reply latency hurts
+- [ ] Streaming managed replies — PLAN-READY, parked 2026-07-16 by user
+      ("we will pick this later"). Full scouted design + locked
+      decisions in `~/.claude/plans/phase-streaming-replies-PARKED.md`:
+      managed brains → widget only; snapshot-publishing over the
+      existing .updated pathway (gateway + widget sink need ~zero
+      changes); auto-fallback for non-SSE LLM endpoints; ~1 day,
+      4 slices. Pickup = read the plan file, launch slices.
 - [x] Auto-resolve on inactivity: per-agent sweep with system
       breadcrumb — shipped (see tests/integration/inactivity-sweep.test.ts)
 - [x] Subscriber linking (tg deep-link `/start <token>`, email sender
@@ -117,7 +121,27 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — between phases; next work comes from the backlog)
+### Push & SMS hardening — NEXT UP (baseline established 2026-07-17, plan pending user approval)
+Audit (2026-07-16) proved push/sms were BUILT, not stubs: real Twilio +
+FCM providers on the shared pipeline. Live baseline then user-verified
+end-to-end: Twilio integration + test SMS to +91 phone ✅; FCM
+integration + test push to his Chrome (web token via the scratchpad
+:4500 token page) ✅; full workflow pipeline sms+push both sent, 1
+attempt ✅ (workflow `channel-baseline`, subscriber `channel-test-1`
+carry his real phone+token in HIS tenant); permanent-error
+classification, no retry storm ✅; graceful no-address skip ✅;
+auto-suppression on dead tokens = code-verified only (needs mocked-FCM
+test). His Windows DND ate push banners once — pushes were in Win+N;
+"sent" ≠ displayed = the receipts gap, live-illustrated.
+CONFIRMED GAPS for the phase: device_tokens table (single push_token
+col = one device — THE blocker), usePushRegistration() react hook
+(+ shipped firebase-messaging-sw.js), rich push payloads (deep-link/
+image/data), SMS segment/unicode counting + editor counter, Twilio
+status-callback receipts adapter (status.processor consumer already
+exists), E.164 normalization + STOP/opt-out via suppressions, tests
+(currently ZERO for both channels).
+- [ ] Plan the phase (locked decisions/contracts/slices) → USER
+      APPROVAL required before build (not auto mode)
 
 ## Recently finished
 
