@@ -386,9 +386,14 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   AUTO-displays every notification-carrying push (title/body/image, and
   its built-in click handler opens fcm_options.link) AND still invokes
   onBackgroundMessage — a handler that also calls showNotification
-  double-notifies every user. Canonical firebase-messaging-sw.js =
-  importScripts + skipWaiting/claim + initializeApp + firebase.messaging()
-  and NOTHING else (three copies to keep in sync: packages/react README,
+  double-notifies every user. SECOND trap (same E2E, verified in the
+  minified SDK source): the SDK's built-in notificationclick handler
+  opens fcm_options.link ONLY when link host === page host — cross-origin
+  clickUrls silently do nothing. Canonical firebase-messaging-sw.js =
+  importScripts + skipWaiting/claim + initializeApp + ONE notificationclick
+  listener registered BEFORE firebase.messaging() (runs first, opens any
+  origin, stopImmediatePropagation) + firebase.messaging() and NOTHING
+  else (three copies to keep in sync: packages/react README,
   docs/PUSH-SMS.md, the scratchpad token page). Related: a SW without
   skipWaiting only updates "eventually" — always include install→
   skipWaiting + activate→clients.claim. And unregistering a SW kills the

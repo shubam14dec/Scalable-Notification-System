@@ -243,11 +243,25 @@ firebase.initializeApp({
   appId: '…',
 });
 
-// That's the whole file — and the brevity is load-bearing. Firebase's SDK
-// AUTO-DISPLAYS every notification-carrying push (title, body, image) and its
-// built-in click handler opens the notification's click-through link. Do NOT
-// add an onBackgroundMessage handler that calls showNotification: the SDK
-// still auto-displays alongside it, so Maya would get every push TWICE.
+// Firebase auto-displays every notification-carrying push (title/body/image),
+// but its built-in click handler only opens SAME-ORIGIN links (hard host check
+// in the SDK source). This listener — registered BEFORE firebase.messaging()
+// so it runs first — opens the click-through link for ANY origin, then stops
+// the event so the SDK's handler doesn't double-handle it.
+self.addEventListener('notificationclick', (event) => {
+  const msg = event.notification && event.notification.data && event.notification.data.FCM_MSG;
+  const link =
+    msg &&
+    ((msg.notification && msg.notification.click_action) ||
+      (msg.fcmOptions && msg.fcmOptions.link));
+  if (!link) return;
+  event.stopImmediatePropagation();
+  event.notification.close();
+  event.waitUntil(self.clients.openWindow(link));
+});
+
+// Do NOT add an onBackgroundMessage handler that calls showNotification: the
+// SDK still auto-displays alongside it, so Maya would get every push TWICE.
 firebase.messaging();
 ```
 
