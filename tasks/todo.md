@@ -121,27 +121,67 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Push & SMS hardening — NEXT UP (baseline established 2026-07-17, plan pending user approval)
-Audit (2026-07-16) proved push/sms were BUILT, not stubs: real Twilio +
-FCM providers on the shared pipeline. Live baseline then user-verified
-end-to-end: Twilio integration + test SMS to +91 phone ✅; FCM
-integration + test push to his Chrome (web token via the scratchpad
-:4500 token page) ✅; full workflow pipeline sms+push both sent, 1
-attempt ✅ (workflow `channel-baseline`, subscriber `channel-test-1`
-carry his real phone+token in HIS tenant); permanent-error
-classification, no retry storm ✅; graceful no-address skip ✅;
-auto-suppression on dead tokens = code-verified only (needs mocked-FCM
-test). His Windows DND ate push banners once — pushes were in Win+N;
-"sent" ≠ displayed = the receipts gap, live-illustrated.
-CONFIRMED GAPS for the phase: device_tokens table (single push_token
-col = one device — THE blocker), usePushRegistration() react hook
-(+ shipped firebase-messaging-sw.js), rich push payloads (deep-link/
-image/data), SMS segment/unicode counting + editor counter, Twilio
-status-callback receipts adapter (status.processor consumer already
-exists), E.164 normalization + STOP/opt-out via suppressions, tests
-(currently ZERO for both channels).
-- [ ] Plan the phase (locked decisions/contracts/slices) → USER
-      APPROVAL required before build (not auto mode)
+### Phase 20: Push & SMS hardening — BUILD COMPLETE, user E2E pending
+(plan approved 2026-07-18 + user added native mobile SDK; full plan in
+`~/.claude/plans/phase20-push-sms-hardening.md`. ALL COMMITS LOCAL.
+All slices Opus, audited; suite 543/543 twice.)
+- [x] Foundation (manager): device_tokens table + legacy backfill;
+      messages.device_key (5-col dedupe — audit had missed that the
+      old 4-col unique key made one-row-per-device impossible);
+      device-tokens.repo; sms-segments + phone(E.164) utils; route
+      stubs pre-wired in app.ts (492/492 parity before slices)
+- [x] A. Device APIs + SDK: /v1/me/devices + /v1/subscribers/:id/
+      devices (both auth planes, no-oracle deletes), legacy pushToken
+      write-mirror, E.164-in-upsert; sdk-node registerDevice/
+      listDevices/removeDevice + typed WorkflowStep.push (revision) +
+      changeset (Opus, audited; 5/5 live curls on :3011)
+- [x] B. Pipeline: multi-device fan-out (batched device read, one msg
+      per device, per-device suppression/correlation; digest push =
+      newest device, v1), dead-token row deletion in FCM provider,
+      rich push (clickUrl/imageUrl/data → webpush+android+apns,
+      SSRF-gated w/ {{var}} bypass), 10-segment send guard, E.164
+      reject at admin+trigger (Opus, audited; 80/80 targeted incl. 11
+      new; in-process verification — sanctioned fleet-safe path)
+- [x] C. Twilio receipts: per-send StatusCallback via runtime public
+      URL; public callback route w/ X-Twilio-Signature (host-header
+      URL = tunnel-rotation safe), delivered/failed mapped onto the
+      status queue, intermediates 204 no-op; STOP(21610) suppression
+      on BOTH send-rejection (revision) and callback (Opus, audited;
+      live sim: 204/403/404 + sent→delivered flip via real worker)
+- [x] D. Web: usePushRegistration in @asyncify-hq/react (firebase =
+      optional peer, canonical SW in README, sticky opt-out marker
+      'asyncify:push:opted-out' — revision; disable() must survive
+      reloads) + editor rich-push fields + live SMS segment counter
+      (dot-colored over-limit per design system) + changeset (Opus,
+      audited; react + dashboard builds green)
+- [x] G. Native: NEW @asyncify-hq/react-native 0.0.0 (same hook shape,
+      required RN/firebase peers, optional async-storage peer for the
+      same sticky opt-out — revision; OS is the receiver, no SW) +
+      examples/push-test-app (Expo + EAS cloud build, no local Android
+      toolchain) + changeset (Opus, audited; clean-room build green;
+      workspace-linked at close-out, lockfile verified 0 entries
+      removed / 586 added)
+- [x] E. Tests: +51 over baseline → 543/543 twice (segments matrix,
+      E.164 matrix, device repo cap/evict/re-point, both route planes,
+      multi-device fan-out, dead-token deletion via stubbed FCM — the
+      baseline's one unproven cell, Twilio callback matrix incl. 21610,
+      rich payload mapping) (Opus; zero bugs found in landed code)
+- [x] F. Docs: docs/PUSH-SMS.md customer guide (Acme cast, honest
+      receipts story, every snippet source-verified) + README pointer
+      (Opus, audited)
+- [x] Fleet restarted on new code (api/worker/ws; dashboard hot-reloads)
+- [ ] USER E2E: multi-device pop, rich push (image+click), segment
+      counter + >10 guard, receipt sent→delivered via `asyncify dev`
+      tunnel, dead-token cleanup, NATIVE: EAS APK on his phone
+      (Firebase android app + Expo account = his two setup steps)
+- [ ] Release (later, on his word): npm Trusted Publisher binding for
+      @asyncify-hq/react-native before merging the bot PR (cli
+      precedent); node/react/react-native changesets already staged
+
+Notes for later (from E's review): updateMessageByProviderId has no
+terminal-state guard (a late 'sent' could regress 'delivered'; today
+unreachable — the webhook 204s intermediates before enqueue). Backlog:
+per-device digest fan-out; inbound two-way SMS (STOP content webhook).
 
 ## Recently finished
 

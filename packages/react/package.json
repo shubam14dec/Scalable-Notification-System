@@ -41,7 +41,13 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=18",
+    "firebase": ">=10"
+  },
+  "peerDependenciesMeta": {
+    "firebase": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

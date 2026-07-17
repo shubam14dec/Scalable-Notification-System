@@ -592,3 +592,54 @@ create table if not exists connection_routing_rules (
   created_at    timestamptz not null default now(),
   unique (connection_id, scope_key)
 );
+
+-- ---- Phase 20: push & sms hardening ----
+
+-- Multi-device push. subscribers.push_token holds exactly ONE device (laptop
+-- OR phone, never both); this table holds up to 10 per subscriber (app-layer
+-- cap, oldest last_seen evicted). Re-registering the same token upserts:
+-- bumps last_seen and RE-POINTS subscriber_id, so a shared device that logs
+-- into a different account moves with the login. The legacy column stays for
+-- API back-compat (writes mirror here); fan-out reads THIS table only.
+create table if not exists device_tokens (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants(id),
+  subscriber_id uuid not null references subscribers(id) on delete cascade,
+  token         text not null,
+  platform      text,             -- web | android | ios | null (unknown/legacy)
+  created_at    timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now(),
+  unique (tenant_id, token)
+);
+
+create index if not exists device_tokens_subscriber_idx
+  on device_tokens (tenant_id, subscriber_id);
+
+-- Backfill legacy single tokens (idempotent; re-runs no-op via the conflict).
+-- Deleting a device also nulls a matching subscribers.push_token (repo layer)
+-- so this backfill cannot resurrect an explicitly-removed device.
+insert into device_tokens (tenant_id, subscriber_id, token)
+  select s.tenant_id, s.id, s.push_token from subscribers s
+  where s.push_token is not null
+  on conflict (tenant_id, token) do nothing;
+
+-- One message row PER DEVICE for push steps (per-device status/retries).
+-- device_key discriminates them inside the fan-out dedupe key; '' for every
+-- non-push-device row keeps historic and non-push behavior byte-identical.
+-- Index first, THEN drop the old 4-col constraint (same transaction — the
+-- dedupe wall never has a gap).
+alter table messages add column if not exists device_key text not null default '';
+
+create unique index if not exists messages_dedupe_uq
+  on messages (event_id, subscriber_id, channel, step_index, device_key);
+
+do $$
+declare c text;
+begin
+  select conname into c from pg_constraint
+   where conrelid = 'messages'::regclass and contype = 'u'
+     and cardinality(conkey) = 4;
+  if c is not null then
+    execute format('alter table messages drop constraint %I', c);
+  end if;
+end $$;

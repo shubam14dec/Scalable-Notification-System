@@ -10,6 +10,12 @@ export interface RenderedMessage {
   htmlBody?: string;
   /** When set (email channel), providers embed this 1px open-tracking image. */
   pixelUrl?: string;
+  /**
+   * Push rich-notification extras, snapshotted at fan-out. clickUrl is the
+   * tap target, imageUrl the large image, and data rides along for native
+   * apps. Providers include only the blocks whose values exist.
+   */
+  push?: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> };
   /** Email: where a human reply should go (agent conversations set this). */
   replyTo?: string;
   /** Email: extra RFC headers (In-Reply-To/References for threading). */

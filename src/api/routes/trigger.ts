@@ -10,11 +10,25 @@ import { getTopicByKey } from '../../db/topics.repo';
 import { logExec } from '../../core/execution-log';
 import { triggersTotal } from '../../shared/metrics';
 import { traceCarrier, withSpan } from '../../shared/tracing';
+import { normalizePhone } from '../../shared/phone';
 
 const RecipientSchema = z.object({
   subscriberId: z.string().min(1).max(255),
   email: z.string().email().optional(),
-  phone: z.string().max(32).optional(),
+  // Inline recipient phones are normalized to E.164 (or rejected) exactly as
+  // the subscriber PUT does — topic recipients carry no phone and are untouched.
+  phone: z
+    .string()
+    .max(32)
+    .transform((raw, ctx) => {
+      const normalized = normalizePhone(raw);
+      if (!normalized) {
+        ctx.addIssue({ code: 'custom', message: 'phone must be E.164, e.g. +919901489187' });
+        return z.NEVER;
+      }
+      return normalized;
+    })
+    .optional(),
   pushToken: z.string().max(4096).optional(),
 });
 

@@ -81,6 +81,7 @@ await asyncify.settings.putApprovals({ slackConnectionId, slackChannelId: 'C0123
 | `broadcast(workflowKey, { payload? })` | Send to every subscriber (bulk tier) |
 | `events.get(transactionId)` | Per-channel delivery status |
 | `subscribers.upsert({ subscriberId, email?, phone?, pushToken? })` | Create/update a subscriber |
+| `subscribers.registerDevice / listDevices / removeDevice` | Multi-device push tokens per subscriber |
 | `topics.upsert / addSubscribers / removeSubscribers / list / delete` | Manage segments |
 | `workflows.upsert / list` · `templates.upsert / get / list / delete` | Manage workflows & MJML templates |
 | `agents.create / list / get / update / rotateSecret / delete / linkToken` | Manage AI agents |

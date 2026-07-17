@@ -4,11 +4,26 @@ import { authenticate } from '../auth';
 import { CHANNELS } from '../../shared/queues';
 import { upsertSubscriber, upsertWorkflow, type WorkflowStep } from '../../db/repositories';
 import { getTemplate } from '../../db/templates.repo';
+import { normalizePhone } from '../../shared/phone';
+import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
+
+/** Zod refinement: parse+normalize a phone to E.164 or 400 with a clear hint. */
+const phoneField = z
+  .string()
+  .max(32)
+  .transform((raw, ctx) => {
+    const normalized = normalizePhone(raw);
+    if (!normalized) {
+      ctx.addIssue({ code: 'custom', message: 'phone must be E.164, e.g. +919901489187' });
+      return z.NEVER;
+    }
+    return normalized;
+  });
 
 const SubscriberSchema = z.object({
   subscriberId: z.string().min(1).max(255),
   email: z.string().email().optional(),
-  phone: z.string().max(32).optional(),
+  phone: phoneField.optional(),
   pushToken: z.string().max(4096).optional(),
 });
 
@@ -48,6 +63,15 @@ const WorkflowSchema = z.object({
               .max(6),
           })
           .optional(),
+        // Push rich extras. clickUrl/imageUrl are SSRF-gated in the route
+        // (async), which can't run inside superRefine — see below.
+        push: z
+          .object({
+            clickUrl: z.string().url().max(2048).optional(),
+            imageUrl: z.string().url().max(2048).optional(),
+            data: z.record(z.string().max(64), z.string().max(256)).optional(),
+          })
+          .optional(),
       })
       .superRefine((step, ctx) => {
         if (!step.templateKey && (!step.body || step.body.trim() === '')) {
@@ -59,11 +83,42 @@ const WorkflowSchema = z.object({
         if (step.templateKey && step.digest) {
           ctx.addIssue({ code: 'custom', message: 'digest and templateKey cannot be combined' });
         }
+        if (step.push && step.channel !== 'push') {
+          ctx.addIssue({ code: 'custom', message: 'push extras are only supported on push steps' });
+        }
+        if (step.push?.data && Object.keys(step.push.data).length > 10) {
+          ctx.addIssue({ code: 'custom', message: 'push.data supports at most 10 keys' });
+        }
       }),
     )
     .min(1)
     .max(20),
 });
+
+/**
+ * SSRF write-time gate for a push step's clickUrl/imageUrl (the worker/device
+ * dials these). Skipped when the URL carries Handlebars vars — those resolve
+ * per-recipient at fan-out, so there is no literal host to vet here; a literal
+ * internal target is the risk this catches. Mirrors agent-tools' endpoint gate.
+ */
+async function unsafePushUrl(
+  push?: { clickUrl?: string; imageUrl?: string },
+): Promise<string | null> {
+  const fields: Array<['clickUrl' | 'imageUrl', string | undefined]> = [
+    ['clickUrl', push?.clickUrl],
+    ['imageUrl', push?.imageUrl],
+  ];
+  for (const [field, url] of fields) {
+    if (!url || url.includes('{{')) continue; // var-bearing URLs resolve at fan-out
+    try {
+      await assertSafeOutboundUrl(url);
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) return `${field}: ${err.message}`;
+      throw err;
+    }
+  }
+  return null;
+}
 
 export function registerAdminRoutes(app: FastifyInstance) {
   app.put('/v1/subscribers', { preHandler: [authenticate] }, async (req, reply) => {
@@ -85,6 +140,8 @@ export function registerAdminRoutes(app: FastifyInstance) {
       if (step.templateKey && !(await getTemplate(req.tenant.id, step.templateKey))) {
         return reply.code(400).send({ error: `unknown template "${step.templateKey}"` });
       }
+      const unsafe = await unsafePushUrl(step.push);
+      if (unsafe) return reply.code(400).send({ error: unsafe });
     }
     const steps: WorkflowStep[] = parsed.data.steps.map((s) => ({
       ...s,

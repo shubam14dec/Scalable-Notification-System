@@ -17,6 +17,13 @@ import {
 } from '../../db/identities.repo';
 import { mintLinkTokenCore } from './identities';
 import type { SlackCredentials } from './slack';
+import { upsertSubscriber } from '../../db/repositories';
+import {
+  deleteDeviceToken,
+  listDeviceTokens,
+  upsertDeviceToken,
+} from '../../db/device-tokens.repo';
+import { pool } from '../../db/pool';
 
 /**
  * The /v1/me self-service family: the endpoints a subscriber's OWN browser/app
@@ -57,6 +64,13 @@ const DeleteIdentitySchema = z.object({
   channel: z.enum(['telegram', 'email', 'slack']),
   externalKey: z.string().min(1).max(320),
 });
+
+const RegisterDeviceSchema = z.object({
+  token: z.string().min(1).max(4096),
+  platform: z.enum(['web', 'android', 'ios']).optional(),
+});
+
+const RemoveDeviceSchema = z.object({ token: z.string().min(1).max(4096) });
 
 export function registerMeRoutes(app: FastifyInstance) {
   /**
@@ -211,5 +225,56 @@ export function registerMeRoutes(app: FastifyInstance) {
     }
     await deleteChannelIdentity(req.tenant.id, parsed.data.channel, parsed.data.externalKey);
     return { deleted: true };
+  });
+
+  /**
+   * Register the calling device's push token against THIS subscriber. The token
+   * IS the identity here, so we get-or-create the subscriber row from it before
+   * upserting — a first-ever device call needn't be preceded by a server upsert.
+   */
+  app.post('/v1/me/devices', async (req, reply) => {
+    const subscriberId = await authenticateMe(req, reply);
+    if (subscriberId === null) return;
+
+    const parsed = RegisterDeviceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+    }
+
+    const sub = await upsertSubscriber(req.tenant.id, { subscriberId });
+    const device = await upsertDeviceToken(
+      req.tenant.id,
+      sub.id,
+      parsed.data.token,
+      parsed.data.platform,
+    );
+    reply.code(201);
+    return { deviceId: device.id, platform: device.platform };
+  });
+
+  /**
+   * Unregister a device. Deliberately not a token-existence oracle: a token that
+   * belongs to another subscriber (or to nobody) returns { deleted: false }, so
+   * a caller can only ever remove its own devices.
+   */
+  app.delete('/v1/me/devices', async (req, reply) => {
+    const subscriberId = await authenticateMe(req, reply);
+    if (subscriberId === null) return;
+
+    const parsed = RemoveDeviceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+    }
+
+    const { rows } = await pool.query(
+      'select id from subscribers where tenant_id = $1 and external_id = $2',
+      [req.tenant.id, subscriberId],
+    );
+    const rowId = rows[0]?.id as string | undefined;
+    if (!rowId) return { deleted: false };
+    const owned = await listDeviceTokens(req.tenant.id, rowId);
+    if (!owned.some((d) => d.token === parsed.data.token)) return { deleted: false };
+    const deleted = await deleteDeviceToken(req.tenant.id, parsed.data.token);
+    return { deleted };
   });
 }

@@ -1,0 +1,25 @@
+{
+  "name": "asyncify-push-test-app",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android"
+  },
+  "dependencies": {
+    "@asyncify-hq/react-native": "file:../../packages/react-native",
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "@react-native-firebase/app": "^21.6.1",
+    "@react-native-firebase/messaging": "^21.6.1",
+    "expo": "~51.0.28",
+    "expo-build-properties": "~0.12.5",
+    "expo-status-bar": "~1.12.1",
+    "react": "18.2.0",
+    "react-native": "0.74.5"
+  },
+  "devDependencies": {
+    "@types/react": "~18.2.79",
+    "typescript": "~5.3.3"
+  }
+}

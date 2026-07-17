@@ -1,5 +1,7 @@
 import { pool } from './pool';
 import type { Channel, Priority } from '../shared/queues';
+import { normalizePhone } from '../shared/phone';
+import { upsertDeviceToken } from './device-tokens.repo';
 
 export interface Tenant {
   id: string;
@@ -47,6 +49,12 @@ export interface WorkflowStep {
    * 3600 + skipIfStep { stepIndex: 0, statusIn: ['opened'] }.
    */
   skipIfStep?: { stepIndex: number; statusIn: string[] };
+  /**
+   * Push steps only: rich-notification extras. clickUrl opens on tap,
+   * imageUrl renders a large image, data rides along for native apps.
+   * All three render Handlebars vars at fan-out.
+   */
+  push?: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> };
 }
 
 export interface Workflow {
@@ -87,6 +95,8 @@ export interface MessageRow {
   transaction_id: string;
   channel: Channel;
   step_index: number;
+  /** Per-device discriminator for push steps (device row id); '' otherwise. */
+  device_key: string;
   priority: Priority;
   content: {
     subject?: string;
@@ -101,6 +111,8 @@ export interface MessageRow {
     skipIfStep?: { stepIndex: number; statusIn: string[] };
     /** Template-based email: rendered at delivery with the pinned version. */
     template?: { key: string; version: number; vars: Record<string, unknown> };
+    /** Push steps: rendered rich extras, snapshotted at fan-out. */
+    push?: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> };
   };
   provider: string | null;
   provider_message_id: string | null;
@@ -116,9 +128,12 @@ export async function messageByStep(
   subscriberId: string,
   stepIndex: number,
 ): Promise<MessageRow | null> {
+  // Multi-device push steps have one row per device; device_key '' (or the
+  // lowest device id) wins so skipIfStep reads deterministically.
   const { rows } = await pool.query(
     `select * from messages
      where event_id = $1 and subscriber_id = $2 and step_index = $3
+     order by device_key
      limit 1`,
     [eventId, subscriberId, stepIndex],
   );
@@ -162,6 +177,10 @@ export async function upsertSubscriber(
   tenantId: string,
   r: RecipientInput,
 ): Promise<Subscriber> {
+  // Normalize phone here on the fan-out hot path; an unnormalizable value
+  // becomes null so the coalesce below preserves any stored number rather than
+  // clobbering it. Loud rejection of bad phones is the API schema layer's job.
+  const phone = r.phone != null ? normalizePhone(r.phone) : null;
   const { rows } = await pool.query(
     `insert into subscribers (tenant_id, external_id, email, phone, push_token)
      values ($1, $2, $3, $4, $5)
@@ -171,9 +190,16 @@ export async function upsertSubscriber(
        push_token = coalesce(excluded.push_token, subscribers.push_token),
        updated_at = now()
      returning *`,
-    [tenantId, r.subscriberId, r.email ?? null, r.phone ?? null, r.pushToken ?? null],
+    [tenantId, r.subscriberId, r.email ?? null, phone, r.pushToken ?? null],
   );
-  return rows[0];
+  const row = rows[0] as Subscriber;
+  // Legacy single-token API keeps working: mirror push_token forward into the
+  // multi-device table (write mirror is one-way — device_tokens never writes
+  // back to push_token). Fan-out reads device_tokens, not this column.
+  if (r.pushToken) {
+    await upsertDeviceToken(tenantId, row.id, r.pushToken);
+  }
+  return row;
 }
 
 // ---------- workflows ----------
@@ -283,18 +309,19 @@ export async function insertMessage(m: {
   transactionId: string;
   channel: Channel;
   stepIndex: number;
+  deviceKey?: string;
   priority: Priority;
   content: MessageRow['content'];
   status?: string;
   error?: string;
 }): Promise<MessageRow> {
   // Idempotent: a retried fan-out job returns the existing row instead of
-  // inserting a duplicate (unique on event/subscriber/channel/step).
+  // inserting a duplicate (unique on event/subscriber/channel/step/device).
   const { rows } = await pool.query(
     `insert into messages
-       (tenant_id, event_id, subscriber_id, transaction_id, channel, step_index, priority, content, status, error)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     on conflict (event_id, subscriber_id, channel, step_index)
+       (tenant_id, event_id, subscriber_id, transaction_id, channel, step_index, device_key, priority, content, status, error)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     on conflict (event_id, subscriber_id, channel, step_index, device_key)
        do update set updated_at = now()
      returning *`,
     [
@@ -304,6 +331,7 @@ export async function insertMessage(m: {
       m.transactionId,
       m.channel,
       m.stepIndex,
+      m.deviceKey ?? '',
       m.priority,
       JSON.stringify(m.content),
       m.status ?? 'queued',
@@ -320,6 +348,8 @@ export interface NewMessage {
   transactionId: string;
   channel: Channel;
   stepIndex: number;
+  /** Push steps: the device row id, one message per device. '' otherwise. */
+  deviceKey?: string;
   priority: Priority;
   content: MessageRow['content'];
   status: string;
@@ -339,7 +369,7 @@ export async function insertMessagesBulk(messages: NewMessage[]): Promise<Messag
     const chunk = messages.slice(i, i + CHUNK);
     const values: unknown[] = [];
     const tuples = chunk.map((m, j) => {
-      const b = j * 10;
+      const b = j * 11;
       values.push(
         m.tenantId,
         m.eventId,
@@ -347,18 +377,19 @@ export async function insertMessagesBulk(messages: NewMessage[]): Promise<Messag
         m.transactionId,
         m.channel,
         m.stepIndex,
+        m.deviceKey ?? '',
         m.priority,
         JSON.stringify(m.content),
         m.status,
         m.error,
       );
-      return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10})`;
+      return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10}, $${b + 11})`;
     });
     const { rows } = await pool.query(
       `insert into messages
-         (tenant_id, event_id, subscriber_id, transaction_id, channel, step_index, priority, content, status, error)
+         (tenant_id, event_id, subscriber_id, transaction_id, channel, step_index, device_key, priority, content, status, error)
        values ${tuples.join(', ')}
-       on conflict (event_id, subscriber_id, channel, step_index)
+       on conflict (event_id, subscriber_id, channel, step_index, device_key)
          do update set updated_at = now()
        returning *`,
       values,

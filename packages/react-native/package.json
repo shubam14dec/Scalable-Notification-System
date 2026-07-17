@@ -1,0 +1,65 @@
+{
+  "name": "@asyncify-hq/react-native",
+  "version": "0.0.0",
+  "description": "Native push registration for Asyncify — one hook that wires FCM device tokens, permissions and token rotation on Android and iOS",
+  "keywords": [
+    "notifications",
+    "push",
+    "react-native",
+    "fcm",
+    "firebase",
+    "asyncify"
+  ],
+  "homepage": "https://asyncify.org",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shubam14dec/Scalable-Notification-System.git",
+    "directory": "packages/react-native"
+  },
+  "license": "MIT",
+  "author": "Shubam Patil",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@react-native-async-storage/async-storage": ">=1.17.0",
+    "@react-native-firebase/app": ">=18",
+    "@react-native-firebase/messaging": ">=18",
+    "react": ">=18",
+    "react-native": ">=0.72"
+  },
+  "peerDependenciesMeta": {
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "@react-native-firebase/app": "^21.6.1",
+    "@react-native-firebase/messaging": "^21.6.1",
+    "@types/react": "^18.2.0",
+    "react": "18.2.0",
+    "react-native": "^0.74.5",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}

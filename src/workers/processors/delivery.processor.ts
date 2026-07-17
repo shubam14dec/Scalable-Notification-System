@@ -5,6 +5,7 @@ import { sendWithFailover } from '../../providers/registry';
 import { PermanentError } from '../../shared/errors';
 import { redis } from '../../shared/redis';
 import { render } from '../../core/render';
+import { computeSmsSegments, MAX_SMS_SEGMENTS } from '../../shared/sms-segments';
 import { renderMjmlTemplate } from '../../core/email-template';
 import { getTemplateVersion } from '../../db/templates.repo';
 import { logExec } from '../../core/execution-log';
@@ -165,6 +166,19 @@ async function deliver(
   const timer = deliverySeconds.startTimer({ channel: message.channel });
   const publicUrl = await getPublicUrl();
   try {
+    // SMS is billed per segment; a body over the ceiling is an authoring
+    // error, not a transient fault — fail it here (on the final rendered
+    // body) before spending a provider call or any real SMS cost.
+    if (message.channel === 'sms') {
+      const { segments } = computeSmsSegments(body);
+      if (segments > MAX_SMS_SEGMENTS) {
+        throw new PermanentError(
+          `SMS body is ${segments} segments; the maximum is ${MAX_SMS_SEGMENTS}. ` +
+            'Shorten the message (an emoji or non-GSM character roughly halves the per-segment limit).',
+        );
+      }
+    }
+
     const result = await sendWithFailover(message.channel, {
       messageId: message.id,
       tenantId: message.tenant_id,
@@ -175,6 +189,8 @@ async function deliver(
       // Email opens are tracked via a 1px pixel keyed by message id.
       pixelUrl:
         message.channel === 'email' ? `${publicUrl}/o/${message.id}.gif` : undefined,
+      // Push rich extras (clickUrl/imageUrl/data), snapshotted at fan-out.
+      push: message.content.push,
     });
 
     await updateMessage(message.id, {

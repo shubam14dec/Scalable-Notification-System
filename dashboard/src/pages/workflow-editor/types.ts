@@ -21,6 +21,22 @@ export interface SkipIfStep {
   statusIn: string[];
 }
 
+/** One editable custom-data pair for a rich push. Kept as ordered rows in the
+ * draft (not a map) so a half-typed or blank key can exist while editing —
+ * toApiSteps collapses them to the `{key: value}` object the API wants. */
+export interface PushDataRow {
+  key: string;
+  value: string;
+}
+
+/** Rich-push extras, valid only on push steps. Draft shape; toApiSteps strips
+ * empties and turns `data` into an object. */
+export interface PushExtras {
+  clickUrl?: string;
+  imageUrl?: string;
+  data?: PushDataRow[];
+}
+
 export interface Step {
   channel: string;
   subject?: string;
@@ -30,6 +46,7 @@ export interface Step {
   digest?: Digest;
   conditions?: Condition[];
   skipIfStep?: SkipIfStep;
+  push?: PushExtras;
 }
 
 export const CHANNELS = ['email', 'inapp', 'sms', 'push'] as const;
@@ -126,6 +143,28 @@ export function humanSeconds(s: number): string {
   return `${Math.round(s / 86400)}d`;
 }
 
+/**
+ * Reduce push extras to the API's `{clickUrl?, imageUrl?, data?}` shape:
+ * blank fields are omitted entirely (no empty-string keys), data rows with a
+ * blank key are dropped, and the whole object collapses to undefined when
+ * nothing survives. Push extras are only ever emitted on push steps.
+ */
+export function cleanPush(push: PushExtras | undefined): unknown {
+  if (!push) return undefined;
+  const out: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> } = {};
+  const clickUrl = push.clickUrl?.trim();
+  const imageUrl = push.imageUrl?.trim();
+  if (clickUrl) out.clickUrl = clickUrl;
+  if (imageUrl) out.imageUrl = imageUrl;
+  const data: Record<string, string> = {};
+  for (const row of push.data ?? []) {
+    const key = row.key.trim();
+    if (key) data[key] = row.value;
+  }
+  if (Object.keys(data).length > 0) out.data = data;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /** Strip a draft workflow to the API's expected PUT body shape. */
 export function toApiSteps(steps: Step[]): unknown[] {
   return steps.map((s, si) => ({
@@ -148,5 +187,6 @@ export function toApiSteps(steps: Step[]): unknown[] {
           }))
         : undefined,
     skipIfStep: si > 0 && s.skipIfStep ? s.skipIfStep : undefined,
+    push: s.channel === 'push' ? cleanPush(s.push) : undefined,
   }));
 }

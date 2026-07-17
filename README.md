@@ -337,6 +337,9 @@ npm run reconcile                             # DR drill: settle finished events
 
 Auth: `x-api-key` header on all `/v1/*` routes.
 
+Setting up push + SMS delivery (Twilio, FCM, web/native device registration,
+segment limits, delivery receipts): **[docs/PUSH-SMS.md](docs/PUSH-SMS.md)**.
+
 ## Scaling playbook
 
 - **More throughput:** run more `npm run worker` processes (any number of

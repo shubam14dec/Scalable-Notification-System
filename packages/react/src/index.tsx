@@ -1,3 +1,4 @@
+/// <reference path="./firebase-shims.d.ts" />
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { encodeText } from './qrcodegen';
@@ -1751,6 +1752,243 @@ export function ConnectChannels(props: ConnectChannelsProps) {
       )}
     </div>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Web push — register this browser as a device for FCM notifications.  */
+/* Headless hook only; firebase is an OPTIONAL peer, loaded at runtime.  */
+/* ------------------------------------------------------------------ */
+
+export type PushPermission = 'granted' | 'denied' | 'prompt';
+
+export interface UsePushRegistrationOptions {
+  /** The subscriber token (nst_…) the host app already holds for the widget. */
+  token: string;
+  /** The web app's Firebase config object (apiKey, projectId, appId, …). */
+  firebaseConfig: Record<string, unknown>;
+  /** The Web Push certificate key pair's public key, from Firebase console. */
+  vapidKey: string;
+  /** REST base, e.g. "https://api.example.com". Empty string = same origin. */
+  apiUrl?: string;
+  /** Path the browser fetches the messaging service worker from. Must be at
+   *  the site's origin root — see the README. Defaults to that root path. */
+  serviceWorkerPath?: string;
+}
+
+export interface UsePushRegistration {
+  /** True only when this browser can do web push at all (and not during SSR). */
+  supported: boolean;
+  permission: PushPermission;
+  /** True once a device token has been registered with the server this session. */
+  enabled: boolean;
+  busy: boolean;
+  error: string | null;
+  enable: () => Promise<void>;
+  disable: () => Promise<void>;
+}
+
+/** Surfaced when the optional firebase peer isn't installed by the host. */
+const FIREBASE_MISSING = 'push requires the firebase package — npm install firebase';
+
+/**
+ * Persisted OPT-OUT marker. We store the opt-OUT (not opt-in) so a browser that
+ * has never touched disable() keeps the mount rotation-sync behaviour, while a
+ * user who disabled push isn't silently re-registered on the next page load —
+ * Notification.permission stays 'granted' after disable(), so permission alone
+ * can't tell the two apart. Reads/writes are guarded: privacy modes and SSR can
+ * throw on localStorage, and a failed read counts as NOT opted out.
+ */
+const PUSH_OPT_OUT_KEY = 'asyncify:push:opted-out';
+
+function readPushOptedOut(): boolean {
+  try {
+    return window.localStorage.getItem(PUSH_OPT_OUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writePushOptedOut(optedOut: boolean): void {
+  try {
+    if (optedOut) window.localStorage.setItem(PUSH_OPT_OUT_KEY, '1');
+    else window.localStorage.removeItem(PUSH_OPT_OUT_KEY);
+  } catch {
+    /* privacy mode / SSR — the server row is still authoritative */
+  }
+}
+
+// Computed once at module load. In SSR `window` is absent, so this is false on
+// the server and the real value on the client bundle's own evaluation.
+const PUSH_SUPPORTED =
+  typeof window !== 'undefined' &&
+  'serviceWorker' in navigator &&
+  'Notification' in window &&
+  'PushManager' in window;
+
+/** Map the browser's tri-state permission onto ours ('default' → 'prompt'). */
+function readPushPermission(): PushPermission {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'prompt';
+  const p = Notification.permission;
+  return p === 'granted' ? 'granted' : p === 'denied' ? 'denied' : 'prompt';
+}
+
+/**
+ * Load the optional firebase peer and return a messaging handle plus the module
+ * (for getToken/deleteToken). A missing install throws FIREBASE_MISSING. The
+ * app is initialised once and reused — getApps() guards a double-init when more
+ * than one widget mounts.
+ */
+async function loadMessaging(firebaseConfig: Record<string, unknown>) {
+  let appMod: typeof import('firebase/app');
+  let msgMod: typeof import('firebase/messaging');
+  try {
+    appMod = await import('firebase/app');
+    msgMod = await import('firebase/messaging');
+  } catch {
+    throw new Error(FIREBASE_MISSING);
+  }
+  const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
+  return { messaging: msgMod.getMessaging(app), msgMod };
+}
+
+/**
+ * Register (and unregister) this browser for web push. Headless: the host owns
+ * the UI and calls enable()/disable() from a toggle. enable() prompts for
+ * permission, mints an FCM token via the service worker, and POSTs it as a
+ * device; on mount an already-granted browser silently re-mints and re-POSTs
+ * (FCM tokens rotate and the server upsert is idempotent), never prompting.
+ */
+export function usePushRegistration({
+  token,
+  firebaseConfig,
+  vapidKey,
+  apiUrl = '',
+  serviceWorkerPath,
+}: UsePushRegistrationOptions): UsePushRegistration {
+  const [permission, setPermission] = useState<PushPermission>(readPushPermission);
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The FCM token we last minted — disable() needs it to tell the server which
+  // device to drop. A ref (not state) so it never triggers a re-render.
+  const fcmTokenRef = useRef<string | null>(null);
+  // firebaseConfig is an object the host likely re-creates each render; hold it
+  // in a ref so mintToken/effects don't churn on identity changes.
+  const firebaseConfigRef = useRef(firebaseConfig);
+  firebaseConfigRef.current = firebaseConfig;
+
+  const headers = useCallback(
+    () => ({ 'content-type': 'application/json', 'x-subscriber-token': token }),
+    [token],
+  );
+
+  // Register the SW and mint a fresh FCM token for this browser. Shared by
+  // enable() and the mount re-mint; callers ensure permission is 'granted'.
+  const mintToken = useCallback(async (): Promise<string> => {
+    const { messaging, msgMod } = await loadMessaging(firebaseConfigRef.current);
+    const registration = await navigator.serviceWorker.register(
+      serviceWorkerPath ?? '/firebase-messaging-sw.js',
+    );
+    const fcmToken = await msgMod.getToken(messaging, {
+      vapidKey,
+      serviceWorkerRegistration: registration,
+    });
+    fcmTokenRef.current = fcmToken;
+    return fcmToken;
+  }, [serviceWorkerPath, vapidKey]);
+
+  const enable = useCallback(async () => {
+    if (!PUSH_SUPPORTED) {
+      setError('push is not supported in this browser');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await Notification.requestPermission();
+      const next: PushPermission =
+        result === 'granted' ? 'granted' : result === 'denied' ? 'denied' : 'prompt';
+      setPermission(next);
+      if (next !== 'granted') {
+        setEnabled(false);
+        setError('push permission was not granted');
+        return;
+      }
+      // Enabling clears any prior opt-out so the mount effect resumes rotation.
+      writePushOptedOut(false);
+      const fcmToken = await mintToken();
+      const res = await fetch(`${apiUrl}/v1/me/devices`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ token: fcmToken, platform: 'web' }),
+      });
+      if (!res.ok) throw new Error(`device registration failed (${res.status})`);
+      setEnabled(true);
+    } catch (err) {
+      setEnabled(false);
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [apiUrl, headers, mintToken]);
+
+  const disable = useCallback(async () => {
+    if (!PUSH_SUPPORTED) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // A fresh mount has an empty ref, so re-mint just to learn which token to
+      // delete server-side (getToken returns the browser's current one).
+      const fcmToken = fcmTokenRef.current ?? (await mintToken());
+      // Best-effort local revoke; a failure must not block the server DELETE.
+      try {
+        const { messaging, msgMod } = await loadMessaging(firebaseConfigRef.current);
+        await msgMod.deleteToken(messaging);
+      } catch {
+        /* token already gone or firebase unavailable — the DELETE is truth */
+      }
+      await fetch(`${apiUrl}/v1/me/devices`, {
+        method: 'DELETE',
+        headers: headers(),
+        body: JSON.stringify({ token: fcmToken }),
+      });
+      // Persist the opt-out so a reload's mount effect doesn't silently
+      // re-register this browser (permission stays 'granted' after disable).
+      writePushOptedOut(true);
+      fcmTokenRef.current = null;
+      setEnabled(false);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [apiUrl, headers, mintToken]);
+
+  // Mount: an already-granted browser silently re-mints and re-registers its
+  // (rotating) token. Never prompts; failures are swallowed — the user hasn't
+  // asked for anything on this mount, so a broken SW must not raise an error.
+  useEffect(() => {
+    if (!PUSH_SUPPORTED || readPushPermission() !== 'granted' || readPushOptedOut()) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const fcmToken = await mintToken();
+        const res = await fetch(`${apiUrl}/v1/me/devices`, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ token: fcmToken, platform: 'web' }),
+        });
+        if (alive && res.ok) setEnabled(true);
+      } catch {
+        /* silent on mount */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [apiUrl, headers, mintToken]);
+
+  return { supported: PUSH_SUPPORTED, permission, enabled, busy, error, enable, disable };
 }
 
 export function NotificationInbox(props: NotificationInboxProps) {

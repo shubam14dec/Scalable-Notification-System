@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
 import { addSuppression } from '../db/repositories';
+import { deleteDeviceToken } from '../db/device-tokens.repo';
 import type { ChannelProvider, RenderedMessage, SendResult } from './types';
 
 export interface FcmConfig {
@@ -49,13 +50,7 @@ export class FcmPushProvider implements ChannelProvider {
     }
     try {
       const messaging = await this.messaging();
-      const id = await messaging.send({
-        token,
-        notification: {
-          title: message.subject ?? 'Notification',
-          body: message.body,
-        },
-      });
+      const id = await messaging.send(buildFcmMessage(token, message));
       return { providerMessageId: id };
     } catch (err) {
       const code = (err as { code?: string }).code ?? '';
@@ -63,7 +58,11 @@ export class FcmPushProvider implements ChannelProvider {
         code === 'messaging/registration-token-not-registered' ||
         code === 'messaging/invalid-registration-token'
       ) {
-        // Dead token: suppress it so future fan-outs skip this device.
+        // Dead token: deletion is primary — the device row is gone so future
+        // fan-outs never build a message for it (tokens rotate; the app
+        // re-registers a fresh one). Suppression is a backstop in case the
+        // same string is re-registered before this device row is rebuilt.
+        await deleteDeviceToken(message.tenantId, token).catch(() => undefined);
         await addSuppression(message.tenantId, 'push', token, 'invalid-token').catch(
           () => undefined,
         );
@@ -75,6 +74,46 @@ export class FcmPushProvider implements ChannelProvider {
       throw new TransientError(`fcm error: ${code || (err as Error).message}`, err);
     }
   }
+}
+
+/**
+ * Maps a RenderedMessage to an FCM HTTP-v1 payload. FCM rejects empty/invalid
+ * fields, so every rich block is included ONLY when its value exists.
+ */
+function buildFcmMessage(
+  token: string,
+  message: RenderedMessage,
+): import('firebase-admin/messaging').Message {
+  const fcm: import('firebase-admin/messaging').Message = {
+    token,
+    notification: {
+      title: message.subject ?? 'Notification',
+      body: message.body,
+    },
+  };
+
+  const push = message.push;
+  if (!push) return fcm;
+
+  // data: FCM requires every data value to be a string. Native apps read the
+  // tap target from data (not webpush.fcmOptions.link), so mirror clickUrl in.
+  const data: Record<string, string> = { ...(push.data ?? {}) };
+  if (push.clickUrl) data.clickUrl = push.clickUrl;
+  if (Object.keys(data).length > 0) fcm.data = data;
+
+  if (push.clickUrl || push.imageUrl) {
+    const webpush: NonNullable<typeof fcm.webpush> = {};
+    if (push.clickUrl) webpush.fcmOptions = { link: push.clickUrl };
+    if (push.imageUrl) webpush.notification = { image: push.imageUrl };
+    fcm.webpush = webpush;
+  }
+  if (push.imageUrl) {
+    // clickAction omitted: it needs a registered Android intent, not a URL.
+    fcm.android = { notification: { imageUrl: push.imageUrl } };
+    fcm.apns = { fcmOptions: { imageUrl: push.imageUrl } };
+  }
+
+  return fcm;
 }
 
 /** Mock push vendor — stands in for FCM/APNs. */

@@ -19,6 +19,15 @@ export interface Recipient {
 
 export type Priority = 'p0' | 'p1' | 'p2';
 
+/** A registered push device as the API returns it. */
+export interface Device {
+  id: string;
+  token: string;
+  platform: 'web' | 'android' | 'ios' | null;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
 /** Direct recipient, or a topic reference ({ topic: "beta-users" }). */
 export type TriggerRecipient = Recipient | { topic: string };
 
@@ -53,6 +62,12 @@ export interface WorkflowStep {
   }>;
   /** Skip at delivery time if an earlier step reached one of these states. */
   skipIfStep?: { stepIndex: number; statusIn: string[] };
+  /**
+   * Push steps only: tap-through URL, notification image, and an arbitrary
+   * data bag delivered to the device. Handlebars vars are allowed in all three;
+   * `data` values must be strings (max 10 keys).
+   */
+  push?: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> };
 }
 
 /** An agent as the API returns it — secrets (signing, LLM key) never included. */
@@ -226,6 +241,30 @@ export class AsyncifyClient {
         'DELETE',
         `/v1/subscribers/${encodeURIComponent(subscriberId)}/identities`,
         identity,
+      ),
+    /** Register (upsert) a push device token against this subscriber. */
+    registerDevice: (device: {
+      subscriberId: string;
+      token: string;
+      platform?: 'web' | 'android' | 'ios';
+    }) =>
+      this.request<{ deviceId: string; platform: Device['platform'] }>(
+        'POST',
+        `/v1/subscribers/${encodeURIComponent(device.subscriberId)}/devices`,
+        { token: device.token, platform: device.platform },
+      ),
+    /** Every push device registered to this subscriber. */
+    listDevices: (subscriberId: string) =>
+      this.request<{ devices: Device[] }>(
+        'GET',
+        `/v1/subscribers/${encodeURIComponent(subscriberId)}/devices`,
+      ),
+    /** Drop one device by token; false if it isn't this subscriber's. */
+    removeDevice: (device: { subscriberId: string; token: string }) =>
+      this.request<{ deleted: boolean }>(
+        'DELETE',
+        `/v1/subscribers/${encodeURIComponent(device.subscriberId)}/devices`,
+        { token: device.token },
       ),
   };
 

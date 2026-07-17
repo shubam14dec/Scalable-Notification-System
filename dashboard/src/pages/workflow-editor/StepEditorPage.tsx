@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowDown, ArrowLeft, ArrowUp, Bell, Mail, MessageSquare, Plus, Smartphone, Trash2, X } from 'lucide-react';
 import { Button, Field, Input, Mono } from '../../ui';
+import { computeSmsSegments, MAX_SMS_SEGMENTS } from '../../lib/sms-segments';
 import { useWorkflow } from './WorkflowProvider';
 import {
   CHANNEL_LABEL,
@@ -18,6 +19,7 @@ import {
   OPS,
   stepInvalid,
   type Condition,
+  type PushDataRow,
   type Step,
 } from './types';
 
@@ -64,6 +66,39 @@ function Toggle({
   );
 }
 
+/**
+ * Live SMS cost readout under the body. Counts the RAW template (variables
+ * unexpanded), so it appends a "(before variables)" note whenever the body
+ * carries {{…}} — the real send may differ once merged. Over the send-time
+ * ceiling it flips to the warning treatment (err dot + firmer text), mirroring
+ * the digest-body warning: color enters only through the dot, per the design
+ * system. Segment math is the exact mirror of the server's send-time guard.
+ */
+function SmsCounter({ body }: { body: string }) {
+  const seg = computeSmsSegments(body);
+  const chars = [...body].length;
+  const over = seg.segments > MAX_SMS_SEGMENTS;
+  const encoding = seg.encoding === 'gsm7' ? 'GSM-7' : 'Unicode';
+  const hasVars = body.includes('{{');
+  return (
+    <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+      {over && (
+        <span
+          aria-hidden
+          className="inline-block h-[7px] w-[7px] rounded-full"
+          style={{ background: 'var(--err)' }}
+        />
+      )}
+      <Mono className={over ? 'text-t2' : 'text-t3'}>
+        {chars} char{chars === 1 ? '' : 's'} · {seg.segments} segment{seg.segments === 1 ? '' : 's'} ·{' '}
+        {encoding}
+      </Mono>
+      {hasVars && <span className="text-t3">(before variables)</span>}
+      {over && <span className="text-t3">over the {MAX_SMS_SEGMENTS}-segment send limit</span>}
+    </p>
+  );
+}
+
 export default function StepEditorPage() {
   const { index } = useParams();
   const navigate = useNavigate();
@@ -102,6 +137,15 @@ export default function StepEditorPage() {
   const updateCond = (j: number, patchCond: Partial<Condition>) =>
     setConditions(conditions.map((c, k) => (k === j ? { ...c, ...patchCond } : c)));
   const addCondition = () => setConditions([...conditions, { field: '', op: 'eq', value: '' }]);
+
+  // Rich-push draft. Data rows live in the draft as ordered pairs (blank keys
+  // allowed while typing); toApiSteps drops the blanks and builds the object.
+  const push = step.push ?? {};
+  const dataRows = push.data ?? [];
+  const setDataRows = (rows: PushDataRow[]) => patch({ push: { ...push, data: rows } });
+  const updateDataRow = (j: number, patchRow: Partial<PushDataRow>) =>
+    setDataRows(dataRows.map((r, k) => (k === j ? { ...r, ...patchRow } : r)));
+  const PUSH_DATA_MAX = 10;
 
   const Icon = CHANNEL_ICON[step.channel] ?? Mail;
   const showContentSource = step.channel === 'email' && templates.length > 0;
@@ -224,6 +268,87 @@ export default function StepEditorPage() {
                 <Mono className="text-t2">{'{{digest_count}}'}</Mono>.
               </p>
             )}
+            {step.channel === 'sms' && <SmsCounter body={step.body} />}
+          </div>
+        )}
+
+        {/* Rich push — click-through, image, and custom data. Push only. */}
+        {step.channel === 'push' && (
+          <div className="space-y-4 rounded-md border border-bd bg-elevated/40 p-4">
+            <span className="block text-[12px] font-medium text-t2">Rich push</span>
+            <Field label="Click URL" hint="Opens when the notification is tapped">
+              <Input
+                type="url"
+                inputMode="url"
+                placeholder="https://app.example.com/orders/123"
+                value={push.clickUrl ?? ''}
+                onChange={(e) => patch({ push: { ...push, clickUrl: e.target.value } })}
+              />
+            </Field>
+            <Field label="Image URL" hint="Shown as the notification's large image">
+              <Input
+                type="url"
+                inputMode="url"
+                placeholder="https://cdn.example.com/hero.png"
+                value={push.imageUrl ?? ''}
+                onChange={(e) => patch({ push: { ...push, imageUrl: e.target.value } })}
+              />
+            </Field>
+            <div>
+              <span className="mb-1.5 block text-[12px] font-medium text-t2">
+                Data <span className="text-t3">(key/value, delivered to the device)</span>
+              </span>
+              {dataRows.length > 0 && (
+                <div className="mb-2 space-y-2">
+                  {dataRows.map((row, j) => (
+                    <div key={j} className="flex items-center gap-2">
+                      <Input
+                        className="flex-1 font-mono"
+                        placeholder="key"
+                        aria-label={`Data ${j + 1} key`}
+                        value={row.key}
+                        onChange={(e) => updateDataRow(j, { key: e.target.value })}
+                      />
+                      <Input
+                        className="flex-1 font-mono"
+                        placeholder="value"
+                        aria-label={`Data ${j + 1} value`}
+                        value={row.value}
+                        onChange={(e) => updateDataRow(j, { value: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Remove data ${j + 1}`}
+                        onClick={() => setDataRows(dataRows.filter((_, k) => k !== j))}
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-t3 transition-colors hover:bg-elevated hover:text-t1"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {dataRows.length < PUSH_DATA_MAX ? (
+                dataRows.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setDataRows([{ key: '', value: '' }])}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-bd py-2.5 text-[12px] font-medium text-t2 transition-colors hover:border-bd-strong hover:bg-elevated hover:text-t1"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add data
+                  </button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    onClick={() => setDataRows([...dataRows, { key: '', value: '' }])}
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add row
+                  </Button>
+                )
+              ) : (
+                <p className="text-[11px] text-t3">Up to {PUSH_DATA_MAX} data keys.</p>
+              )}
+            </div>
           </div>
         )}
 

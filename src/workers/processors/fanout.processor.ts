@@ -16,6 +16,10 @@ import {
   type Workflow,
   type WorkflowStep,
 } from '../../db/repositories';
+import {
+  listDeviceTokensForSubscribers,
+  type DeviceToken,
+} from '../../db/device-tokens.repo';
 import { render } from '../../core/render';
 import { evaluateConditions } from '../../core/conditions';
 import { renderSubject } from '../../core/email-template';
@@ -30,10 +34,53 @@ function addressFor(step: WorkflowStep, sub: Subscriber): Record<string, string>
     case 'sms':
       return sub.phone ? { phone: sub.phone } : null;
     case 'push':
-      return sub.push_token ? { pushToken: sub.push_token } : null;
+      // Push is multi-device: addresses come from the device_tokens table
+      // (one message per device), resolved in the fan-out loop below, never
+      // from the single legacy subscribers.push_token column.
+      return null;
     case 'inapp':
       // Every subscriber has an inbox — no external address needed.
       return { inAppSubscriberId: sub.external_id };
+  }
+}
+
+/**
+ * Renders a push step's rich extras against the trigger vars at fan-out.
+ * Every field is optional and dropped when empty or (for URLs) invalid after
+ * rendering — FCM rejects empty/invalid fields, so we never snapshot them.
+ */
+function renderPushExtras(
+  push: NonNullable<WorkflowStep['push']>,
+  vars: Record<string, unknown>,
+): { clickUrl?: string; imageUrl?: string; data?: Record<string, string> } | undefined {
+  const out: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> } = {};
+
+  const clickUrl = push.clickUrl && renderUrl(push.clickUrl, vars);
+  if (clickUrl) out.clickUrl = clickUrl;
+  const imageUrl = push.imageUrl && renderUrl(push.imageUrl, vars);
+  if (imageUrl) out.imageUrl = imageUrl;
+
+  if (push.data) {
+    const data: Record<string, string> = {};
+    for (const [key, template] of Object.entries(push.data)) {
+      const value = render(template, vars);
+      if (value !== '') data[key] = value; // empty after render → omit
+    }
+    if (Object.keys(data).length > 0) out.data = data;
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Render a URL field's vars; drop it if it's empty or no longer a valid URL. */
+function renderUrl(template: string, vars: Record<string, unknown>): string | undefined {
+  const value = render(template, vars).trim();
+  if (!value) return undefined;
+  try {
+    new URL(value);
+    return value;
+  } catch {
+    return undefined;
   }
 }
 
@@ -94,10 +141,25 @@ async function fanOutBatch(
     subscribers.push(await upsertSubscriber(event.tenant_id, recipient));
   }
 
+  // Push addresses live in device_tokens (multi-device). One batched read for
+  // the whole batch if any step is push — never a per-subscriber query, this
+  // runs at broadcast scale.
+  const hasPushStep = workflow.steps.some((s) => s.channel === 'push');
+  const devicesBySubscriber = hasPushStep
+    ? await listDeviceTokensForSubscribers(event.tenant_id, subscribers.map((s) => s.id))
+    : new Map<string, DeviceToken[]>();
+
   // One suppression lookup for the whole batch.
   const pairs: Array<{ channel: string; address: string }> = [];
   for (const sub of subscribers) {
     for (const step of workflow.steps) {
+      if (step.channel === 'push') {
+        // Each device token can be independently suppressed.
+        for (const device of devicesBySubscriber.get(sub.id) ?? []) {
+          pairs.push({ channel: 'push', address: device.token });
+        }
+        continue;
+      }
       const to = addressFor(step, sub);
       const address = to && suppressibleAddress(to);
       if (address) pairs.push({ channel: step.channel, address });
@@ -163,6 +225,75 @@ async function fanOutBatch(
           status: 'skipped',
           error: 'step conditions not met',
         });
+        continue;
+      }
+
+      // Push fans out to every registered device: one message per device,
+      // discriminated by device_key. Preference/condition skips above already
+      // emit a single row (device_key '') per subscriber, matching non-push.
+      if (step.channel === 'push') {
+        const devices = devicesBySubscriber.get(sub.id) ?? [];
+        if (devices.length === 0) {
+          planned.push({
+            ...base,
+            subscriberExternalId: sub.external_id,
+            status: 'skipped',
+            error: 'subscriber has no push address',
+          });
+          continue;
+        }
+
+        const pushExtras = step.push ? renderPushExtras(step.push, vars) : undefined;
+
+        if (step.digest) {
+          // v1 limitation: digest windows are keyed per-subscriber, so a
+          // digested push reaches only the NEWEST device. Per-device digest
+          // windows (multi-device digest fan-out) are future work.
+          const device = devices[0];
+          await handleDigestStep(
+            event,
+            sub,
+            step,
+            stepIndex,
+            { pushToken: device.token, deviceId: device.id },
+            vars,
+          );
+          continue;
+        }
+
+        for (const device of devices) {
+          const to = { pushToken: device.token, deviceId: device.id };
+          if (suppressed.has(`push\n${device.token}`)) {
+            planned.push({
+              ...base,
+              subscriberExternalId: sub.external_id,
+              deviceKey: device.id,
+              content: { body: '', to },
+              status: 'skipped',
+              error: 'address suppressed (prior bounce/complaint)',
+            });
+            logExec({
+              tenantId: event.tenant_id,
+              transactionId: event.transaction_id,
+              level: 'warn',
+              detail: `skipped suppressed push token for ${sub.external_id}`,
+            });
+            continue;
+          }
+          planned.push({
+            ...base,
+            subscriberExternalId: sub.external_id,
+            deviceKey: device.id,
+            content: {
+              subject: step.subject ? render(step.subject, vars) : undefined,
+              body: render(step.body, vars),
+              to,
+              skipIfStep: step.skipIfStep,
+              push: pushExtras,
+            },
+            delayMs: step.delaySeconds ? step.delaySeconds * 1000 : undefined,
+          });
+        }
         continue;
       }
 
@@ -248,7 +379,8 @@ async function fanOutBatch(
   const rows = await insertMessagesBulk(planned);
   const byKey = new Map<string, MessageRow>();
   for (const row of rows) {
-    byKey.set(`${row.subscriber_id}|${row.channel}|${row.step_index}`, row);
+    // device_key disambiguates the per-device rows a push step produces.
+    byKey.set(`${row.subscriber_id}|${row.channel}|${row.step_index}|${row.device_key}`, row);
   }
 
   // Group delivery jobs per queue and enqueue with addBulk.
@@ -259,7 +391,9 @@ async function fanOutBatch(
 
   for (const plan of planned) {
     if (plan.status !== 'queued') continue;
-    const row = byKey.get(`${plan.subscriberId}|${plan.channel}|${plan.stepIndex}`);
+    const row = byKey.get(
+      `${plan.subscriberId}|${plan.channel}|${plan.stepIndex}|${plan.deviceKey ?? ''}`,
+    );
     if (!row || row.status !== 'queued') continue; // pre-existing row already past this stage
 
     const queueName = deliveryQueueName(plan.channel, event.priority);
