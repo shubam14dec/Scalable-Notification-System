@@ -381,6 +381,20 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   t.me deep-link surface must ship the copyable `/start <token>` fallback
   beside it. Corollary: a QR test proves decode, not destination
   reachability — they fail independently.
+- **FCM web SW must NOT showNotification for notification payloads**
+  (Phase 20 E2E, user counted 4 banners for 1 trigger): the Firebase SDK
+  AUTO-displays every notification-carrying push (title/body/image, and
+  its built-in click handler opens fcm_options.link) AND still invokes
+  onBackgroundMessage — a handler that also calls showNotification
+  double-notifies every user. Canonical firebase-messaging-sw.js =
+  importScripts + skipWaiting/claim + initializeApp + firebase.messaging()
+  and NOTHING else (three copies to keep in sync: packages/react README,
+  docs/PUSH-SMS.md, the scratchpad token page). Related: a SW without
+  skipWaiting only updates "eventually" — always include install→
+  skipWaiting + activate→clients.claim. And unregistering a SW kills the
+  browser's push subscription: the old FCM token goes dead (our dead-token
+  cleanup then deletes the device row — by design) and the page must mint
+  + re-register a fresh one.
 
 ## 12. Tests own Redis db 15 — never share queues with the dev fleet
 

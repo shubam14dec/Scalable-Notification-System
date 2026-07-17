@@ -127,6 +127,10 @@ registers; override with `serviceWorkerPath` only if you truly must):
 importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js');
 
+// New versions of this file take over on the next page load, not "eventually".
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+
 firebase.initializeApp({
   apiKey: '…',
   projectId: '…',
@@ -134,27 +138,12 @@ firebase.initializeApp({
   appId: '…',
 });
 
-const messaging = firebase.messaging();
-
-// A message that arrives while the page is backgrounded is painted by the SW.
-messaging.onBackgroundMessage((payload) => {
-  const { title, body, image } = payload.notification ?? {};
-  self.registration.showNotification(title ?? 'Notification', {
-    body: body ?? '',
-    icon: '/icon-192.png',
-    image,
-    data: payload.data ?? {},
-    // Carry the click-through link forward for the click handler below.
-    ...(payload.fcmOptions?.link ? { data: { ...payload.data, link: payload.fcmOptions.link } } : {}),
-  });
-});
-
-// Tapping the notification focuses/opens the click-through link, if any.
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  const link = event.notification.data && event.notification.data.link;
-  if (link) event.waitUntil(clients.openWindow(link));
-});
+// That's the whole file — and the brevity is load-bearing. Firebase's SDK
+// AUTO-DISPLAYS every notification-carrying push (title, body, image) and its
+// built-in click handler opens the notification's click-through link. Do NOT
+// add an onBackgroundMessage handler that calls showNotification: the SDK
+// still auto-displays alongside it, so users get every push TWICE.
+firebase.messaging();
 ```
 
 MIT © Shubam Patil
