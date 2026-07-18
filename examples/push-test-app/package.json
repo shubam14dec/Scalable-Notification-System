@@ -8,7 +8,7 @@
     "android": "expo run:android"
   },
   "dependencies": {
-    "@asyncify-hq/react-native": "file:../../packages/react-native",
+    "@asyncify-hq/react-native": "file:./asyncify-hq-react-native-0.0.0.tgz",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@react-native-firebase/app": "^21.6.1",
     "@react-native-firebase/messaging": "^21.6.1",

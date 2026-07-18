@@ -8,6 +8,9 @@ node_modules/
 .expo/
 dist/
 web-build/
-*.tgz
+# NOTE: *.tgz deliberately NOT ignored here (unlike .gitignore) — the packed
+# @asyncify-hq/react-native tarball must reach the cloud builder, because the
+# package's dist/ is git-ignored and a bare file:../../ dependency arrives
+# empty on EAS.
 *.log
 .DS_Store

@@ -47,20 +47,20 @@ cd examples/push-test-app
 npm install
 ```
 
-The app depends on the local package via `file:../../packages/react-native`.
+The app depends on the local package via a **packed tarball**
+(`file:./asyncify-hq-react-native-0.0.0.tgz`), not a bare `file:../../` link —
+the package's built `dist/` is git-ignored, so a directory link arrives EMPTY
+on EAS's cloud builders and the JS bundling step fails (learned the hard way,
+2026-07-18). The tarball is git-ignored (throwaway build input) but is
+deliberately allowed through `.easignore` so it reaches the builder.
 
-> **Fallback if EAS upload chokes on the `file:` dependency.** EAS uploads a
-> tarball of this project; a `file:` link outside the project root sometimes
-> fails to resolve on their builders. If a build errors resolving
-> `@asyncify-hq/react-native`, pack the package and install the tarball
-> instead:
->
-> ```bash
-> npm pack ../../packages/react-native          # writes asyncify-hq-react-native-0.0.0.tgz here
-> npm install ./asyncify-hq-react-native-0.0.0.tgz
-> ```
->
-> The `.tgz` is a throwaway build input and is already git-ignored.
+**Before the first `npm install` (and again after editing the package), pack
+it:**
+
+```bash
+npm --prefix ../../packages/react-native run build
+npm pack ../../packages/react-native          # writes asyncify-hq-react-native-0.0.0.tgz here
+```
 
 ## 4. Build the APK in the cloud
 
