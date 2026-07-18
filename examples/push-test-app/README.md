@@ -62,6 +62,11 @@ npm --prefix ../../packages/react-native run build
 npm pack ../../packages/react-native          # writes asyncify-hq-react-native-0.0.0.tgz here
 ```
 
+**Repacking the SAME version?** Also delete `package-lock.json` and reinstall
+(`npm cache clean --force` if the integrity still mismatches) — the lockfile
+pins the old tarball's hash and npm caches by name@version, so a stale lock
+makes EAS's clean install fail its integrity check.
+
 ## 4. Build the APK in the cloud
 
 ```bash
