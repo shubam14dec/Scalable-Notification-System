@@ -1,0 +1,13 @@
+# EAS upload rules. When this file exists it REPLACES .gitignore for
+# deciding what gets uploaded to the cloud builder — which lets
+# google-services.json ride along to the build (the config plugin needs
+# it) while staying out of git per .gitignore.
+android/
+ios/
+node_modules/
+.expo/
+dist/
+web-build/
+*.tgz
+*.log
+.DS_Store
