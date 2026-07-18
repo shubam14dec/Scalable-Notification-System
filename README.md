@@ -271,6 +271,8 @@ npx @asyncify-hq/cli dev       # cloudflared tunnel → sets the runtime public
 ```
 
 See [docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md#runbook-rotating-the-tunnel--changing-public_url).
+Going to production (what replaces the tunnel, one-time webhook wiring):
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 Send a notification:
 

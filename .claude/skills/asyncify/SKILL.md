@@ -396,7 +396,10 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   else (three copies to keep in sync: packages/react README,
   docs/PUSH-SMS.md, the scratchpad token page). Related: a SW without
   skipWaiting only updates "eventually" — always include install→
-  skipWaiting + activate→clients.claim. And unregistering a SW kills the
+  skipWaiting + activate→clients.claim. Even WITH skipWaiting, Ctrl+
+  Shift+R can pin the old worker (force-reload detaches SW control) —
+  the reliable update gesture to give the user is CLOSE the tab and
+  REOPEN it (user-verified 2026-07-18). And unregistering a SW kills the
   browser's push subscription: the old FCM token goes dead (our dead-token
   cleanup then deletes the device row — by design) and the page must mint
   + re-register a fresh one.
