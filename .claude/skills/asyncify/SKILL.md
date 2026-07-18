@@ -399,7 +399,22 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   skipWaiting + activate→clients.claim. Even WITH skipWaiting, Ctrl+
   Shift+R can pin the old worker (force-reload detaches SW control) —
   the reliable update gesture to give the user is CLOSE the tab and
-  REOPEN it (user-verified 2026-07-18). And unregistering a SW kills the
+  REOPEN it (user-verified 2026-07-18).
+- **RN packages MUST ship a `react-native` package.json field → ESM
+  build** (Phase 20 native E2E, adb crash log): Expo/Metro ignores
+  `exports` by default and resolves `main` → our tsup CJS output,
+  which is built in NODE mode where a default import of a CJS dep
+  (firebase) yields the module OBJECT → `messaging()` threw "Object is
+  not a function" and the app died on launch. The `react-native` field
+  outranks `main` in Metro's resolver and serves the ESM build, whose
+  interop Metro's babel handles. Verify at BUNDLE level before burning
+  a cloud build: `npx expo export --no-bytecode` + grep for the CJS
+  interop marker (`import_messaging`). Related native truths: the OS
+  ALWAYS opens the app on notification tap (no web-style direct
+  browser open) — the hook forwards data.clickUrl via Linking
+  (onNotificationOpenedApp + getInitialNotification); and EAS monorepo
+  uploads read .easignore from the GIT ROOT (it REPLACES .gitignore —
+  restate .env exclusions or you leak secrets to the builder). And unregistering a SW kills the
   browser's push subscription: the old FCM token goes dead (our dead-token
   cleanup then deletes the device row — by design) and the page must mint
   + re-register a fresh one.

@@ -182,16 +182,24 @@ All slices Opus, audited; suite 543/543 twice.)
       (2) FCM SDK's click handler drops CROSS-ORIGIN clickUrls (host
       check in their source) → our notificationclick registered BEFORE
       firebase.messaging() opens any origin + stops propagation.
-- [ ] USER E2E 6 NATIVE — TOMORROW MORNING (2026-07-19, friend's
-      Android; his iPhone 15 can't sideload): APK BUILT ✓ after 3 EAS
-      gotchas fixed in-repo (empty file: dep → packed tarball;
-      monorepo .easignore must live at GIT ROOT; expo-splash-screen
-      required by prebuild template). Install link (permanent, also on
-      his expo.dev account):
-      https://expo.dev/accounts/shubam14dec/projects/asyncify-push-test/builds/636bbd71-be10-45ad-aa19-82131d0130dc
-      Steps: asyncify dev up → mint fresh nst_ token for channel-test-1
-      → app: tunnel URL + token → Enable Push → close app → Send test
-      → phone + Chrome + Edge all pop from one trigger.
+- [x] USER E2E 6 NATIVE done (2026-07-18, friend's Android over adb +
+      WhatsApp APK; his iPhone 15 can't sideload): notification with
+      image arrived APP-CLOSED via Play Services; tap → app blink →
+      blinkit opened ✓; one trigger popped phone + Chrome + Edge.
+      THE PHONE FOUND TWO MORE SHIPPED BUGS, fixed + committed:
+      (3) package crashed on launch under Metro — Expo ignores
+      `exports`, `main` served the Node-mode CJS build whose default-
+      import interop calls the firebase module OBJECT ("Object is not
+      a function", adb crash log) → `react-native` package.json field
+      now points Metro at the ESM build (bundle-verified);
+      (4) tapping a rich push opened the app and STOPPED — native has
+      no browser-opens-directly path, so the hook now forwards
+      data.clickUrl via Linking.openURL (onNotificationOpenedApp +
+      getInitialNotification; `openClickUrlOnTap: false` opt-out).
+      Also fixed en route: EAS empty file: dep → packed tarball;
+      root-level .easignore (monorepo reads GIT ROOT, never .env);
+      expo-splash-screen required by prebuild; repack-same-version
+      needs lockfile regen + npm cache clean (integrity pin).
 - [ ] Release (later, on his word): npm Trusted Publisher binding for
       @asyncify-hq/react-native before merging the bot PR (cli
       precedent); node/react/react-native changesets already staged
