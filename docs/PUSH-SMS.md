@@ -342,7 +342,7 @@ exist only on push steps):
 
 | Field | What it does |
 |---|---|
-| **`clickUrl`** | Web: the notification is a click-through to this URL. Native: delivered inside the message `data` as `clickUrl`, for your app to route however it likes. |
+| **`clickUrl`** | Web: the notification is a click-through to this URL. Native: the OS always opens the app on tap (there is no browser-opens-directly path); the hook then forwards `clickUrl` to the browser automatically — pass `openClickUrlOnTap: false` to receive taps yourself instead (the URL also rides in the message `data`). |
 | **`imageUrl`** | A big picture in the banner — rendered on web, Android, and iOS. |
 | **`data`** | Up to 10 custom key/value string pairs, delivered to the app (native reads these in `onForegroundMessage` / the background handler). |
 

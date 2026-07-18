@@ -85,6 +85,16 @@ const {
 Background and quit-state notifications are displayed by the OS automatically;
 `onForegroundMessage` fires **only** while the app is open.
 
+## Tapping a notification
+
+On native, the OS always launches the **app** when a notification is tapped —
+there is no browser-opens-directly path like web push. When the tapped message
+carries a `clickUrl` (set on the workflow's push step), the hook forwards it to
+the system browser automatically, covering both a background tap and a tap that
+cold-started the app. Pass `openClickUrlOnTap: false` to receive taps yourself
+via the React Native Firebase APIs instead — the URL also rides in the message
+`data` as `clickUrl`.
+
 ## Sticky opt-out
 
 `disable()` must survive an app relaunch — otherwise, since the OS notification

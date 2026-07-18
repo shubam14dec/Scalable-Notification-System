@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PermissionsAndroid, Platform } from 'react-native';
+import { Linking, PermissionsAndroid, Platform } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
 
 /**
@@ -53,6 +53,15 @@ export interface UsePushRegistrationOptions {
    * and do NOT invoke this callback.
    */
   onForegroundMessage?: (msg: PushMessage) => void;
+  /**
+   * When a notification carrying a clickUrl is TAPPED, open that URL
+   * (default true). On native the OS always launches the app on tap — there
+   * is no browser-opens-directly path like web push — so the platform mirrors
+   * the workflow's clickUrl into the message data and the hook forwards it
+   * onward the moment the tap arrives (background tap and cold start both).
+   * Set false to receive taps yourself via @react-native-firebase APIs.
+   */
+  openClickUrlOnTap?: boolean;
 }
 
 export interface UsePushRegistration {
@@ -166,10 +175,19 @@ async function requestNotificationPermission(): Promise<boolean> {
   );
 }
 
+/** Forward a tapped notification's clickUrl to the system browser. */
+function openTappedClickUrl(msg: { data?: Record<string, string | object> } | null): void {
+  const url = msg?.data?.clickUrl;
+  if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+    Linking.openURL(url).catch(() => undefined);
+  }
+}
+
 export function usePushRegistration({
   token,
   apiUrl,
   onForegroundMessage,
+  openClickUrlOnTap = true,
 }: UsePushRegistrationOptions): UsePushRegistration {
   const [permission, setPermission] = useState<PushPermission>('prompt');
   const [enabled, setEnabled] = useState(false);
@@ -296,6 +314,20 @@ export function usePushRegistration({
       unsubscribeRefresh();
     };
   }, [registerDevice]);
+
+  // Tap-through: the OS always launches the APP on notification tap (native
+  // has no browser-opens-directly path like web push), so forward the tapped
+  // message's data.clickUrl to the browser — for a tap that brought the app
+  // from background (onNotificationOpenedApp) AND for a tap that cold-started
+  // it (getInitialNotification).
+  useEffect(() => {
+    if (!SUPPORTED || !openClickUrlOnTap) return;
+    messaging()
+      .getInitialNotification()
+      .then((msg) => openTappedClickUrl(msg))
+      .catch(() => undefined);
+    return messaging().onNotificationOpenedApp((msg) => openTappedClickUrl(msg));
+  }, [openClickUrlOnTap]);
 
   // Foreground messages. Background/quit-state notification display is handled
   // by the OS automatically — this callback fires ONLY while the app is open.
