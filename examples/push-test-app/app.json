@@ -5,7 +5,12 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "assetBundlePatterns": ["**/*"],
+    "splash": {
+      "backgroundColor": "#09090b"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "android": {
       "package": "io.asyncify.pushtest",
       "googleServicesFile": "./google-services.json"
@@ -27,6 +32,11 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "26b76ed5-06a5-40da-adb1-9fa42997cb43"
+      }
+    }
   }
 }
