@@ -170,10 +170,28 @@ All slices Opus, audited; suite 543/543 twice.)
       receipts story, every snippet source-verified) + README pointer
       (Opus, audited)
 - [x] Fleet restarted on new code (api/worker/ws; dashboard hot-reloads)
-- [ ] USER E2E: multi-device pop, rich push (image+click), segment
-      counter + >10 guard, receipt sent→delivered via `asyncify dev`
-      tunnel, dead-token cleanup, NATIVE: EAS APK on his phone
-      (Firebase android app + Expo account = his two setup steps)
+- [x] USER E2E 1-5 (2026-07-18): multi-device pop (Chrome+Edge, one
+      trigger) ✓; rich push image + CROSS-ORIGIN click→blinkit ✓;
+      segment counter (emoji→Unicode flip) + 11-segment send guard
+      failed loudly pre-Twilio ✓; receipt sent→delivered through the
+      tunnel ✓; dead-token auto-cleanup (row deleted, 1 attempt) ✓ —
+      proven accidentally when unregistering the SW killed the token.
+      HIS E2E CAUGHT TWO SHIPPED BUGS, both fixed + ledgered:
+      (1) canonical SW double-painted every push (FCM SDK auto-display
+      + our onBackgroundMessage painter) → SW is now init-only;
+      (2) FCM SDK's click handler drops CROSS-ORIGIN clickUrls (host
+      check in their source) → our notificationclick registered BEFORE
+      firebase.messaging() opens any origin + stops propagation.
+- [ ] USER E2E 6 NATIVE — TOMORROW MORNING (2026-07-19, friend's
+      Android; his iPhone 15 can't sideload): APK BUILT ✓ after 3 EAS
+      gotchas fixed in-repo (empty file: dep → packed tarball;
+      monorepo .easignore must live at GIT ROOT; expo-splash-screen
+      required by prebuild template). Install link (permanent, also on
+      his expo.dev account):
+      https://expo.dev/accounts/shubam14dec/projects/asyncify-push-test/builds/636bbd71-be10-45ad-aa19-82131d0130dc
+      Steps: asyncify dev up → mint fresh nst_ token for channel-test-1
+      → app: tunnel URL + token → Enable Push → close app → Send test
+      → phone + Chrome + Edge all pop from one trigger.
 - [ ] Release (later, on his word): npm Trusted Publisher binding for
       @asyncify-hq/react-native before merging the bot PR (cli
       precedent); node/react/react-native changesets already staged
