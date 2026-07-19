@@ -1,6 +1,6 @@
 {
   "name": "@asyncify-hq/react-native",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Native push registration for Asyncify — one hook that wires FCM device tokens, permissions and token rotation on Android and iOS",
   "keywords": [
     "notifications",
