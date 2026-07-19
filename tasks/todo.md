@@ -200,9 +200,9 @@ All slices Opus, audited; suite 543/543 twice.)
       root-level .easignore (monorepo reads GIT ROOT, never .env);
       expo-splash-screen required by prebuild; repack-same-version
       needs lockfile regen + npm cache clean (integrity pin).
-- [ ] Release (later, on his word): npm Trusted Publisher binding for
-      @asyncify-hq/react-native before merging the bot PR (cli
-      precedent); node/react/react-native changesets already staged
+- [x] RELEASED 2026-07-19: pushed (scrub clean) → user bootstrapped
+      react-native@0.0.0 + Trusted Publisher → merged PR #10 →
+      node@0.4.0, react@0.7.0, react-native@0.1.0 live with provenance
 
 Notes for later (from E's review): updateMessageByProviderId has no
 terminal-state guard (a late 'sent' could regress 'delivered'; today
