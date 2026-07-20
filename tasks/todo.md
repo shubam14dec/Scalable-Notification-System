@@ -24,10 +24,21 @@ plans get a short review section, then move to Done.
           page (7d/30d, warn dot >5% tool failures or >20% notes)
       [x] D tests: +15 (trace shapes per exit, persistence incl. bridge,
           health aggregates/window/cache-aware matrix) — 558/558 ×2
-      [ ] USER E2E + review + LOCAL commit close
+      [x] USER E2E done 2026-07-21: inspector read fluently (he
+          diagnosed a dead demo-tool endpoint FROM the traces — the
+          feature proving itself day one: approval ✓ → execution
+          "fetch failed" → graceful agent recovery); happy path re-run
+          against the rebuilt :4400 acme-tools demo server (scratchpad
+          acme-tools/serve.mjs — start it for agent-tool E2Es);
+          paused marker ✓; Health modal ✓; Jaeger waterfall ✓
+          (service notification-worker, operation brain.model_call).
+          His catch: DEPLOYMENT.md lacked observability — added
+          (durable OTLP backend, one env var; sample pipeline, keep
+          agent turns 100%; inspector traces deploy with Postgres).
       Note for Phase 22: agent_tool_calls has no execution-duration
       column → per-tool avgMs is null; add duration capture with the
       guardrails work. Crash-mid-turn traces still unrecorded (D7).
+      PHASE 21 COMPLETE — commits 03b9919 + 018cc7d (LOCAL, unpushed).
 - [ ] Phase 22 — Evals-as-gate + guardrails hardening: CI eval gate;
       customer-facing pre-save eval runs ("3/12 scenarios regressed");
       LLM-judge dimensions (groundedness/tone/refusals); one-click
