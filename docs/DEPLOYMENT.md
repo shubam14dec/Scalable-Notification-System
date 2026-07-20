@@ -52,6 +52,28 @@ laptop :3000                            api pods (same Fastify app)
 5. `asyncify dev` remains a development tool for anyone building against
    the platform locally. Production never runs it.
 
+## Observability in production
+
+Local dev ships spans to the all-in-one Jaeger container, which stores
+them **in RAM** — fine for debugging, useless for production (bounded
+window, wiped on restart). The application speaks vendor-neutral
+OpenTelemetry, so moving to a durable backend is one env change and
+zero code:
+
+1. Pick a backend: self-hosted Jaeger backed by real storage
+   (Elasticsearch/Cassandra), Grafana Tempo, or a managed vendor
+   (Datadog, Honeycomb, Grafana Cloud — anything that accepts OTLP).
+2. Point `OTEL_EXPORTER_OTLP_ENDPOINT` at it (and set the vendor's
+   auth header env if it needs one) on the api and worker deployments.
+   Keep `OTEL_ENABLED=true`.
+3. Sampling: dev traces everything. At real traffic, configure
+   head-sampling (e.g. keep 10% of pipeline traces) — but keep agent
+   turns at 100%; the Turn Inspector's Postgres copy is per-turn
+   regardless, and turn volume is tiny next to delivery volume.
+
+The dashboard Turn Inspector needs nothing: its traces live on the
+transcript rows in Postgres and deploy with the database.
+
 ## What does NOT change
 
 Everything you verified locally — webhook signature checks, channel
