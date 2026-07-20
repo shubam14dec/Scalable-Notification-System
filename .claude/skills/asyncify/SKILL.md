@@ -34,6 +34,12 @@ us — every rule earned by a concrete incident here. Both are binding.
   approve this?*
 - Diff behavior against main when a change is risky.
 - The project-specific verification loop is Part II §1 — it is not optional.
+- DEPLOYMENT DOCS ARE PART OF DONE (user rule, 2026-07-21): if the phase
+  added anything a production deploy must do differently than local dev
+  (env vars, external bindings, one-time console steps, dev-only
+  stand-ins like the tunnel or the RAM-only Jaeger), update
+  docs/DEPLOYMENT.md in the SAME phase. Deployment day must be a
+  checklist, not archaeology.
 
 ## Demand elegance (balanced)
 
