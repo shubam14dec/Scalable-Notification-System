@@ -41,6 +41,24 @@ const endpointUrlSchema = z.string().url().max(2048);
 const approvalSchema = z.enum(['auto', 'required']);
 const timeoutMsSchema = z.number().int().min(1000).max(30000);
 
+/**
+ * Phase 22 per-tool guardrails (null clears; absent leaves untouched). The
+ * repeat-action rule needs BOTH maxAutoCalls and windowDays, so they're set
+ * together; maxCallsPerHour is independent. Enforcement lives in the managed
+ * brain's executeCustomTool — this only persists the config.
+ */
+const guardSchema = z
+  .object({
+    maxAutoCalls: z.number().int().min(1).optional(),
+    windowDays: z.number().int().min(1).max(365).optional(),
+    maxCallsPerHour: z.number().int().min(1).optional(),
+  })
+  .refine((g) => (g.maxAutoCalls === undefined) === (g.windowDays === undefined), {
+    message: 'maxAutoCalls and windowDays must be set together',
+  })
+  .nullable()
+  .optional();
+
 const ToolCreateSchema = z.object({
   name: z.string(),
   description: descriptionSchema,
@@ -50,6 +68,7 @@ const ToolCreateSchema = z.object({
   endpointUrl: endpointUrlSchema,
   approval: approvalSchema.optional().default('auto'),
   timeoutMs: timeoutMsSchema.optional().default(10000),
+  guard: guardSchema,
 });
 
 const ToolPatchSchema = z.object({
@@ -59,6 +78,7 @@ const ToolPatchSchema = z.object({
   approval: approvalSchema.optional(),
   status: z.enum(['active', 'disabled']).optional(),
   timeoutMs: timeoutMsSchema.optional(),
+  guard: guardSchema,
 });
 
 /** Shallow v1 validation: a JSON Schema object must be `{type:'object', ...}`. */
@@ -97,6 +117,7 @@ function toolView(t: AgentToolDef) {
     approval: t.approval,
     timeoutMs: t.timeout_ms,
     status: t.status,
+    guard: t.guard,
     createdAt: t.created_at,
   };
 }
@@ -118,7 +139,7 @@ export function registerAgentToolRoutes(app: FastifyInstance) {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
       }
-      const { name, description, parameters, endpointUrl, approval, timeoutMs } = parsed.data;
+      const { name, description, parameters, endpointUrl, approval, timeoutMs, guard } = parsed.data;
 
       if (!NAME_RE.test(name)) {
         return reply.code(400).send({ error: 'tool name must match ^[a-z][a-z0-9_]{0,63}$' });
@@ -142,6 +163,7 @@ export function registerAgentToolRoutes(app: FastifyInstance) {
         sealedSecret: sealSecret(secret),
         approval,
         timeoutMs,
+        guard: guard ?? null,
       });
       if (!tool) {
         return reply
@@ -197,6 +219,7 @@ export function registerAgentToolRoutes(app: FastifyInstance) {
         approval: parsed.data.approval,
         status: parsed.data.status,
         timeoutMs: parsed.data.timeoutMs,
+        guard: parsed.data.guard,
       });
       if (!tool) return reply.code(404).send({ error: 'unknown tool' });
       return { tool: toolView(tool) };

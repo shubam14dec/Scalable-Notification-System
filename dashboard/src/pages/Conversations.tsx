@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../lib/api';
@@ -152,7 +152,13 @@ export default function ConversationsPage() {
                 <tr
                   key={c.id}
                   className="cursor-pointer transition-colors hover:bg-elevated"
-                  onClick={() => navigate(`/conversations/${c.id}`)}
+                  // Carry the agent id so the detail page can offer "Save as eval"
+                  // without a dedicated lookup (detail response omits the agent).
+                  onClick={() =>
+                    navigate(`/conversations/${c.id}`, {
+                      state: { agentIdentifier: c.agent.identifier },
+                    })
+                  }
                 >
                   <td className={td}>
                     <Mono>{c.subscriberId}</Mono>
@@ -193,6 +199,29 @@ export default function ConversationsPage() {
 /** Durations read as `840ms` under a second, else `1.2s` (one decimal). */
 function fmtMs(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * Draft an eval scenario (Phase 22 E4) from a live transcript: user turns
+ * verbatim in order, and one `{ expect: { tool } }` per tool_call the agent
+ * made that turn. replyContains is left out for the human to fill; the eval is
+ * saved disabled so a draft never runs until it's been reviewed.
+ */
+function draftScenarioFromTranscript(
+  messages: TranscriptMessage[],
+): { turns: Array<Record<string, unknown>> } {
+  const turns: Array<Record<string, unknown>> = [];
+  for (const m of messages) {
+    if (m.deletedAt) continue;
+    if (m.role === 'user') {
+      turns.push({ user: m.content });
+    } else if (m.role === 'agent' && m.trace) {
+      for (const e of m.trace.events) {
+        if (e.t === 'tool_call') turns.push({ expect: { tool: e.name } });
+      }
+    }
+  }
+  return { turns };
 }
 
 /** stopReason rendered as a short tail: what the model did next. */
@@ -306,6 +335,7 @@ function MessageTrace({
 
 export function ConversationDetailPage() {
   const { id } = useParams();
+  const location = useLocation();
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -320,12 +350,42 @@ export function ConversationDetailPage() {
           summary: string | null;
           messageCount: number;
           createdAt: string;
+          /** Present if the API includes it; otherwise we use the router state. */
+          agent?: { identifier: string; name: string };
         };
         messages: TranscriptMessage[];
         usage: { inputTokens: number; outputTokens: number; modelCalls: number };
       }>(`/v1/conversations/${id}`),
     refetchInterval: 5_000,
   });
+
+  // Agent id for "Save as eval": router state (from the list) first, then the
+  // detail payload if the API grew an agent block.
+  const agentIdentifier =
+    (location.state as { agentIdentifier?: string } | null)?.agentIdentifier ??
+    data?.conversation.agent?.identifier ??
+    null;
+
+  // Tiny transient toast — no global provider, monochrome per the design system.
+  const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null);
+  const flash = (text: string, error = false) => {
+    setToast({ text, error });
+    setTimeout(() => setToast(null), error ? 4000 : 3500);
+  };
+  const saveAsEval = useMutation({
+    mutationFn: (body: { name: string; scenario: object; enabled: boolean }) =>
+      api(`/v1/agents/${agentIdentifier}/evals`, { method: 'POST', body }),
+    onSuccess: () => flash('saved as draft eval (disabled)'),
+    onError: (err) => flash(`couldn't save eval — ${err.message}`, true),
+  });
+  const onSaveAsEval = () => {
+    if (!agentIdentifier || !data) return;
+    saveAsEval.mutate({
+      name: `from-conversation-${(id ?? '').slice(0, 8)}`,
+      scenario: draftScenarioFromTranscript(data.messages),
+      enabled: false,
+    });
+  };
 
   const resolve = useMutation({
     mutationFn: () => api(`/v1/conversations/${id}/resolve`, { method: 'POST' }),
@@ -372,13 +432,32 @@ export function ConversationDetailPage() {
       <PageHeader
         title="Conversation"
         action={
-          data?.conversation.status === 'active' ? (
-            <Button onClick={() => resolve.mutate()} disabled={resolve.isPending}>
-              {resolve.isPending ? 'Resolving…' : 'Mark resolved'}
-            </Button>
+          data ? (
+            <div className="flex items-center gap-2">
+              {agentIdentifier && (
+                <Button onClick={onSaveAsEval} disabled={saveAsEval.isPending}>
+                  {saveAsEval.isPending ? 'Saving…' : 'Save as eval'}
+                </Button>
+              )}
+              {data.conversation.status === 'active' && (
+                <Button onClick={() => resolve.mutate()} disabled={resolve.isPending}>
+                  {resolve.isPending ? 'Resolving…' : 'Mark resolved'}
+                </Button>
+              )}
+            </div>
           ) : undefined
         }
       />
+
+      {toast && (
+        <div
+          role="status"
+          className="fixed bottom-5 right-5 z-50 rounded-md border border-bd bg-surface px-3 py-2 text-[12px]"
+          style={{ animation: 'modal-in 150ms ease' }}
+        >
+          <span className={toast.error ? 'text-err' : 'text-t1'}>{toast.text}</span>
+        </div>
+      )}
 
       {isLoading || !data ? (
         <Skeleton className="h-64 w-full" />

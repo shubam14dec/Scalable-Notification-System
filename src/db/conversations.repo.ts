@@ -23,6 +23,7 @@ export interface Agent {
   llm_base_url: string | null;
   llm_credentials: string | null; // sealed {apiKey} — write-only via the API
   max_tokens: number | null; // per-reply output cap (null = brain default)
+  max_daily_tokens: number | null; // Phase 22 G2 daily token circuit breaker (null = off)
   auto_resolve_minutes: number | null; // idle-timeout backstop (null = off)
   /** Agent-speaks-first: the greeting shown before the user acts (null = off). */
   welcome_message: string | null;
@@ -79,6 +80,7 @@ export async function createAgent(a: {
   llmBaseUrl?: string;
   sealedLlmCredentials?: string;
   maxTokens?: number;
+  maxDailyTokens?: number | null;
   autoResolveMinutes?: number;
   welcomeMessage?: string | null;
   suggestedPrompts?: Array<{ title: string; message: string }> | null;
@@ -87,8 +89,8 @@ export async function createAgent(a: {
     `insert into agents
        (tenant_id, identifier, name, description, runtime, bridge_url,
         signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
-        auto_resolve_minutes, welcome_message, suggested_prompts)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
     [
@@ -107,6 +109,7 @@ export async function createAgent(a: {
       a.autoResolveMinutes ?? null,
       a.welcomeMessage ?? null,
       a.suggestedPrompts ? JSON.stringify(a.suggestedPrompts) : null,
+      a.maxDailyTokens ?? null,
     ],
   );
   return rows[0] ?? null;
@@ -147,6 +150,8 @@ export async function updateAgent(
     llmBaseUrl?: string | null;
     sealedLlmCredentials?: string;
     maxTokens?: number;
+    /** null switches the daily token budget OFF (0 is the wire sentinel). */
+    maxDailyTokens?: number | null;
     /** null switches the backstop OFF (0 is the wire sentinel for null). */
     autoResolveMinutes?: number | null;
     /** null clears the greeting ('' is the wire sentinel for null). */
@@ -177,6 +182,9 @@ export async function updateAgent(
        -- jsonb 'null' sentinel clears the starters; null param leaves them
        suggested_prompts = case when $15::jsonb = 'null'::jsonb then null
                                 else coalesce($15::jsonb, suggested_prompts) end,
+       -- 0 sentinel clears the daily token budget (bounds are 1+)
+       max_daily_tokens = case when $16::int = 0 then null
+                               else coalesce($16, max_daily_tokens) end,
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -200,6 +208,7 @@ export async function updateAgent(
         : patch.suggestedPrompts === undefined
           ? null
           : JSON.stringify(patch.suggestedPrompts),
+      patch.maxDailyTokens === null ? 0 : (patch.maxDailyTokens ?? null),
     ],
   );
   return rows[0] ?? null;

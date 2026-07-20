@@ -16,9 +16,12 @@ import {
   finishToolCall,
   setToolCallBreadcrumb,
   setToolCallCards,
+  setToolCallNote,
+  countExecutedCalls,
   type AgentToolDef,
   type ApprovalCardRef,
 } from '../db/agent-tools.repo';
+import { incrToolHourCount } from '../shared/agent-counters';
 import { getTenantSetting } from '../db/tenant-settings.repo';
 import { listChannelIdentities } from '../db/identities.repo';
 import { logExec } from './execution-log';
@@ -931,8 +934,45 @@ async function executeCustomTool(
   const argsHash = createHash('sha256').update(stableStringify(args)).digest('hex');
   const dedupeKey = `tc-${inbound.id}-${def.name}-${argsHash.slice(0, 16)}`;
   const crumbKey = `signal-${inbound.id}-tool-${def.name}-${argsHash.slice(0, 8)}`;
+  const guard = def.guard ?? undefined;
 
-  if (def.approval === 'required') {
+  // G3 RATE CAP: a coarse per-tool, per-subscriber hourly ceiling, checked
+  // before ANY execution or approval (auto OR required). The counter bumps on
+  // every attempt; over the cap returns an is_error the model explains politely
+  // and records NOTHING — no tool-call row, no POST, no approval spam. The
+  // rejection still flows out as a tool_call ok:false in the turn trace.
+  if (guard?.maxCallsPerHour && guard.maxCallsPerHour > 0) {
+    const hourCount = await incrToolHourCount(def.id, conversation.subscriber_id);
+    if (hourCount > guard.maxCallsPerHour) {
+      return { message: 'rate limit reached for this action — try again later', isError: true };
+    }
+  }
+
+  // G1 REPEAT-ACTION: an auto tool armed with maxAutoCalls+windowDays flips to
+  // the approval path once this subscriber's EXECUTED calls in the window reach
+  // the ceiling. The agent detects, the rule decides, a human judges — and the
+  // approval card gains a history line so the judge sees the pattern.
+  let effectiveApproval: 'auto' | 'required' = def.approval;
+  let guardHistory: string | null = null;
+  if (
+    def.approval === 'auto' &&
+    guard?.maxAutoCalls &&
+    guard.maxAutoCalls > 0 &&
+    guard?.windowDays &&
+    guard.windowDays > 0
+  ) {
+    const { count, recent } = await countExecutedCalls(
+      def.id,
+      conversation.subscriber_id,
+      guard.windowDays,
+    );
+    if (count >= guard.maxAutoCalls) {
+      effectiveApproval = 'required';
+      guardHistory = guardHistoryLine(def.name, count, guard.windowDays, recent);
+    }
+  }
+
+  if (effectiveApproval === 'required') {
     const { call, fresh } = await recordToolCall({
       tenantId: conversation.tenant_id,
       agentId: agent.id,
@@ -962,6 +1002,9 @@ async function executeCustomTool(
     }
 
     const result = `pending human approval (${call.id})`;
+    // G1: stamp the repeat-action history on the paused row so the dashboard's
+    // pending entry can show why it paused (the channel cards carry it too).
+    if (guardHistory) await setToolCallNote(call.id, guardHistory);
     const crumbId = await breadcrumb(conversation, crumbKey, result, {
       tool: def.name,
       input: args,
@@ -1022,9 +1065,12 @@ async function executeCustomTool(
       }>(conversation.tenant_id, 'approvals');
       if (settings) {
         const argsSummary = JSON.stringify(args).slice(0, 280);
+        // Keep the Customer: line intact (Phase 19 lesson); the guard history
+        // rides just under it when the repeat-action rule tripped the pause.
         const cardText =
           `Approval needed\n${agent.identifier} wants to run ${def.name}\n` +
           `Customer: ${subscriber.external_id}\n` +
+          (guardHistory ? `${guardHistory}\n` : '') +
           `${argsSummary}\nAlso in the dashboard → Approvals.`;
         const cards: ApprovalCardRef[] = [];
 
@@ -1139,9 +1185,12 @@ async function executeCustomTool(
     return { message: call.result ?? '', isError: call.status === 'failed' };
   }
 
+  // G4: wall-clock the signed POST and persist it on the executed/failed row.
+  const postStart = Date.now();
   const { result, isError } = await postCustomToolCall(def, call.id, args, agent, conversation, subscriber);
+  const durationMs = Date.now() - postStart;
   // Atomic claim from 'approved'; a null loser (already executed) reuses stored.
-  const claimed = await finishToolCall(call.id, isError ? 'failed' : 'executed', result);
+  const claimed = await finishToolCall(call.id, isError ? 'failed' : 'executed', result, 'approved', durationMs);
   const finalResult = claimed?.result ?? result;
   const finalIsError = (claimed?.status ?? (isError ? 'failed' : 'executed')) === 'failed';
   const crumbId = await breadcrumb(conversation, crumbKey, finalResult, {
@@ -1156,6 +1205,40 @@ async function executeCustomTool(
 /** The result string stored/replayed when an approval is denied. */
 export function deniedResult(decidedBy: string | null, note: string | null): string {
   return `denied by ${decidedBy ?? 'unknown'}${note ? `: ${note}` : ''}`;
+}
+
+/** English ordinal for a positive integer: 1->1st, 2->2nd, 3->3rd, 11->11th. */
+function ordinal(n: number): string {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
+/**
+ * The repeat-action history line for an approval card / pending row (Phase 22
+ * G1). `count` is this subscriber's prior EXECUTED calls in the window, so this
+ * attempt is the (count+1)th. `recent` is up to 3 most-recent execution
+ * timestamps, shown as UTC dates. FROZEN format — the dashboard + tests read it.
+ * e.g. "⚠ 2nd refund_customer in 30d for this customer — prior: 2026-07-20"
+ */
+export function guardHistoryLine(
+  tool: string,
+  count: number,
+  windowDays: number,
+  recent: string[],
+): string {
+  const dates = recent.map((iso) => new Date(iso).toISOString().slice(0, 10)).join(', ');
+  const prior = dates ? ` — prior: ${dates}` : '';
+  return `⚠ ${ordinal(count + 1)} ${tool} in ${windowDays}d for this customer${prior}`;
 }
 
 /**

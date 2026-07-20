@@ -23,6 +23,7 @@ import { processDelivery } from './processors/delivery.processor';
 import { processStatus } from './processors/status.processor';
 import { processOverflow } from './processors/overflow.processor';
 import { processConversation, onConversationDead } from './processors/conversation.processor';
+import { processEvalRun } from './processors/eval-run.processor';
 import { runInactivitySweep, SWEEP_INTERVAL_MS } from './inactivity-sweep';
 
 const workers: Worker[] = [];
@@ -57,6 +58,12 @@ function main() {
   // block on customer infrastructure (up to 10s), so this stays isolated
   // from the delivery lanes — a slow bridge can never starve sends.
   makeWorker(QUEUE.CONVERSATION, processConversation, { concurrency: 10 }, onConversationDead);
+
+  // Eval runs: concurrency 1 (a run is N scripted conversations — minutes, not
+  // a hot path). Its in-process driver enqueues onto QUEUE.CONVERSATION above,
+  // which the conversation workers (concurrency 10) service in parallel, so an
+  // eval run never starves the pipeline it drives.
+  makeWorker(QUEUE.EVAL_RUN, processEvalRun, { concurrency: 1 });
 
   // Overflow trickle: low concurrency + a global replay cap, so diverted
   // bursts re-enter the pipeline gently no matter how many tenants burst.

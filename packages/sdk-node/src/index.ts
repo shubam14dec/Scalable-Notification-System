@@ -187,6 +187,45 @@ export interface AgentHealth {
   tools: AgentToolHealth[];
 }
 
+/** A stored eval scenario for an agent (same JSON shape as the eval harness). */
+export interface AgentEval {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** `{ turns: [{ user }|{ expect }] }` — the scenario the run drives. */
+  scenario: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateAgentEvalOptions {
+  name: string;
+  /** `{ turns: [{ user }|{ expect }] }`; validated server-side. */
+  scenario: Record<string, unknown>;
+  /** Disabled evals are drafts — excluded from runs until enabled (default true). */
+  enabled?: boolean;
+}
+
+/** One scenario's verdict inside a run's results. */
+export interface EvalScenarioResult {
+  name: string;
+  passed: boolean;
+  /** Human-readable failure reasons; empty when passed. */
+  failures: string[];
+  /** Attempts USED (a passing scenario may pass before exhausting its budget). */
+  attempts: number;
+}
+
+/** An eval run — created 'running', finalized by the worker. */
+export interface AgentEvalRun {
+  id: string;
+  status: 'running' | 'passed' | 'failed' | 'error';
+  trigger: 'manual' | 'pre_save';
+  results: EvalScenarioResult[];
+  startedAt: string;
+  finishedAt: string | null;
+}
+
 /** Which connections carry approval cards; each field null when unset. */
 export interface ApprovalSettings {
   slackConnectionId: string | null;
@@ -394,6 +433,60 @@ export class AsyncifyClient {
         this.request<{ secret: string }>(
           'POST',
           `/v1/agents/${encodeURIComponent(identifier)}/tools/${encodeURIComponent(toolId)}/rotate-secret`,
+        ),
+    },
+
+    /**
+     * Per-agent evals: store scenarios, run them as jobs, read verdicts. Reads
+     * as `client.agents.evals.run('acme-support')`.
+     */
+    evals: {
+      /** Every stored eval for this agent (enabled and disabled drafts). */
+      list: (identifier: string) =>
+        this.request<{ evals: AgentEval[] }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/evals`,
+        ),
+      /** Store a new scenario; the (agent, name) pair must be unique. */
+      create: (identifier: string, options: CreateAgentEvalOptions) =>
+        this.request<{ eval: AgentEval }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/evals`,
+          options,
+        ),
+      /** Patch any subset; `enabled: false` turns a scenario into a draft. */
+      update: (identifier: string, id: string, patch: Partial<CreateAgentEvalOptions>) =>
+        this.request<{ eval: AgentEval }>(
+          'PUT',
+          `/v1/agents/${encodeURIComponent(identifier)}/evals/${encodeURIComponent(id)}`,
+          patch,
+        ),
+      remove: (identifier: string, id: string) =>
+        this.request<{ deleted: boolean }>(
+          'DELETE',
+          `/v1/agents/${encodeURIComponent(identifier)}/evals/${encodeURIComponent(id)}`,
+        ),
+      /**
+       * Enqueue a run of this agent's ENABLED evals. Returns the run id
+       * immediately (202); poll `getRun` for the verdict.
+       */
+      run: (identifier: string, options: { trigger?: 'manual' | 'pre_save' } = {}) =>
+        this.request<{ runId: string }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/evals/run`,
+          options,
+        ),
+      /** The latest 20 runs, newest first. */
+      runs: (identifier: string) =>
+        this.request<{ runs: AgentEvalRun[] }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/evals/runs`,
+        ),
+      /** One run in full, including per-scenario results. */
+      getRun: (identifier: string, runId: string) =>
+        this.request<{ run: AgentEvalRun }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/evals/runs/${encodeURIComponent(runId)}`,
         ),
     },
   };

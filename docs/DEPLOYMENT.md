@@ -79,3 +79,8 @@ transcript rows in Postgres and deploy with the database.
 Everything you verified locally — webhook signature checks, channel
 routing, delivery receipts, agent bridges — is the same code path. The
 tunnel was never a feature; it was a stand-in for DNS.
+
+**Agent guardrails and evals add nothing deployment-specific.** The guardrail
+counters (daily token budget, per-tool rate cap) ride the existing Redis, and the
+eval-run queue rides the existing worker — no new service, secret, or env var.
+Deploy day is the checklist above, unchanged.

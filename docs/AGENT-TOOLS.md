@@ -38,10 +38,12 @@ registry.
 
 **Agents → (row) → Tools → Add tool.** Fill in name, description, the
 Parameters JSON Schema, the endpoint URL, the **Require human approval** toggle,
-and a timeout. On save the **signing secret is shown once** — copy it before
-you close the dialog. Existing tools can be edited (name is immutable),
-**disabled** (stays defined, model can't call it), have their **secret
-rotated**, or deleted.
+and a timeout. The optional **guard** fields on the same form add automatic,
+per-customer limits (repeat-action and hourly-rate — see **Guardrails** below);
+leave them blank for today's behavior. On save the **signing secret is shown
+once** — copy it before you close the dialog. Existing tools can be edited (name
+is immutable), **disabled** (stays defined, model can't call it), have their
+**secret rotated**, or deleted.
 
 ### API
 
@@ -190,6 +192,11 @@ Decided calls (approved/denied/expired/executed/failed) move to **Approvals →
 History**. Deciding an already-decided call returns **409**; an unknown id,
 **404**.
 
+An **`auto`** tool can also reach this pause without being marked `required` —
+the repeat-action guard (see **Guardrails** below) flips it once a customer's
+executed calls hit the ceiling, adding a history line to the card so the approver
+sees why.
+
 ### Opt-in approval notifications (a convention)
 
 Nothing is pushed to you when a call pauses **unless you opt in** — the pause is
@@ -267,6 +274,103 @@ approver):
 **Audit trail.** However a call is decided — dashboard, Slack, or Telegram — the
 `decided_by` on the approval record carries that tapper's identity, and the
 dashboard **History** tab shows it alongside the decision and any note.
+
+## Guardrails: limits a tool enforces on its own
+
+Approval is one brake — a human's. A **guard** is the other: a small, optional
+JSON object on a tool that lets the platform pump the brakes **deterministically**,
+before the model or your endpoint is touched. Guards are configured per tool on
+the dashboard (**Agents → (row) → Tools**); leaving them blank keeps today's
+behavior. The shape stored on the tool def's `guard` column:
+
+```json
+{ "maxAutoCalls": 1, "windowDays": 30, "maxCallsPerHour": 5 }
+```
+
+Every field is optional and off when absent.
+
+| Field(s) | Arms | Applies to |
+|---|---|---|
+| `maxAutoCalls` + `windowDays` (both required together) | the **repeat-action rule** | `auto` tools only |
+| `maxCallsPerHour` | the **hourly rate cap** | any tool (`auto` or `required`) |
+
+### Repeat-action rule (`maxAutoCalls` + `windowDays`)
+
+An **`auto`** tool with both set flips to the approval path once **this
+subscriber's** prior **executed** calls of this tool reach `maxAutoCalls` within
+the window. The count is:
+
+- **per-subscriber** — set-based, joined through the conversation to the
+  subscriber, so one customer's history doesn't affect another's;
+- **executed-only** — only `status='executed'` calls count; pending, denied,
+  failed, and rate-capped attempts do not;
+- a **rolling window** — calls whose `requested_at` is within the last
+  `windowDays` days (`now() - windowDays`), not a calendar month.
+
+On the `(maxAutoCalls+1)`th attempt the call pauses **exactly like**
+`approval: "required"` — nothing POSTs until a human decides — and the approval
+card gains a **history line** so the approver sees the pattern:
+
+```
+⚠ 2nd refund_customer in 30d for this customer — prior: 2026-07-20
+```
+
+**History line format (frozen):**
+`⚠ <ordinal> <tool> in <windowDays>d for this customer — prior: <dates>`
+
+- `<ordinal>` is this attempt's position — 2nd, 3rd, 11th …;
+- `<dates>` are up to the **3 most recent** executed-call dates, UTC
+  `YYYY-MM-DD`, comma-separated;
+- with no prior dates the ` — prior: <dates>` clause is omitted.
+
+The line is stored on the paused call (so the dashboard's **Pending** entry shows
+it) and rides just under the `Customer:` line on the Slack / Telegram approval
+cards. Only `auto` tools flip; a tool already `required` is always human-judged,
+guard or not.
+
+### Hourly rate cap (`maxCallsPerHour`)
+
+A per-subscriber, per-tool ceiling within a UTC hour, checked **before any
+execution or approval** (auto *or* required). It counts **every attempt**; once
+the count exceeds `maxCallsPerHour`, the call is refused before it runs and the
+model receives an **error result** it explains politely to the customer:
+
+```
+rate limit reached for this action — try again later
+```
+
+Nothing executes, **no tool-call row is written**, and **no approval is raised**
+(so a loop can't spam your approvers). The refusal still shows in the turn's tool
+trace as a failed call. Rate-capped attempts don't count toward the repeat-action
+rule (they never execute).
+
+### Tool timing (`duration_ms`)
+
+Every executed tool call now records **`duration_ms`** — the wall-clock of the
+signed POST, measured by the worker around the request and stored on the
+`agent_tool_calls` row. The agent's **Health** view averages it per tool (mean
+over executed calls in the window; blank until a tool has an executed call
+carrying a duration), so a slow endpoint is visible.
+
+**Approximate by design.** The rate cap and daily-token counters (below) are fast
+Redis tallies; a worker retry can re-count, so they can drift slightly high. They
+are circuit breakers, never exact quotas — Postgres (the tool-call rows,
+`raw.usage`) stays the auditable truth.
+
+### Per-agent daily token budget
+
+Separately from any tool, an agent can carry a **daily token budget**
+(`max_daily_tokens`, null = off) — a ceiling on how much it may *think* in a UTC
+day, set on the agent (dashboard → the agent). It's a **circuit breaker, not a
+quota**: sized well above normal so it trips only on the abnormal (an injection
+loop, a runaway retry). When the day's spend reaches the limit, the next turn
+makes **no model call** — the customer gets a fixed note (*"I'm temporarily
+unavailable right now — the team has been notified. Please try again later."*),
+the skip is breadcrumbed with `used/limit`, and — if approval notifications are
+wired — the ops audience is paged **once per day**. The agent's **Health** view
+shows tokens used today against the limit; raise the limit and the agent resumes
+on the next turn. (Customer-facing framing and sizing advice are in
+[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).)
 
 ## Evals: test your prompt like you test your code
 

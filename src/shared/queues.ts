@@ -37,6 +37,12 @@ export const QUEUE = {
    * re-enqueued turn can never double-dispatch.
    */
   CONVERSATION: 'conversation-inbound',
+  /**
+   * Per-agent eval runs (Phase 22): one job = one run of an agent's enabled
+   * eval scenarios. Low concurrency (1) — a run is N scripted conversations
+   * (minutes), never a hot path; jobId = runId so a re-enqueue can't double-run.
+   */
+  EVAL_RUN: 'eval-run',
 } as const;
 
 export function deliveryQueueName(channel: Channel, priority: Priority): string {
@@ -50,6 +56,7 @@ export const ALL_QUEUE_NAMES: string[] = [
   QUEUE.OVERFLOW,
   QUEUE.DLQ,
   QUEUE.CONVERSATION,
+  QUEUE.EVAL_RUN,
   ...CHANNELS.flatMap((c) => PRIORITIES.map((p) => deliveryQueueName(c, p))),
 ];
 

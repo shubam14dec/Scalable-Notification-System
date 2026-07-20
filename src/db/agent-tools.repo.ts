@@ -26,6 +26,13 @@ export interface AgentToolDef {
   approval: 'auto' | 'required';
   status: 'active' | 'disabled';
   timeout_ms: number;
+  /**
+   * Phase 22 guardrails (null = no guards, today's behavior). maxAutoCalls +
+   * windowDays arm the repeat-action rule (an auto tool flips to approval once
+   * this subscriber's executed calls in the window hit the ceiling);
+   * maxCallsPerHour arms the per-subscriber hourly rate cap.
+   */
+  guard: { maxAutoCalls?: number; windowDays?: number; maxCallsPerHour?: number } | null;
   created_at: string;
   updated_at: string;
 }
@@ -51,6 +58,8 @@ export interface AgentToolCall {
   decided_by: string | null;
   breadcrumb_message_id: string | null;
   cards: ApprovalCardRef[];
+  /** Wall-clock ms of the signed tool POST (Phase 22 G4); null until executed. */
+  duration_ms: number | null;
   requested_at: string;
   decided_at: string | null;
   expires_at: string | null;
@@ -68,12 +77,13 @@ export async function createToolDef(d: {
   sealedSecret: string;
   approval: 'auto' | 'required';
   timeoutMs: number;
+  guard?: { maxAutoCalls?: number; windowDays?: number; maxCallsPerHour?: number } | null;
 }): Promise<AgentToolDef | null> {
   const { rows } = await pool.query(
     `insert into agent_tool_defs
        (tenant_id, agent_id, name, description, parameters, endpoint_url,
-        secret, approval, timeout_ms)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        secret, approval, timeout_ms, guard)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      on conflict (agent_id, name) do nothing
      returning *`,
     [
@@ -86,6 +96,7 @@ export async function createToolDef(d: {
       d.sealedSecret,
       d.approval,
       d.timeoutMs,
+      d.guard ? JSON.stringify(d.guard) : null,
     ],
   );
   return rows[0] ?? null; // null = name already taken on this agent
@@ -128,6 +139,8 @@ export async function updateToolDef(
     approval?: 'auto' | 'required';
     status?: 'active' | 'disabled';
     timeoutMs?: number;
+    /** null clears the guard (jsonb 'null' sentinel); undefined leaves it. */
+    guard?: { maxAutoCalls?: number; windowDays?: number; maxCallsPerHour?: number } | null;
   },
 ): Promise<AgentToolDef | null> {
   const { rows } = await pool.query(
@@ -138,6 +151,9 @@ export async function updateToolDef(
        approval     = coalesce($6, approval),
        status       = coalesce($7, status),
        timeout_ms   = coalesce($8, timeout_ms),
+       -- jsonb 'null' sentinel clears the guard; null param leaves it untouched
+       guard        = case when $9::jsonb = 'null'::jsonb then null
+                           else coalesce($9::jsonb, guard) end,
        updated_at   = now()
      where tenant_id = $1 and id = $2
      returning *`,
@@ -150,6 +166,7 @@ export async function updateToolDef(
       patch.approval ?? null,
       patch.status ?? null,
       patch.timeoutMs ?? null,
+      patch.guard === null ? 'null' : patch.guard === undefined ? null : JSON.stringify(patch.guard),
     ],
   );
   return rows[0] ?? null;
@@ -278,14 +295,57 @@ export async function finishToolCall(
   outcome: 'executed' | 'failed',
   result: string,
   fromStatus: 'approved' | 'pending' = 'approved',
+  durationMs?: number,
 ): Promise<AgentToolCall | null> {
   const { rows } = await pool.query(
-    `update agent_tool_calls set status = $2, result = $3
+    `update agent_tool_calls set status = $2, result = $3,
+            duration_ms = coalesce($5, duration_ms)
       where id = $1 and status = $4
       returning *`,
-    [callId, outcome, result, fromStatus],
+    [callId, outcome, result, fromStatus, durationMs ?? null],
   );
   return rows[0] ?? null;
+}
+
+/**
+ * Store the guard-history note on a freshly-paused call (Phase 22 G1). Written
+ * only when the repeat-action rule flips an auto tool to the approval path, so
+ * the dashboard's pending entry and channel cards can show why it paused. A
+ * later human decision overwrites `note` with the approver's own — by then the
+ * history is on the card and no longer pending, so nothing is lost.
+ */
+export async function setToolCallNote(callId: string, note: string): Promise<void> {
+  await pool.query('update agent_tool_calls set note = $2 where id = $1', [callId, note]);
+}
+
+/**
+ * Repeat-action count (Phase 22 G1): how many times this tool has EXECUTED for
+ * one subscriber inside the window, plus the up-to-3 most recent execution
+ * dates for the approval card's history line. One set-based query over the
+ * `agent_tool_calls_guard_idx` partial index (status='executed'), joined to
+ * conversations to scope by subscriber; `count(*) over ()` returns the full
+ * window total alongside the 3 rows in a single round-trip. Rare path — only an
+ * auto tool that opted into a repeat guard reaches here.
+ */
+export async function countExecutedCalls(
+  toolDefId: string,
+  subscriberId: string,
+  windowDays: number,
+): Promise<{ count: number; recent: string[] }> {
+  const { rows } = await pool.query<{ requested_at: string; total: string }>(
+    `select ac.requested_at, count(*) over () as total
+       from agent_tool_calls ac
+       join conversations c on c.id = ac.conversation_id
+      where ac.tool_def_id = $1
+        and ac.status = 'executed'
+        and c.subscriber_id = $2
+        and ac.requested_at >= now() - make_interval(days => $3)
+      order by ac.requested_at desc
+      limit 3`,
+    [toolDefId, subscriberId, windowDays],
+  );
+  if (rows.length === 0) return { count: 0, recent: [] };
+  return { count: Number(rows[0].total), recent: rows.map((r) => r.requested_at) };
 }
 
 /** Record the channel approval cards posted for a call (one write, once). */

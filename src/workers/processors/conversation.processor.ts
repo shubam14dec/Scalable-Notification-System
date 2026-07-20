@@ -24,6 +24,7 @@ import {
   getToolDef,
   finishToolCall,
 } from '../../db/agent-tools.repo';
+import { getDayTokens, incrDayTokens, claimBudgetNotify } from '../../shared/agent-counters';
 import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
 import { PermanentError, TransientError } from '../../shared/errors';
@@ -79,6 +80,9 @@ export interface ConversationJobData {
 
 const BRIDGE_TIMEOUT_MS = 10_000;
 const METADATA_MAX_BYTES = 64 * 1024;
+/** Deterministic reply shipped when an agent's daily token budget is spent (G2). */
+const BUDGET_EXHAUSTED_NOTE =
+  "I'm temporarily unavailable right now — the team has been notified. Please try again later.";
 /** Minimum wall-clock gap between plan-card progress edits (throttle floor). */
 const PLAN_CARD_EDIT_SPACING_MS = 1000;
 
@@ -171,7 +175,65 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // message on the first labelable tool call and finalizes it as the reply.
   let planCard: PlanCard | undefined;
 
-  if (agent.runtime === 'managed') {
+  // G2 DAILY TOKEN BUDGET: enforced BEFORE any model call. When the agent's
+  // UTC-day token counter has reached its cap, skip the brain entirely and ship
+  // a deterministic note through the normal reply path (one job = one finalize).
+  // The Redis counter is fast+approximate; Postgres raw.usage stays the truth.
+  let budgetExhausted = false;
+  if (agent.runtime === 'managed' && agent.max_daily_tokens != null) {
+    const used = await getDayTokens(agent.id);
+    if (used >= agent.max_daily_tokens) {
+      budgetExhausted = true;
+      reply = BUDGET_EXHAUSTED_NOTE;
+      // Breadcrumb the skip with used/limit in raw (no model call happened, so
+      // no usage/trace ride the reply — this system row carries the record).
+      await systemNote(
+        conversation,
+        messageId,
+        0,
+        `budget exhausted (${used}/${agent.max_daily_tokens} tokens today)`,
+        { budgetExhausted: { used, limit: agent.max_daily_tokens } },
+      );
+      logExec({
+        tenantId,
+        transactionId: `conv-${conversationId}`,
+        level: 'warn',
+        detail: `agent ${agent.identifier} daily token budget exhausted (${used}/${agent.max_daily_tokens}) — turn skipped, no model call`,
+      });
+
+      // Reserved ops alert (Phase 18 lookup-first pattern): tell the tenant's
+      // 'approvals' ops audience the agent went quiet — but ONLY if they opted
+      // in by creating BOTH the reserved 'approvals' subscriber and the
+      // 'agent-approvals' workflow. NEVER blind-fire: the trigger fanout upserts
+      // unknown recipients, so firing without the lookup would mint a phantom,
+      // channel-less subscriber (Phase 18 lesson). Debounced to one alert per
+      // agent per UTC day via a Redis claim; content-keyed txn makes a job
+      // retry a dupe no-op.
+      const opsApprover = await getApprovalsSubscriber(tenantId);
+      if (opsApprover && (await claimBudgetNotify(agent.id))) {
+        await internalTrigger({
+          tenantId,
+          workflowKey: 'agent-approvals',
+          to: [
+            {
+              subscriberId: opsApprover.external_id,
+              email: opsApprover.email ?? undefined,
+              phone: opsApprover.phone ?? undefined,
+              pushToken: opsApprover.push_token ?? undefined,
+            },
+          ],
+          payload: { agentIdentifier: agent.identifier, usedTokens: used, limit: agent.max_daily_tokens },
+          transactionId: `budget-alert-${messageId}`,
+          source: `managed agent ${agent.identifier} budget`,
+        }).catch((err) => {
+          // A notification hiccup must not fail the (already-skipped) turn.
+          logger.warn({ err: (err as Error).message }, 'budget-exhausted ops notification failed');
+        });
+      }
+    }
+  }
+
+  if (agent.runtime === 'managed' && !budgetExhausted) {
     planCard =
       conversation.channel !== 'email'
         ? createPlanCard({
@@ -228,6 +290,10 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           reply ? undefined : { usage: turn.usage, trace: turn.trace },
         );
       }
+      // G2: fold this turn's real spend into the UTC-day counter. Counted per
+      // successful model turn — a downstream delivery retry re-runs the model,
+      // so re-counting mirrors the tokens actually spent (approximate by design).
+      await incrDayTokens(agent.id, turn.usage.inputTokens + turn.usage.outputTokens);
       if (turn.resolved && conversation.channel === 'inapp') {
         await publishConversationEvent(conversation, subscriber.external_id, agent, {
           type: 'conversation.resolved',
@@ -258,7 +324,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       }
       throw err;
     }
-  } else {
+  } else if (agent.runtime === 'bridge') {
     try {
       const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
       reply = dispatched.reply;
@@ -460,6 +526,8 @@ async function processToolDecision(data: ConversationJobData): Promise<void> {
       outcomeWord = 'failed';
       await finishToolCall(call.id, 'failed', finalResult, 'approved');
     } else {
+      // G4: wall-clock the signed POST on the approval-resume path too.
+      const postStart = Date.now();
       const { result, isError } = await postCustomToolCall(
         def,
         call.id,
@@ -468,9 +536,16 @@ async function processToolDecision(data: ConversationJobData): Promise<void> {
         conversation,
         subscriber,
       );
+      const durationMs = Date.now() - postStart;
       // Atomic claim from 'approved'; a null loser means a prior attempt already
       // executed — reuse its stored row instead of double-counting the POST.
-      const claimed = await finishToolCall(call.id, isError ? 'failed' : 'executed', result, 'approved');
+      const claimed = await finishToolCall(
+        call.id,
+        isError ? 'failed' : 'executed',
+        result,
+        'approved',
+        durationMs,
+      );
       if (claimed) {
         finalResult = result;
         outcomeWord = isError ? 'failed' : 'executed';
@@ -1340,6 +1415,23 @@ async function deliverReply(
   }
 
   logger.warn({ channel: conversation.channel }, 'reply for unsupported channel dropped');
+}
+
+/**
+ * The tenant's reserved ops-side subscriber for agent alerts (externalId
+ * 'approvals'): find-not-create, so a tenant who never opted in gets no phantom
+ * subscriber and no notification (Phase 18 lesson — the trigger fanout upserts
+ * unknown recipients). Mirrors managed-brain's approval-notify lookup.
+ */
+async function getApprovalsSubscriber(
+  tenantId: string,
+): Promise<{ external_id: string; email: string | null; phone: string | null; push_token: string | null } | null> {
+  const { rows } = await pool.query(
+    `select external_id, email, phone, push_token
+       from subscribers where tenant_id = $1 and external_id = 'approvals'`,
+    [tenantId],
+  );
+  return rows[0] ?? null;
 }
 
 /** Transcript breadcrumb for a signal — deduped so retries can't repeat it. */

@@ -651,3 +651,55 @@ end $$;
 -- is null), so channel threads miss it. This makes the join's conversation-side
 -- probe an index range scan instead of a seq scan as conversations grows.
 create index if not exists conversations_agent_idx on conversations (agent_id);
+
+-- ---- Phase 22: evals-as-gate + guardrails ----
+
+-- Per-agent eval scenarios (same JSON shape as evals/*.json: turns of
+-- {user} / {expect}). Stored per agent so the dashboard can gate prompt
+-- edits on them; 'enabled=false' keeps drafts (e.g. conversation->eval)
+-- out of runs until a human reviews them.
+create table if not exists agent_evals (
+  id         uuid primary key default gen_random_uuid(),
+  tenant_id  uuid not null references tenants(id),
+  agent_id   uuid not null references agents(id) on delete cascade,
+  name       text not null,
+  scenario   jsonb not null,
+  enabled    boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (agent_id, name)
+);
+
+create index if not exists agent_evals_agent_idx on agent_evals (agent_id);
+
+-- One row per eval run (manual or pre-save). results = per-scenario
+-- verdicts [{name, passed, failures:[...]}]; status 'error' = the run
+-- itself broke (infra), distinct from 'failed' (scenarios failed).
+create table if not exists agent_eval_runs (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants(id),
+  agent_id    uuid not null references agents(id) on delete cascade,
+  status      text not null default 'running', -- running|passed|failed|error
+  trigger     text not null default 'manual',  -- manual|pre_save
+  results     jsonb not null default '[]',
+  started_at  timestamptz not null default now(),
+  finished_at timestamptz
+);
+
+create index if not exists agent_eval_runs_agent_idx
+  on agent_eval_runs (agent_id, started_at desc);
+
+-- Guardrails: per-tool guard config {maxAutoCalls?, windowDays?,
+-- maxCallsPerHour?} (null = no guards, today's behavior) and the
+-- executor-measured duration of the signed POST (feeds /health avgMs).
+alter table agent_tool_defs add column if not exists guard jsonb;
+alter table agent_tool_calls add column if not exists duration_ms int;
+
+-- Per-agent daily token circuit breaker (null = off). Enforced via a
+-- Redis day-counter; Postgres raw.usage stays the auditable truth.
+alter table agents add column if not exists max_daily_tokens int;
+
+-- The repeat-action count's hot path: executed calls per tool def in a
+-- window (joined to conversations for the subscriber scope).
+create index if not exists agent_tool_calls_guard_idx
+  on agent_tool_calls (tool_def_id, requested_at) where status = 'executed';

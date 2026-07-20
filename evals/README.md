@@ -3,14 +3,31 @@
 Test your agent's prompt like you test your code.
 
 A scenario file scripts a conversation as user turns plus **expectations about
-tool calls** — not prose vibes. The harness (`scripts/eval.ts`) drives an
-**existing** agent through the real Asyncify API + worker, then asserts the
-tool-call trace each turn actually produced.
+tool calls** — not prose vibes. The harness drives an **existing** agent through
+the real Asyncify API + worker, then asserts the tool-call trace each turn
+actually produced.
 
 ```
 npm run eval                 # run every evals/*.json
 npm run eval -- refund-path  # run just evals/refund-path.json
 ```
+
+The CLI works exactly as before. Under it, the engine now lives in
+**`src/core/eval-runner.ts`**; `scripts/eval.ts` is a thin CLI wrapper over it.
+The extraction lets a second caller share one implementation: the **per-agent
+eval runner in the dashboard** (see below).
+
+### Two homes for the same scenarios
+
+The scenario format on this page is the same whether a scenario lives in a
+`evals/*.json` file (run by `npm run eval`) or in an agent's **Evals** tab in the
+dashboard (stored per agent, run by a button). The dashboard runner drives turns
+in-process through the identical production pipeline and reads the same Postgres,
+so the two paths assert on tool traces exactly the same way. The customer-facing
+walkthrough — writing, running, the advisory save gate, and drafting an eval from
+a real conversation in one click — is in
+**[ASYNCIFY-AGENTS-GUIDE.md](../docs/ASYNCIFY-AGENTS-GUIDE.md)** ("Testing your
+agent (evals)").
 
 ## What you need running
 

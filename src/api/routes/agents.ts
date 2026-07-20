@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { authenticate } from '../auth';
+import { getDayTokens } from '../../shared/agent-counters';
 import { verifySubscriberToken } from '../../auth/subscriber-token';
 import { sealSecret } from '../../auth/secret-box';
 import { getEnvironment } from '../../db/accounts.repo';
@@ -109,6 +110,8 @@ const AgentSchema = z
     model: z.string().min(1).max(255).optional(),
     systemPrompt: z.string().max(100_000).optional(),
     maxTokens: z.number().int().min(256).max(8192).optional(),
+    /** Phase 22 G2 daily token budget (null/absent = off). */
+    maxDailyTokens: z.number().int().min(1).nullable().optional(),
     autoResolveMinutes: z.number().int().min(1).max(43_200).optional(),
     llm: LlmConfigSchema.optional(),
     welcomeMessage: welcomeMessageSchema,
@@ -132,6 +135,8 @@ const AgentPatchSchema = z.object({
   model: z.string().min(1).max(255).optional(),
   systemPrompt: z.string().max(100_000).optional(),
   maxTokens: z.number().int().min(256).max(8192).optional(),
+  /** null switches the daily token budget off. */
+  maxDailyTokens: z.number().int().min(1).nullable().optional(),
   /** null switches the idle-timeout backstop off. */
   autoResolveMinutes: z.number().int().min(1).max(43_200).nullable().optional(),
   llm: LlmConfigSchema.optional(),
@@ -190,6 +195,7 @@ function agentView(agent: Agent) {
     systemPrompt: agent.system_prompt,
     llmBaseUrl: agent.llm_base_url,
     maxTokens: agent.max_tokens,
+    maxDailyTokens: agent.max_daily_tokens,
     autoResolveMinutes: agent.auto_resolve_minutes,
     welcomeMessage: agent.welcome_message,
     suggestedPrompts: agent.suggested_prompts,
@@ -261,6 +267,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       model: parsed.data.model,
       systemPrompt: parsed.data.systemPrompt,
       maxTokens: parsed.data.maxTokens,
+      maxDailyTokens: parsed.data.maxDailyTokens ?? undefined,
       autoResolveMinutes: parsed.data.autoResolveMinutes,
       llmBaseUrl: parsed.data.llm?.baseUrl ?? undefined,
       sealedLlmCredentials: parsed.data.llm?.apiKey
@@ -315,7 +322,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
           ? hit.value
           : await agentHealth(req.tenant.id, agent.id, days);
       if (stats !== hit?.value) cacheHealth(key, stats);
-      return { windowDays: days, ...stats };
+      // Budget numbers ride OUTSIDE the cache: the day counter is one Redis
+      // GET, and a 60s-stale "used today" would misread a tripping breaker.
+      const usedTodayTokens = await getDayTokens(agent.id);
+      return {
+        windowDays: days,
+        ...stats,
+        usedTodayTokens,
+        maxDailyTokens: agent.max_daily_tokens ?? null,
+      };
     },
   );
 
@@ -356,6 +371,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
         model: parsed.data.model,
         systemPrompt: parsed.data.systemPrompt,
         maxTokens: parsed.data.maxTokens,
+        maxDailyTokens: parsed.data.maxDailyTokens,
         autoResolveMinutes: parsed.data.autoResolveMinutes,
         llmBaseUrl: parsed.data.llm === undefined ? undefined : parsed.data.llm.baseUrl,
         sealedLlmCredentials: parsed.data.llm?.apiKey
@@ -630,6 +646,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
         return usage;
       };
 
+      // The owning agent, so deep-linked pages can act on it (e.g. the
+      // dashboard's conversation->eval flow) without router state.
+      const owner = await getAgentById(conversation.agent_id);
       return {
         conversation: {
           id: conversation.id,
@@ -641,6 +660,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
           lastMessageAt: conversation.last_message_at,
           createdAt: conversation.created_at,
         },
+        agent: owner ? { identifier: owner.identifier, name: owner.name } : null,
         messages: messages.map((m) => ({
           id: m.id,
           role: m.role,

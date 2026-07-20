@@ -26,6 +26,7 @@ import { registerSlackRoutes } from './routes/slack';
 import { registerIdentityRoutes } from './routes/identities';
 import { registerMeRoutes } from './routes/me';
 import { registerDeviceRoutes } from './routes/devices';
+import { registerAgentEvalRoutes } from './routes/agent-evals';
 import { registerSmsWebhookRoutes } from './routes/sms-webhooks';
 import { registerConnectionRoutes } from './routes/connections';
 import { registerHandoffRoutes } from './routes/handoff';
@@ -86,6 +87,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerIdentityRoutes(app);
   registerMeRoutes(app);
   registerDeviceRoutes(app);
+  registerAgentEvalRoutes(app);
   registerSmsWebhookRoutes(app);
   registerConnectionRoutes(app);
   registerSettingsRoutes(app);

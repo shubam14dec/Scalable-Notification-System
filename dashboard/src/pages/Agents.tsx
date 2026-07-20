@@ -33,8 +33,12 @@ interface Agent {
   welcomeMessage: string | null;
   suggestedPrompts: SuggestedPrompt[] | null;
   hasLlmKey: boolean;
+  /** Phase 22 G2: per-agent daily token circuit breaker (null = off). */
+  maxDailyTokens?: number | null;
   status: 'active' | 'disabled';
   createdAt: string;
+  /** Last-save timestamp — used to tell whether an eval run predates the prompt. */
+  updatedAt?: string | null;
 }
 
 /** An agent-speaks-first starter chip: the label plus the turn it sends. */
@@ -55,6 +59,7 @@ interface AgentBody {
   autoResolveMinutes?: number | null;
   welcomeMessage?: string | null;
   suggestedPrompts?: SuggestedPrompt[] | null;
+  maxDailyTokens?: number | null;
   llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
@@ -71,6 +76,17 @@ interface ChannelInfo {
   } | null;
 }
 
+/**
+ * Phase 22 guardrails (frozen shape). Every field optional; the object is
+ * omitted from a tool payload when all three are blank. maxAutoCalls +
+ * windowDays pair up (the repeat-action rule); maxCallsPerHour is independent.
+ */
+interface ToolGuard {
+  maxAutoCalls?: number;
+  windowDays?: number;
+  maxCallsPerHour?: number;
+}
+
 /** A callable tool a managed agent can invoke — see Phase 18 Tools contract. */
 interface Tool {
   id: string;
@@ -80,6 +96,7 @@ interface Tool {
   endpointUrl: string;
   approval: 'auto' | 'required';
   timeoutMs: number;
+  guard?: ToolGuard | null;
   status: 'active' | 'disabled';
   createdAt: string;
 }
@@ -91,6 +108,7 @@ interface ToolCreateBody {
   endpointUrl: string;
   approval: 'auto' | 'required';
   timeoutMs: number;
+  guard?: ToolGuard;
 }
 
 interface ToolPatchBody {
@@ -100,6 +118,8 @@ interface ToolPatchBody {
   approval: 'auto' | 'required';
   timeoutMs: number;
   status: 'active' | 'disabled';
+  /** null clears a previously-set guard (PATCH is a full replace). */
+  guard?: ToolGuard | null;
 }
 
 const TEXTAREA_CLS =
@@ -117,6 +137,46 @@ function parseParams(raw: string): { ok: true; value: object } | { ok: false; er
     return { ok: false, error: 'Parameters must be a JSON object (e.g. a JSON Schema).' };
   }
   return { ok: true, value: parsed };
+}
+
+/** One guard number field: blank → off; otherwise a whole number ≥ 1. */
+function parseGuardField(
+  raw: string,
+  label: string,
+): { ok: true; value?: number } | { ok: false; error: string } {
+  const s = raw.trim();
+  if (s === '') return { ok: true, value: undefined };
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n < 1 || String(n) !== s) {
+    return { ok: false, error: `${label} must be a whole number ≥ 1.` };
+  }
+  return { ok: true, value: n };
+}
+
+/**
+ * Assemble the frozen guard payload from the three inputs. All blank → no
+ * object (guardrails off). maxAutoCalls and windowDays must be set together —
+ * the repeat-action count is meaningless without a window.
+ */
+function buildGuard(
+  rawAuto: string,
+  rawWindow: string,
+  rawHour: string,
+): { ok: true; guard?: ToolGuard } | { ok: false; error: string } {
+  const auto = parseGuardField(rawAuto, 'Max auto-executes');
+  if (!auto.ok) return auto;
+  const win = parseGuardField(rawWindow, 'Window (days)');
+  if (!win.ok) return win;
+  const hour = parseGuardField(rawHour, 'Max calls per hour');
+  if (!hour.ok) return hour;
+  if ((auto.value == null) !== (win.value == null)) {
+    return { ok: false, error: 'Set both Max auto-executes and its window, or leave both blank.' };
+  }
+  const guard: ToolGuard = {};
+  if (auto.value != null) guard.maxAutoCalls = auto.value;
+  if (win.value != null) guard.windowDays = win.value;
+  if (hour.value != null) guard.maxCallsPerHour = hour.value;
+  return { ok: true, guard: Object.keys(guard).length ? guard : undefined };
 }
 
 /** Monochrome switch — same idiom as the workflow step drawer. */
@@ -193,6 +253,15 @@ function ToolFormModal({
   const [approvalRequired, setApprovalRequired] = useState(tool?.approval === 'required');
   const [timeoutMs, setTimeoutMs] = useState(String(tool?.timeoutMs ?? 10000));
   const [enabled, setEnabled] = useState(tool ? tool.status === 'active' : true);
+  const [guardMaxAuto, setGuardMaxAuto] = useState(
+    tool?.guard?.maxAutoCalls != null ? String(tool.guard.maxAutoCalls) : '',
+  );
+  const [guardWindowDays, setGuardWindowDays] = useState(
+    tool?.guard?.windowDays != null ? String(tool.guard.windowDays) : '',
+  );
+  const [guardPerHour, setGuardPerHour] = useState(
+    tool?.guard?.maxCallsPerHour != null ? String(tool.guard.maxCallsPerHour) : '',
+  );
   const [error, setError] = useState('');
 
   const create = useMutation({
@@ -238,6 +307,11 @@ function ToolFormModal({
             setError('Timeout must be between 1000 and 30000 ms.');
             return;
           }
+          const guardResult = buildGuard(guardMaxAuto, guardWindowDays, guardPerHour);
+          if (!guardResult.ok) {
+            setError(guardResult.error);
+            return;
+          }
           if (editing) {
             update.mutate({
               description: description.trim(),
@@ -246,6 +320,8 @@ function ToolFormModal({
               approval: approvalRequired ? 'required' : 'auto',
               timeoutMs: t,
               status: enabled ? 'active' : 'disabled',
+              // PATCH is a full replace — send null to clear a removed guard.
+              guard: guardResult.guard ?? null,
             });
           } else {
             create.mutate({
@@ -255,6 +331,8 @@ function ToolFormModal({
               endpointUrl: endpointUrl.trim(),
               approval: approvalRequired ? 'required' : 'auto',
               timeoutMs: t,
+              // Omitted entirely when all guard fields are blank.
+              guard: guardResult.guard,
             });
           }
         }}
@@ -346,6 +424,55 @@ function ToolFormModal({
             className="font-mono"
           />
         </Field>
+
+        {/* Phase 22 guardrails — deterministic limits the executor enforces. */}
+        <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+          <div>
+            <span className="block text-[12px] font-medium text-t2">Guardrails</span>
+            <span className="mt-0.5 block text-[11px] text-t3">
+              Optional per-customer limits. Leave blank to turn a limit off.
+            </span>
+          </div>
+          <Field
+            label="Max auto-executes"
+            hint="After this many automatic runs per customer in the window, further runs need human approval."
+          >
+            <Input
+              value={guardMaxAuto}
+              onChange={(e) => setGuardMaxAuto(e.target.value)}
+              type="number"
+              min={1}
+              placeholder="off"
+              className="font-mono"
+            />
+          </Field>
+          <Field
+            label="Window (days)"
+            hint="The rolling window the auto-execute count is measured over."
+          >
+            <Input
+              value={guardWindowDays}
+              onChange={(e) => setGuardWindowDays(e.target.value)}
+              type="number"
+              min={1}
+              placeholder="off"
+              className="font-mono"
+            />
+          </Field>
+          <Field
+            label="Max calls per hour per customer"
+            hint="Hard cap per customer each hour — extra calls return a rate-limit error the agent explains, no approval."
+          >
+            <Input
+              value={guardPerHour}
+              onChange={(e) => setGuardPerHour(e.target.value)}
+              type="number"
+              min={1}
+              placeholder="off"
+              className="font-mono"
+            />
+          </Field>
+        </div>
 
         {editing && (
           <div className="flex items-start justify-between gap-3">
@@ -566,6 +693,9 @@ interface AgentHealth {
   toolCalls: number;
   toolFailures: number;
   tools: Array<{ name: string; calls: number; failures: number; avgMs: number | null }>;
+  /** Phase 22 G2 — present only when the agent has a daily token budget. */
+  usedTodayTokens?: number | null;
+  maxDailyTokens?: number | null;
 }
 
 /** Durations read as `840ms` under a second, else `1.2s`. Null → em-dash. */
@@ -668,6 +798,20 @@ function HealthModal({ agent, onClose }: { agent: Agent; onClose: () => void }) 
                 ? '0'
                 : `${data.toolCalls.toLocaleString()} · ${data.toolFailures} failed (${failurePct}%)`}
             </StatRow>
+            {data.maxDailyTokens != null && data.maxDailyTokens > 0 && (
+              <StatRow label="Budget (today)">
+                <span className="inline-flex items-center gap-1.5">
+                  {(data.usedTodayTokens ?? 0) >= data.maxDailyTokens && (
+                    <span
+                      aria-hidden
+                      className="inline-block h-[7px] w-[7px] rounded-full"
+                      style={{ background: 'var(--warn)' }}
+                    />
+                  )}
+                  {fmtInt(data.usedTodayTokens ?? 0)} / {fmtInt(data.maxDailyTokens)}
+                </span>
+              </StatRow>
+            )}
           </dl>
 
           {data.tools.length > 0 && (
@@ -726,6 +870,440 @@ function SecretReveal({ secret, onClose }: { secret: string; onClose: () => void
   );
 }
 
+// ---------------------------------------------------------------------------
+// Evals (Phase 22 E1–E4) — per-agent scenario suite, runs, and the advisory
+// save gate. Shapes track the frozen backend contract; verified against mocks
+// until the /v1/agents/:id/evals routes land.
+// ---------------------------------------------------------------------------
+
+/** A stored eval scenario — jsonb, same shape as evals/*.json (turns/expects). */
+interface AgentEval {
+  id: string;
+  name: string;
+  scenario: unknown;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One scenario's outcome inside a run (shape from scripts/eval.ts's core). */
+interface ScenarioResult {
+  name: string;
+  status: 'pass' | 'fail' | 'skip' | 'error';
+  detail?: string;
+}
+
+/** An eval run — an enqueued job; poll until status leaves 'running'. */
+interface EvalRun {
+  id: string;
+  status: 'running' | 'passed' | 'failed' | 'error';
+  results: ScenarioResult[] | null;
+  startedAt: string;
+  finishedAt: string | null;
+  trigger: 'manual' | 'pre_save';
+}
+
+const DEFAULT_SCENARIO = `{
+  "description": "",
+  "turns": [
+    { "user": "Hi, I need help" },
+    { "expect": { "replyContains": "" } }
+  ]
+}`;
+
+/** Pass/fail/total across a run's scenarios (skips don't count as failures). */
+function runSummary(run: EvalRun): { passed: number; failed: number; total: number } {
+  const results = run.results ?? [];
+  return {
+    total: results.length,
+    passed: results.filter((r) => r.status === 'pass').length,
+    failed: results.filter((r) => r.status === 'fail' || r.status === 'error').length,
+  };
+}
+
+/** Run-level status dot color — the only place run color is minted. */
+function runDot(run: EvalRun): string {
+  if (run.status === 'running') return 'var(--info)';
+  if (run.status === 'passed') return 'var(--ok)';
+  return 'var(--err)';
+}
+
+/** Per-scenario dot color — pass green, fail/error red, skip muted. */
+function scenarioDot(status: ScenarioResult['status']): string {
+  if (status === 'pass') return 'var(--ok)';
+  if (status === 'skip') return 'var(--t3)';
+  return 'var(--err)';
+}
+
+/** The one-line advisory shown next to Save; `ok:false` means show a warn dot. */
+function runAdvisory(run: EvalRun): { text: string; ok: boolean } {
+  if (run.status === 'running') return { text: 'evals: running…', ok: true };
+  const s = runSummary(run);
+  const when = timeAgo(run.finishedAt ?? run.startedAt);
+  if (s.failed > 0 || run.status === 'failed' || run.status === 'error') {
+    return { text: `evals: ${s.failed}/${s.total} failed · ${when}`, ok: false };
+  }
+  return { text: `evals: ${s.passed}/${s.total} passed · ${when}`, ok: true };
+}
+
+/** Scenario JSON must parse to an object carrying a `turns` array. */
+function parseScenario(raw: string): { ok: true; value: object } | { ok: false; error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: 'Scenario must be valid JSON.' };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: 'Scenario must be a JSON object with a "turns" array.' };
+  }
+  if (!Array.isArray((parsed as { turns?: unknown }).turns)) {
+    return { ok: false, error: 'Scenario needs a "turns" array (user turns and expects).' };
+  }
+  return { ok: true, value: parsed as object };
+}
+
+/**
+ * Runs list for an agent, newest first. Polls every 2s while the latest run is
+ * still running, then goes quiet — shared by the modal and the save-gate.
+ */
+function useEvalRuns(identifier: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['agent-eval-runs', identifier],
+    queryFn: () => api<{ runs: EvalRun[] }>(`/v1/agents/${identifier}/evals/runs`),
+    enabled,
+    refetchInterval: (query) => {
+      const latest = query.state.data?.runs?.[0];
+      return latest && latest.status === 'running' ? 2000 : false;
+    },
+  });
+}
+
+/** Create or edit one eval scenario. Name + JSON scenario + enabled. */
+function EvalFormModal({
+  agent,
+  evalItem,
+  onClose,
+  onSaved,
+}: {
+  agent: Agent;
+  evalItem: AgentEval | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const editing = Boolean(evalItem);
+  const [name, setName] = useState(evalItem?.name ?? '');
+  const [enabled, setEnabled] = useState(evalItem ? evalItem.enabled : true);
+  const [scenario, setScenario] = useState(
+    evalItem ? JSON.stringify(evalItem.scenario, null, 2) : DEFAULT_SCENARIO,
+  );
+  const [error, setError] = useState('');
+
+  const save = useMutation({
+    mutationFn: (body: { name: string; scenario: object; enabled: boolean }) =>
+      editing
+        ? api(`/v1/agents/${agent.identifier}/evals/${evalItem!.id}`, { method: 'PATCH', body })
+        : api(`/v1/agents/${agent.identifier}/evals`, { method: 'POST', body }),
+    onSuccess: () => onSaved(),
+    onError: (err) => setError(err.message),
+  });
+
+  return (
+    <Modal open onClose={onClose} title={editing ? `Edit ${evalItem!.name}` : 'New eval'}>
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setError('');
+          if (!name.trim()) {
+            setError('Name is required.');
+            return;
+          }
+          const parsed = parseScenario(scenario);
+          if (!parsed.ok) {
+            setError(parsed.error);
+            return;
+          }
+          save.mutate({ name: name.trim(), scenario: parsed.value, enabled });
+        }}
+      >
+        <Field label="Name">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            autoFocus
+            placeholder="refund-pauses-for-approval"
+            className="font-mono"
+          />
+        </Field>
+
+        <div>
+          <span className="mb-1.5 block text-[12px] font-medium text-t2">Scenario</span>
+          <textarea
+            value={scenario}
+            onChange={(e) => setScenario(e.target.value)}
+            rows={12}
+            spellCheck={false}
+            className={`${TEXTAREA_CLS} font-mono`}
+          />
+          <span className="mt-1 block text-[11px] text-t3">
+            A JSON object with a <Mono>turns</Mono> array — user turns and tool/reply
+            expectations, same format as the eval files.
+          </span>
+        </div>
+
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <span className="block text-[12px] font-medium text-t2">Enabled</span>
+            <span className="mt-1 block text-[11px] text-t3">
+              Only enabled evals run when you click “Run evals”.
+            </span>
+          </div>
+          <Toggle checked={enabled} onChange={setEnabled} label="Eval enabled" />
+        </div>
+
+        {error && <p className="text-[12px] text-err">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <Button type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" disabled={save.isPending}>
+            {save.isPending ? 'Saving…' : editing ? 'Save changes' : 'Create eval'}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** Per-agent evals: list, edit, run, and read results. Managed agents only. */
+function EvalsModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [formFor, setFormFor] = useState<AgentEval | 'new' | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
+
+  const invalidateEvals = () =>
+    void queryClient.invalidateQueries({ queryKey: ['agent-evals', agent.identifier] });
+  const invalidateRuns = () =>
+    void queryClient.invalidateQueries({ queryKey: ['agent-eval-runs', agent.identifier] });
+
+  const { data: evalsData, isLoading } = useQuery({
+    queryKey: ['agent-evals', agent.identifier],
+    queryFn: () => api<{ evals: AgentEval[] }>(`/v1/agents/${agent.identifier}/evals`),
+  });
+
+  const runsQuery = useEvalRuns(agent.identifier, true);
+  const runs = runsQuery.data?.runs ?? [];
+  const activeRunId = selectedRunId ?? runs[0]?.id ?? null;
+
+  // Full results for the selected/latest run — the list may carry only status;
+  // detail is polled while it's still running.
+  const runDetail = useQuery({
+    queryKey: ['agent-eval-run', agent.identifier, activeRunId],
+    queryFn: () => api<{ run: EvalRun }>(`/v1/agents/${agent.identifier}/evals/runs/${activeRunId}`),
+    enabled: !!activeRunId,
+    refetchInterval: (query) => (query.state.data?.run.status === 'running' ? 2000 : false),
+  });
+
+  const toggleEnabled = useMutation({
+    mutationFn: (vars: { id: string; enabled: boolean }) =>
+      api(`/v1/agents/${agent.identifier}/evals/${vars.id}`, {
+        method: 'PATCH',
+        body: { enabled: vars.enabled },
+      }),
+    onSuccess: invalidateEvals,
+    onError: (err) => setActionError(err.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) =>
+      api(`/v1/agents/${agent.identifier}/evals/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      setActionError('');
+      invalidateEvals();
+    },
+    onError: (err) => setActionError(err.message),
+  });
+
+  const runEvals = useMutation({
+    mutationFn: () =>
+      api<{ run?: EvalRun; runId?: string; id?: string }>(
+        `/v1/agents/${agent.identifier}/evals/run`,
+        { method: 'POST' },
+      ),
+    onSuccess: (res) => {
+      setActionError('');
+      setSelectedRunId(res.run?.id ?? res.runId ?? res.id ?? null);
+      invalidateRuns();
+    },
+    onError: (err) => setActionError(err.message),
+  });
+
+  const evals = evalsData?.evals ?? [];
+  const enabledCount = evals.filter((e) => e.enabled).length;
+  const run = runDetail.data?.run ?? runs.find((r) => r.id === activeRunId) ?? null;
+
+  return (
+    <Modal open onClose={onClose} title={`Evals — ${agent.identifier}`}>
+      <p className="mb-4 text-[12px] text-t3">
+        Evals script a conversation and assert what the agent should do — which tools it calls,
+        what its reply contains. Run them after a prompt change to catch regressions before your
+        customers do.
+      </p>
+
+      {actionError && <p className="mb-3 text-[12px] text-err">{actionError}</p>}
+
+      {isLoading ? (
+        <Skeleton className="h-24 w-full" />
+      ) : evals.length > 0 ? (
+        <ul className="space-y-3">
+          {evals.map((e) => (
+            <li
+              key={e.id}
+              className="flex items-start justify-between gap-2 border-b border-bd pb-3 last:border-0 last:pb-0"
+            >
+              <div className="min-w-0">
+                <Mono className="text-t1">{e.name}</Mono>
+                <span className="mt-0.5 block text-[11px] text-t3">updated {timeAgo(e.updatedAt)}</span>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Toggle
+                  checked={e.enabled}
+                  onChange={(v) => toggleEnabled.mutate({ id: e.id, enabled: v })}
+                  label={`Eval ${e.name} enabled`}
+                />
+                <Button variant="ghost" onClick={() => setFormFor(e)}>
+                  Edit
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    if (window.confirm(`Delete eval "${e.name}"?`)) remove.mutate(e.id);
+                  }}
+                >
+                  Delete
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-[12px] text-t3">
+          No evals yet. Add one, or use “Save as eval” on a conversation.
+        </p>
+      )}
+
+      <div className="mt-4 flex items-center justify-between border-t border-bd pt-4">
+        <Button
+          variant="ghost"
+          onClick={() => runEvals.mutate()}
+          disabled={runEvals.isPending || enabledCount === 0 || run?.status === 'running'}
+          title={enabledCount === 0 ? 'Enable at least one eval to run' : undefined}
+        >
+          {runEvals.isPending || run?.status === 'running' ? 'Running…' : 'Run evals'}
+        </Button>
+        <Button variant="primary" onClick={() => setFormFor('new')}>
+          New eval
+        </Button>
+      </div>
+
+      {run && (
+        <div className="mt-4 border-t border-bd pt-4">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-t3">
+              <span
+                aria-hidden
+                className="inline-block h-[7px] w-[7px] rounded-full"
+                style={{ background: runDot(run) }}
+              />
+              Run {run.status === 'running' ? 'running…' : run.status}
+            </span>
+            <Mono className="text-t3">{timeAgo(run.finishedAt ?? run.startedAt)}</Mono>
+          </div>
+          {run.status === 'running' && !(run.results && run.results.length) ? (
+            <Skeleton className="h-16 w-full" />
+          ) : run.results && run.results.length > 0 ? (
+            <ul className="space-y-1.5">
+              {run.results.map((r) => (
+                <li key={r.name} className="flex items-start gap-2 text-[12px]">
+                  <span
+                    aria-hidden
+                    className="mt-1 inline-block h-[6px] w-[6px] shrink-0 rounded-full"
+                    style={{ background: scenarioDot(r.status) }}
+                  />
+                  <div className="min-w-0">
+                    <Mono className="text-t2">{r.name}</Mono>
+                    {r.detail && (r.status === 'fail' || r.status === 'error') && (
+                      <Mono className="mt-0.5 block whitespace-pre-wrap break-words text-t3">
+                        {r.detail}
+                      </Mono>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[12px] text-t3">No scenario results recorded for this run.</p>
+          )}
+        </div>
+      )}
+
+      {runs.length > 0 && (
+        <div className="mt-4 border-t border-bd pt-4">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-t3">Recent runs</p>
+          <ul className="space-y-1">
+            {runs.slice(0, 5).map((r) => {
+              const s = runSummary(r);
+              return (
+                <li key={r.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRunId(r.id)}
+                    aria-pressed={r.id === activeRunId}
+                    className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-elevated ${
+                      r.id === activeRunId ? 'bg-elevated' : ''
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        aria-hidden
+                        className="inline-block h-[6px] w-[6px] rounded-full"
+                        style={{ background: runDot(r) }}
+                      />
+                      <Mono className="text-t2">
+                        {r.status === 'running'
+                          ? 'running…'
+                          : s.total > 0
+                            ? `${s.passed}/${s.total} passed`
+                            : r.status}
+                      </Mono>
+                    </span>
+                    <Mono className="text-t3">{timeAgo(r.finishedAt ?? r.startedAt)}</Mono>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {formFor && (
+        <EvalFormModal
+          agent={agent}
+          evalItem={formFor === 'new' ? null : formFor}
+          onClose={() => setFormFor(null)}
+          onSaved={() => {
+            setFormFor(null);
+            invalidateEvals();
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
 function AgentForm({
   initial,
   pending,
@@ -743,11 +1321,32 @@ function AgentForm({
 }) {
   const [runtime, setRuntime] = useState<'bridge' | 'managed'>(initial?.runtime ?? 'bridge');
   const editing = Boolean(initial?.identifier);
+  const identifier = initial?.identifier ?? '';
+  const queryClient = useQueryClient();
 
   // Agent-speaks-first config: controlled so the char counters and add/remove
   // rows stay live. Empty here means "clear" (sent as null on save).
   const [welcome, setWelcome] = useState(initial?.welcomeMessage ?? '');
   const [prompts, setPrompts] = useState<SuggestedPrompt[]>(initial?.suggestedPrompts ?? []);
+
+  // Advisory eval gate — only meaningful for an existing managed agent whose
+  // prompt we're editing. Polls while a run is in flight.
+  const evalGateOn = editing && runtime === 'managed' && Boolean(identifier);
+  const runsQuery = useEvalRuns(identifier, evalGateOn);
+  const latestRun = evalGateOn ? runsQuery.data?.runs?.[0] ?? null : null;
+  const runEvals = useMutation({
+    mutationFn: () => api(`/v1/agents/${identifier}/evals/run`, { method: 'POST' }),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: ['agent-eval-runs', identifier] }),
+  });
+  const advisory = latestRun ? runAdvisory(latestRun) : null;
+  const advisoryDot = !latestRun
+    ? 'var(--t3)'
+    : latestRun.status === 'running'
+      ? 'var(--info)'
+      : advisory!.ok
+        ? 'var(--ok)'
+        : 'var(--err)';
 
   return (
     <form
@@ -778,6 +1377,13 @@ function AgentForm({
               ...(baseUrl ? { baseUrl } : {}),
             };
           }
+          // Daily token budget (G2): blank = off; clearing an existing one → null.
+          const maxDaily = Number.parseInt(str('maxDailyTokens'), 10);
+          if (Number.isFinite(maxDaily) && maxDaily > 0) {
+            body.maxDailyTokens = maxDaily;
+          } else if (editing && initial?.maxDailyTokens != null) {
+            body.maxDailyTokens = null;
+          }
         }
         const arHours = Number.parseInt(str('autoResolveH'), 10);
         const arMins = Number.parseInt(str('autoResolveM'), 10);
@@ -795,6 +1401,27 @@ function AgentForm({
           .filter((p) => p.title && p.message)
           .slice(0, 6);
         body.suggestedPrompts = cleanPrompts.length ? cleanPrompts : null;
+
+        // Advisory eval gate (never a hard block): if the latest run failed, or
+        // the prompt changed since it ran (so the run tested a different
+        // version), ask once before saving.
+        if (evalGateOn && latestRun && latestRun.status !== 'running') {
+          const currentPrompt = str('systemPrompt');
+          const promptDirty = (initial?.systemPrompt ?? '').trim() !== currentPrompt;
+          const s = runSummary(latestRun);
+          const hasFailures =
+            latestRun.status === 'failed' || latestRun.status === 'error' || s.failed > 0;
+          const runPredatesSave =
+            !!initial?.updatedAt &&
+            !!latestRun.finishedAt &&
+            new Date(latestRun.finishedAt).getTime() < new Date(initial.updatedAt).getTime();
+          if (
+            (hasFailures || promptDirty || runPredatesSave) &&
+            !window.confirm("Evals haven't passed for this version — save anyway?")
+          ) {
+            return;
+          }
+        }
         onSubmit(body);
       }}
     >
@@ -852,6 +1479,19 @@ function AgentForm({
               max={8192}
               placeholder="1024"
               defaultValue={initial?.maxTokens ?? ''}
+              className="font-mono"
+            />
+          </Field>
+          <Field
+            label="Daily token budget"
+            hint="Circuit breaker, not a quota — size it ~4x a busy day (see Health for tokens/turn)."
+          >
+            <Input
+              name="maxDailyTokens"
+              type="number"
+              min={1}
+              placeholder="off"
+              defaultValue={initial?.maxDailyTokens ?? ''}
               className="font-mono"
             />
           </Field>
@@ -1004,6 +1644,26 @@ function AgentForm({
         )}
       </div>
 
+      {evalGateOn && (
+        <div className="flex items-center justify-between gap-3 border-t border-bd pt-4">
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <span
+              aria-hidden
+              className="inline-block h-[7px] w-[7px] shrink-0 rounded-full"
+              style={{ background: advisoryDot }}
+            />
+            <Mono className="truncate text-t3">{advisory ? advisory.text : 'evals: none run yet'}</Mono>
+          </span>
+          <Button
+            type="button"
+            onClick={() => runEvals.mutate()}
+            disabled={runEvals.isPending || latestRun?.status === 'running'}
+          >
+            {runEvals.isPending || latestRun?.status === 'running' ? 'Running…' : 'Run evals'}
+          </Button>
+        </div>
+      )}
+
       {error && <p className="text-[12px] text-err">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button type="button" onClick={onCancel}>
@@ -1024,6 +1684,7 @@ export default function AgentsPage() {
   const [editing, setEditing] = useState<Agent | null>(null);
   const [channelsFor, setChannelsFor] = useState<Agent | null>(null);
   const [toolsFor, setToolsFor] = useState<Agent | null>(null);
+  const [evalsFor, setEvalsFor] = useState<Agent | null>(null);
   const [healthFor, setHealthFor] = useState<Agent | null>(null);
   const [secret, setSecret] = useState('');
   const [error, setError] = useState('');
@@ -1158,6 +1819,11 @@ export default function AgentsPage() {
                         Tools
                       </Button>
                     )}
+                    {a.runtime === 'managed' && (
+                      <Button variant="ghost" onClick={() => setEvalsFor(a)}>
+                        Evals
+                      </Button>
+                    )}
                     <Button variant="ghost" onClick={() => setEditing(a)}>
                       Edit
                     </Button>
@@ -1237,6 +1903,7 @@ http.createServer(createHandler(support, {
                 autoResolveMinutes: body.autoResolveMinutes,
                 welcomeMessage: body.welcomeMessage,
                 suggestedPrompts: body.suggestedPrompts,
+                maxDailyTokens: body.maxDailyTokens,
                 llm: body.llm,
               })
             }
@@ -1250,6 +1917,8 @@ http.createServer(createHandler(support, {
       {channelsFor && <ChannelsModal agent={channelsFor} onClose={() => setChannelsFor(null)} />}
 
       {toolsFor && <ToolsModal agent={toolsFor} onClose={() => setToolsFor(null)} />}
+
+      {evalsFor && <EvalsModal agent={evalsFor} onClose={() => setEvalsFor(null)} />}
 
       {secret && <SecretReveal secret={secret} onClose={() => setSecret('')} />}
     </>

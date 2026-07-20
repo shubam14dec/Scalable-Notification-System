@@ -9,9 +9,10 @@ import { pool } from './pool';
  */
 
 /**
- * One tool's slice of the window. avgMs is always null — agent_tool_calls
- * records no per-call execution duration (only requested_at/decided_at, an
- * approval latency), and we never invent a column to fill it.
+ * One tool's slice of the window. avgMs is the mean of agent_tool_calls
+ * .duration_ms (the executor-measured signed-POST wall-clock, Phase 22 G4)
+ * over executed calls in the window; null when no call in the window carries a
+ * duration (e.g. only pending/denied rows, or pre-G4 history).
  */
 export interface AgentToolStat {
   name: string;
@@ -79,7 +80,8 @@ export async function agentHealth(
   const toolRows = await pool.query(
     `select m.tool_name                                       as name,
             count(*)::int                                     as calls,
-            count(*) filter (where m.status = 'failed')::int  as failures
+            count(*) filter (where m.status = 'failed')::int  as failures,
+            avg(m.duration_ms)                                as avg_ms
        from agent_tool_calls m
       where m.tenant_id = $1
         and m.agent_id = $2
@@ -100,12 +102,15 @@ export async function agentHealth(
   };
 
   const tools: AgentToolStat[] = toolRows.rows.map(
-    (r: { name: string; calls: number; failures: number }) => ({
-      name: r.name,
-      calls: r.calls,
-      failures: r.failures,
-      avgMs: null,
-    }),
+    (r: { name: string; calls: number; failures: number; avg_ms: string | null }) => {
+      const avg = num(r.avg_ms);
+      return {
+        name: r.name,
+        calls: r.calls,
+        failures: r.failures,
+        avgMs: avg === null ? null : Math.round(avg),
+      };
+    },
   );
   // Totals summed from the grouped rows (bounded by the distinct-tool count) —
   // no second scan of agent_tool_calls just to re-count what we already grouped.
