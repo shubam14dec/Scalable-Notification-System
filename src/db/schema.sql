@@ -643,3 +643,11 @@ begin
     execute format('alter table messages drop constraint %I', c);
   end if;
 end $$;
+
+-- ---- Phase 21: agent observability ----
+-- The health aggregate joins conversation_messages -> conversations filtered by
+-- (tenant_id, agent_id). No existing index covers a bare agent_id lookup — the
+-- only agent_id index is the partial conversations_agent_thread_uq (connection_id
+-- is null), so channel threads miss it. This makes the join's conversation-side
+-- probe an index range scan instead of a seq scan as conversations grows.
+create index if not exists conversations_agent_idx on conversations (agent_id);

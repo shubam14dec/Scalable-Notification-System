@@ -6,6 +6,7 @@ import { signWebhook } from '../api/webhook-signature';
 import { assertSafeOutboundUrl, safeDispatcher, UnsafeOutboundUrlError } from './safe-url';
 import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
+import { withSpan } from '../shared/tracing';
 import { listWorkflows } from '../db/repositories';
 import { pool } from '../db/pool';
 import { internalTrigger } from './internal-trigger';
@@ -78,6 +79,23 @@ export interface TurnUsage {
   modelCalls: number;
 }
 
+/**
+ * One event in a turn's execution trace (FROZEN shape — dashboard + API slices
+ * build against it). Discriminated on `t`: a model round, a tool call, or the
+ * bridge POST (emitted by the bridge runtime in the conversation processor, not
+ * here). A union must be a `type`, not an `interface`.
+ */
+export type TurnTraceEvent =
+  | { t: 'model_call'; ms: number; inputTokens: number; outputTokens: number; stopReason: string | null; model: string }
+  | { t: 'tool_call'; name: string; ms: number; ok: boolean; paused?: true }
+  | { t: 'bridge_post'; ms: number; status: number; ok: boolean };
+
+/** A turn's execution trace: wall-clock total + the ordered events. */
+export interface TurnTrace {
+  totalMs: number;
+  events: TurnTraceEvent[];
+}
+
 /** A single tappable choice attached to a reply (present_buttons tool). */
 type ReplyButton = { id: string; label: string };
 
@@ -94,6 +112,8 @@ export interface BrainTurnResult {
   note?: string;
   /** What this turn cost on the customer's key. */
   usage: TurnUsage;
+  /** Per-turn execution trace (model + tool events), frozen shape. */
+  trace: TurnTrace;
 }
 
 interface Subscriber {
@@ -192,20 +212,37 @@ export async function runManagedTurn(
   // only if the turn ends with reply text to carry it.
   let presentation: { buttons?: ReplyButton[]; card?: Card } | undefined;
   const usage: TurnUsage = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
+  // Per-turn execution trace: the product-facing twin of the OTel spans below
+  // (D5) — the same model/tool events, but persisted on the transcript row so
+  // the dashboard can render a turn with no trace backend. Bounded by
+  // MAX_MODEL_CALLS (plus that turn's tool calls), so it can't grow unbounded.
+  const start = Date.now();
+  const events: TurnTraceEvent[] = [];
+  const trace = (): TurnTrace => ({ totalMs: Date.now() - start, events });
 
   for (let call = 1; call <= MAX_MODEL_CALLS; call += 1) {
     // Pulse the "composing" indicator at the start of each model round.
     hooks?.onModelCall?.();
     let response: Anthropic.Message;
+    const model = agent.model ?? DEFAULT_MODEL;
+    const callStart = Date.now();
     try {
-      response = await client.messages.create({
-        model: agent.model ?? DEFAULT_MODEL,
-        max_tokens: agent.max_tokens ?? DEFAULT_MAX_TOKENS,
-        ...(agent.system_prompt ? { system: agent.system_prompt } : {}),
-        tools,
-        messages,
-      });
+      // D5: the model call rides an OTel span; withSpan is a no-op wrapper when
+      // OTEL is disabled and rethrows on failure, so control flow is unchanged.
+      response = await withSpan('brain.model_call', { agent: agent.identifier }, () =>
+        client.messages.create({
+          model,
+          max_tokens: agent.max_tokens ?? DEFAULT_MAX_TOKENS,
+          ...(agent.system_prompt ? { system: agent.system_prompt } : {}),
+          tools,
+          messages,
+        }),
+      );
     } catch (err) {
+      // Trace the failed call (elapsed, no tokens) before classifying — D7: the
+      // trace only survives if a LATER persist point runs, and a thrown call is
+      // rethrown exactly as before (no new persistence path for crashes).
+      events.push({ t: 'model_call', ms: Date.now() - callStart, inputTokens: 0, outputTokens: 0, stopReason: 'error', model });
       // Config mistakes must not retry-storm the provider: surface them in
       // the transcript instead. Everything else is worth another attempt.
       if (
@@ -229,11 +266,19 @@ export async function runManagedTurn(
     usage.modelCalls += 1;
     usage.inputTokens += response.usage?.input_tokens ?? 0;
     usage.outputTokens += response.usage?.output_tokens ?? 0;
+    events.push({
+      t: 'model_call',
+      ms: Date.now() - callStart,
+      inputTokens: response.usage?.input_tokens ?? 0,
+      outputTokens: response.usage?.output_tokens ?? 0,
+      stopReason: response.stop_reason ?? null,
+      model,
+    });
 
     // Check stop_reason before reading content (refusals can carry none).
     if (response.stop_reason === 'refusal') {
       logger.info({ agent: agent.identifier }, 'managed brain refused the turn');
-      return { reply: null, resolved, note: 'the model declined to answer this message', usage };
+      return { reply: null, resolved, note: 'the model declined to answer this message', usage, trace: trace() };
     }
 
     messages.push({ role: 'assistant', content: response.content });
@@ -247,6 +292,7 @@ export async function runManagedTurn(
           resolved,
           note: 'tool loop limit reached before a final reply',
           usage,
+          trace: trace(),
         };
       }
       const toolUses = response.content.filter(
@@ -263,16 +309,32 @@ export async function runManagedTurn(
         // Per-tool interleave (call → exec → result) so the plan card's
         // "close the last pending step" always lands on THIS tool's step.
         await hooks?.onToolCall?.(use.name, use.input as Record<string, unknown>);
-        const outcome = await executeTool(use, agent, conversation, subscriber, inbound, defsByName, {
-          onResolve: () => {
-            resolved = true;
-          },
-          onButtons: (presented) => {
-            presentation = { buttons: presented };
-          },
-          onCard: (presented) => {
-            presentation = { card: presented };
-          },
+        const toolStart = Date.now();
+        // D5: the tool execution rides an OTel span (no-op when OTEL is off).
+        // executeTool never throws, but withSpan would rethrow if it did — so
+        // control flow is unchanged either way.
+        const outcome = await withSpan(
+          'brain.tool',
+          { agent: agent.identifier, tool: use.name },
+          () =>
+            executeTool(use, agent, conversation, subscriber, inbound, defsByName, {
+              onResolve: () => {
+                resolved = true;
+              },
+              onButtons: (presented) => {
+                presentation = { buttons: presented };
+              },
+              onCard: (presented) => {
+                presentation = { card: presented };
+              },
+            }),
+        );
+        events.push({
+          t: 'tool_call',
+          name: use.name,
+          ms: Date.now() - toolStart,
+          ok: !outcome.isError,
+          ...(outcome.pausedToolName ? { paused: true as const } : {}),
         });
         await hooks?.onToolResult?.(use.name, !outcome.isError);
         results.push({
@@ -294,7 +356,7 @@ export async function runManagedTurn(
             ? `I've asked a teammate to approve ${names[0]} — I'll follow up here as soon as it's decided.`
             : `I've asked a teammate to approve these actions (${names.join(', ')}) — ` +
               `I'll follow up here as soon as they're decided.`;
-        return { reply: note, resolved, usage };
+        return { reply: note, resolved, usage, trace: trace() };
       }
       continue;
     }
@@ -323,11 +385,12 @@ export async function runManagedTurn(
       resolved,
       note: notes.length > 0 ? notes.join(' · ') : undefined,
       usage,
+      trace: trace(),
     };
   }
 
   // Unreachable (the cap returns inside the loop), but keep TS satisfied.
-  return { reply: null, resolved, note: 'tool loop limit reached before a final reply', usage };
+  return { reply: null, resolved, note: 'tool loop limit reached before a final reply', usage, trace: trace() };
 }
 
 /**

@@ -30,6 +30,32 @@ import { CardSchema } from '../../shared/cards';
 import { logExec } from '../../core/execution-log';
 import { tenantRateLimit } from '../rate-limit';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
+import { agentHealth, type AgentHealth } from '../../db/agent-health.repo';
+
+/**
+ * The health aggregate is a whole-window scan — cheap to serve slightly stale,
+ * wasteful to recompute on every dashboard poll. Mirror the public-url TTL
+ * cache idiom (src/config/public-url.ts): a tiny in-process Map keyed by
+ * tenant+agent+window, each entry good for HEALTH_TTL_MS. A 60s lag on an
+ * observability panel is invisible; the set-based query it saves is not (the
+ * 10-20M rule — don't re-scan per poll). Entries are pruned opportunistically
+ * on write, so the map stays bounded by the agents actually being viewed.
+ */
+const HEALTH_TTL_MS = 60_000;
+const healthCache = new Map<string, { value: AgentHealth; at: number }>();
+
+function cacheHealth(key: string, value: AgentHealth): void {
+  const now = Date.now();
+  for (const [k, entry] of healthCache) {
+    if (now - entry.at >= HEALTH_TTL_MS) healthCache.delete(k);
+  }
+  healthCache.set(key, { value, at: now });
+}
+
+/** days coerces to an int in [1, 30]; out-of-range (incl. 0) is a 400. */
+const HealthQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(30).default(7),
+});
 
 /**
  * SSRF write-time gate: bridgeUrl and llm.baseUrl are dialed by our
@@ -261,6 +287,35 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };
+    },
+  );
+
+  /**
+   * Rolling-window observability for one agent (dashboard health panel): turn /
+   * reply / note counts, turn latency (avg + p95 over stored traces), token
+   * means, and per-tool call/failure tallies. Served from a 60s in-process
+   * cache so a polling panel never re-runs the window scan on every tick.
+   */
+  app.get<{ Params: { identifier: string }; Querystring: { days?: string } }>(
+    '/v1/agents/:identifier/health',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const parsed = HealthQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid query', details: parsed.error.issues });
+      }
+      const { days } = parsed.data;
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+
+      const key = `${req.tenant.id}:${agent.id}:${days}`;
+      const hit = healthCache.get(key);
+      const stats =
+        hit && Date.now() - hit.at < HEALTH_TTL_MS
+          ? hit.value
+          : await agentHealth(req.tenant.id, agent.id, days);
+      if (stats !== hit?.value) cacheHealth(key, stats);
+      return { windowDays: days, ...stats };
     },
   );
 
@@ -595,6 +650,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
           deletedAt: m.deleted_at,
           deletedBy: m.deleted_by,
           usage: usageOf(m),
+          trace: (m.raw as { trace?: unknown } | null)?.trace,
           buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
           clicked: Boolean((m.raw as { action?: unknown } | null)?.action),
         })),

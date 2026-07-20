@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../lib/api';
 import {
   Button,
@@ -27,11 +27,35 @@ interface ConversationRow {
   lastMessageAt: string;
 }
 
+/**
+ * Turn trace (Phase 21) — the ordered story of one agent turn: the model
+ * calls it made, the tools they triggered, and (for bridge agents) the POST
+ * to the customer's handler. Present only on messages the runtime instrumented.
+ */
+type TraceEvent =
+  | {
+      t: 'model_call';
+      ms: number;
+      inputTokens: number;
+      outputTokens: number;
+      stopReason: string;
+      model: string;
+    }
+  | { t: 'tool_call'; name: string; ms: number; ok: boolean; paused?: boolean }
+  | { t: 'bridge_post'; ms: number; status: number; ok: boolean };
+
+interface Trace {
+  totalMs: number;
+  events: TraceEvent[];
+}
+
 interface TranscriptMessage {
   id: string;
   role: 'user' | 'agent' | 'system';
   content: string;
   createdAt: string;
+  /** The turn's execution trace — drives the expandable "Turn details". */
+  trace?: Trace | null;
   /** Buttons the agent offered under this reply. */
   buttons?: Array<{ id: string; label: string }>;
   /** A card the agent offered under this reply (select choices or a text input). */
@@ -166,6 +190,120 @@ export default function ConversationsPage() {
   );
 }
 
+/** Durations read as `840ms` under a second, else `1.2s` (one decimal). */
+function fmtMs(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** stopReason rendered as a short tail: what the model did next. */
+function stopTail(stopReason: string): string {
+  if (stopReason === 'tool_use') return '→ tools';
+  if (stopReason === 'end_turn') return '→ reply';
+  return stopReason;
+}
+
+/** Small status dot — the one idiom we use to signal failure, never red text. */
+function Dot({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-[6px] w-[6px] shrink-0 rounded-full"
+      style={{ background: color }}
+    />
+  );
+}
+
+/**
+ * The usage line for a traced agent turn, doubling as a toggle into "Turn
+ * details" — one row per model call, its tool calls (indented), and the bridge
+ * POST. Collapsed by default; failure shows via a dot, never colored text.
+ */
+function MessageTrace({
+  trace,
+  expanded,
+  onToggle,
+}: {
+  trace: Trace;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const modelCalls = trace.events.filter((e) => e.t === 'model_call');
+  const inTok = modelCalls.reduce((s, e) => s + e.inputTokens, 0);
+  const outTok = modelCalls.reduce((s, e) => s + e.outputTokens, 0);
+  const n = modelCalls.length;
+  const summary = `${inTok} in / ${outTok} out · ${n} ${n === 1 ? 'call' : 'calls'} · ${fmtMs(
+    trace.totalMs,
+  )}`;
+
+  let modelN = 0;
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={onToggle}
+        className="inline-flex items-center gap-1 text-t3 transition-colors hover:text-t1"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0" aria-hidden />
+        )}
+        <Mono className="text-[11px] text-t3">{summary}</Mono>
+      </button>
+
+      {expanded && (
+        <div className="mt-1.5 space-y-1 border-l border-bd pl-2.5">
+          {trace.events.map((e, i) => {
+            if (e.t === 'model_call') {
+              modelN += 1;
+              return (
+                <div key={i} className="text-[11px]">
+                  <Mono className="text-t3">
+                    model call #{modelN} · {fmtMs(e.ms)} · {e.inputTokens} in / {e.outputTokens} out ·{' '}
+                    {stopTail(e.stopReason)}
+                  </Mono>
+                </div>
+              );
+            }
+            if (e.t === 'tool_call') {
+              return (
+                <div key={i} className="flex items-center gap-1.5 pl-3 text-[11px]">
+                  <Mono className="text-t3">
+                    ↳ {e.name} · {fmtMs(e.ms)} ·{' '}
+                  </Mono>
+                  {e.paused ? (
+                    <Mono className="text-t3">paused</Mono>
+                  ) : e.ok ? (
+                    <Mono className="text-t3">ok</Mono>
+                  ) : (
+                    <span className="inline-flex items-center gap-1">
+                      <Dot color="var(--err)" />
+                      <Mono className="text-t3">failed</Mono>
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            return (
+              <div key={i} className="flex items-center gap-1.5 text-[11px]">
+                <Mono className="text-t3">
+                  bridge POST · {fmtMs(e.ms)} · {e.status}
+                </Mono>
+                <Dot color={e.ok ? 'var(--ok)' : 'var(--err)'} />
+                <span className="sr-only">{e.ok ? 'ok' : 'failed'}</span>
+              </div>
+            );
+          })}
+          <div className="text-[11px]">
+            <Mono className="text-t3">total {fmtMs(trace.totalMs)}</Mono>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ConversationDetailPage() {
   const { id } = useParams();
   const queryClient = useQueryClient();
@@ -193,6 +331,16 @@ export function ConversationDetailPage() {
     mutationFn: () => api(`/v1/conversations/${id}/resolve`, { method: 'POST' }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['conversation', id] }),
   });
+
+  // Which messages have their "Turn details" trace expanded (per-message, local).
+  const [expandedTraces, setExpandedTraces] = useState<Set<string>>(() => new Set());
+  const toggleTrace = (messageId: string) =>
+    setExpandedTraces((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
 
   // Two-step inline confirm for operator message deletion.
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -320,6 +468,13 @@ export function ConversationDetailPage() {
                           </>
                         )}
                       </div>
+                    )}
+                    {!m.deletedAt && m.role === 'agent' && m.trace && m.trace.events.length > 0 && (
+                      <MessageTrace
+                        trace={m.trace}
+                        expanded={expandedTraces.has(m.id)}
+                        onToggle={() => toggleTrace(m.id)}
+                      />
                     )}
                   </div>
                 </div>

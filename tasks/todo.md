@@ -4,6 +4,59 @@ Per the asyncify-engineering skill: plans land here as checkable items
 before implementation; items get checked off as they complete; finished
 plans get a short review section, then move to Done.
 
+## Production-grade agents roadmap (agreed 2026-07-21, ranked; plans
+## need user approval per phase)
+
+- [ ] Phase 21 — Agent observability — BUILD COMPLETE 2026-07-21, user
+      E2E pending (plan: ~/.claude/plans/phase21-agent-observability.md;
+      suite 543→558 twice; all Opus, audited):
+      [x] A capture: TurnTrace on every runManagedTurn exit (model_call
+          ms/tokens/stopReason incl. thrown-call event; tool_call
+          ok/paused), persisted beside usage on reply rows AND
+          refusal/limit/paused notes; bridge_post parity; OTel spans
+          (brain.model_call / brain.tool)
+      [x] B API+SDK: detail trace passthrough; GET /v1/agents/:id/health
+          (FILTER/percentile_cont/make_interval, 60s bounded cache,
+          conversations_agent_idx added); sdk-node agents.health() +
+          changeset (node minor)
+      [x] C dashboard: Turn Inspector (usage line = toggle, indented
+          event timeline, dots-only failure) + Health modal on Agents
+          page (7d/30d, warn dot >5% tool failures or >20% notes)
+      [x] D tests: +15 (trace shapes per exit, persistence incl. bridge,
+          health aggregates/window/cache-aware matrix) — 558/558 ×2
+      [ ] USER E2E + review + LOCAL commit close
+      Note for Phase 22: agent_tool_calls has no execution-duration
+      column → per-tool avgMs is null; add duration capture with the
+      guardrails work. Crash-mid-turn traces still unrecorded (D7).
+- [ ] Phase 22 — Evals-as-gate + guardrails hardening: CI eval gate;
+      customer-facing pre-save eval runs ("3/12 scenarios regressed");
+      LLM-judge dimensions (groundedness/tone/refusals); one-click
+      prod-conversation→eval-case; tool-call rate caps; per-agent
+      token/spend budgets (pause not surprise-bill); topic allow/deny;
+      output moderation hook; REPEAT-ACTION guardrail (his insight:
+      >N refunds/window flips tool to approval-required, approval card
+      shows history from agent_tool_calls; agent detects → rule
+      decides → human judges)
+- [ ] Phase 23 — Knowledge (RAG) + episodic memory: pgvector in the
+      existing Postgres; per-agent OPTIONAL knowledge sources
+      (files/URLs → chunks → embeddings), retrieval as a TOOL BLOCK
+      (breadcrumbs record what was read; groundedness auditable),
+      citations; episodic = same retrieval over past conversation
+      summaries (continuity, repeat-problem escalation, product
+      intelligence, tone calibration)
+- [ ] Phase 24 — Long-term memory + cost: subscriber_memories keyed
+      rows (NOT vectors; load-all each turn; dashboard view/edit +
+      GDPR delete; `remember` tool); rolling summarization (summary +
+      recent turns replay — also the big cost lever); prompt caching
+      (near-free); budgets+alerts; model routing later
+- [ ] Later bucket: HITL conversation handoff (handoff_to_human tool,
+      operator takeover in dashboard, hand-back, SLA timers on
+      approvals via sweep pattern); security hardening (PII redaction
+      in logs/breadcrumbs, per-tenant retention auto-purge, per-END-
+      USER rate limits, RAG docs = untrusted input); prompt versioning
+      + canary (template-versioning pattern); scaling (provider-aware
+      LLM concurrency + LLM failover chain mirroring channel failover)
+
 ## Backlog (next candidates, in rough value order)
 
 **From the novu gap analysis (2026-07-11, docs/NOVU-GAP-ANALYSIS.md —

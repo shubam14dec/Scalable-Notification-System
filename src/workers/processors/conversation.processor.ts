@@ -16,6 +16,7 @@ import {
   postCustomToolCall,
   deniedResult,
   type TurnUsage,
+  type TurnTrace,
 } from '../../core/managed-brain';
 import { pool } from '../../db/pool';
 import {
@@ -165,6 +166,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   let card: Card | undefined;
   let signals: BridgeSignal[] = [];
   let turnUsage: TurnUsage | undefined;
+  let turnTrace: TurnTrace | undefined;
   // The streaming plan card (managed, non-email): posts ONE evolving agent
   // message on the first labelable tool call and finalizes it as the reply.
   let planCard: PlanCard | undefined;
@@ -197,6 +199,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       buttons = turn.buttons;
       card = turn.card;
       turnUsage = turn.usage;
+      turnTrace = turn.trace;
       // If a plan card was posted, its row IS the reply row — finalize it now
       // (the final edit becomes the reply). turn.reply carries the extras; a
       // no-reply turn (note/refusal/empty) finalizes to the same note string.
@@ -206,16 +209,24 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             buttons: turn.buttons,
             card: turn.card,
             usage: turn.usage,
+            trace: turn.trace,
           });
         } else {
           await planCard.finalize(turn.note ?? 'the model produced no reply text', {
             usage: turn.usage,
+            trace: turn.trace,
           });
         }
       }
-      // No reply row to carry the usage? The note breadcrumb carries it.
+      // No reply row to carry the usage/trace? The note breadcrumb carries them.
       if (turn.note) {
-        await systemNote(conversation, messageId, 0, turn.note, reply ? undefined : { usage: turn.usage });
+        await systemNote(
+          conversation,
+          messageId,
+          0,
+          turn.note,
+          reply ? undefined : { usage: turn.usage, trace: turn.trace },
+        );
       }
       if (turn.resolved && conversation.channel === 'inapp') {
         await publishConversationEvent(conversation, subscriber.external_id, agent, {
@@ -254,6 +265,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       buttons = dispatched.buttons;
       card = dispatched.card;
       signals = dispatched.signals;
+      turnTrace = dispatched.trace;
     } catch (err) {
       // Same doctrine as the managed branch: a config-shaped failure
       // (missing/blocked bridge URL) can't be fixed by retrying — surface
@@ -295,11 +307,13 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           role: 'agent',
           content: reply,
           dedupeKey: `reply-${messageId}`,
-          // Usage from managed turns; buttons/card from either runtime.
+          // Usage + trace from managed turns (trace also carries the bridge_post
+          // event on a bridge reply); buttons/card from either runtime.
           raw:
-            turnUsage || buttons || card
+            turnUsage || turnTrace || buttons || card
               ? {
                   ...(turnUsage ? { usage: turnUsage } : {}),
+                  ...(turnTrace ? { trace: turnTrace } : {}),
                   ...(buttons ? { buttons } : {}),
                   ...(card ? { card } : {}),
                 }
@@ -585,6 +599,7 @@ async function dispatchToBridge(
   buttons?: Array<{ id: string; label: string }>;
   card?: Card;
   signals: BridgeSignal[];
+  trace?: TurnTrace;
 }> {
   // Button clicks / card answers arrive as user rows carrying raw.action — the
   // bridge sees them as first-class 'action' events (label rides message.text;
@@ -623,12 +638,23 @@ async function dispatchToBridge(
     })),
   });
 
+  // D4 bridge parity: wall-clock the signed outbound POST and emit a bridge_post
+  // event — the bridge runtime's twin of the managed model_call trace. Built
+  // only on the success (2xx) path: postSignedToBridge throws on non-2xx /
+  // network / config failures, and those paths write no reply row for the trace
+  // to ride (the agent-unreachable DLQ note is out of reach — see report).
+  const postStart = Date.now();
   const response = await postSignedToBridge(agent, rawBody);
+  const postMs = Date.now() - postStart;
+  const trace: TurnTrace = {
+    totalMs: postMs,
+    events: [{ t: 'bridge_post', ms: postMs, status: response.status, ok: response.ok }],
+  };
   const parsed = BridgeResponseSchema.safeParse(await response.json().catch(() => null));
   if (!parsed.success) {
     throw new Error(`bridge returned an invalid response for agent ${agent.identifier}`);
   }
-  return parsed.data;
+  return { ...parsed.data, trace };
 }
 
 /**
@@ -883,6 +909,7 @@ interface PlanCardExtras {
   buttons?: Array<{ id: string; label: string }>;
   card?: Card;
   usage?: TurnUsage;
+  trace?: TurnTrace;
 }
 
 interface PlanCardChannelRaw {
@@ -1138,6 +1165,7 @@ function createPlanCard(args: {
       await updateConversationMessageRaw(row!.id, {
         ...freshRaw,
         ...(extras.usage ? { usage: extras.usage } : {}),
+        ...(extras.trace ? { trace: extras.trace } : {}),
         ...(extras.buttons ? { buttons: extras.buttons } : {}),
         ...(extras.card ? { card: extras.card } : {}),
       });

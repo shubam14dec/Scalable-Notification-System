@@ -162,6 +162,31 @@ export interface ToolApproval {
   expiresAt: string | null;
 }
 
+/** One tool's slice of an agent's health window. */
+export interface AgentToolHealth {
+  name: string;
+  calls: number;
+  failures: number;
+  /** Always null — no per-call execution duration is recorded server-side. */
+  avgMs: number | null;
+}
+
+/** Rolling-window observability for one agent (GET /v1/agents/:id/health). */
+export interface AgentHealth {
+  windowDays: number;
+  turns: number;
+  replies: number;
+  notes: number;
+  /** Mean / p95 turn latency in ms; null when no traced turns fell in the window. */
+  avgMs: number | null;
+  p95Ms: number | null;
+  avgInputTokens: number | null;
+  avgOutputTokens: number | null;
+  toolCalls: number;
+  toolFailures: number;
+  tools: AgentToolHealth[];
+}
+
 /** Which connections carry approval cards; each field null when unset. */
 export interface ApprovalSettings {
   slackConnectionId: string | null;
@@ -310,6 +335,19 @@ export class AsyncifyClient {
       this.request<{ token: string; deepLink: string; expiresAt: string }>(
         'POST',
         `/v1/agents/${encodeURIComponent(agentIdentifier)}/subscribers/${encodeURIComponent(subscriberId)}/link-token`,
+      ),
+
+    /**
+     * Rolling-window health for one agent: turn / reply / note counts, turn
+     * latency (avg + p95), token averages, and per-tool call/failure tallies.
+     * `days` is 1–30 (default 7); out-of-range values are rejected server-side.
+     */
+    health: (identifier: string, opts: { days?: number } = {}) =>
+      this.request<AgentHealth>(
+        'GET',
+        `/v1/agents/${encodeURIComponent(identifier)}/health${
+          opts.days === undefined ? '' : `?days=${opts.days}`
+        }`,
       ),
 
     /**
