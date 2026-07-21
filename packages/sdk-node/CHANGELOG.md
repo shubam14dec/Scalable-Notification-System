@@ -1,5 +1,12 @@
 # @asyncify-hq/node
 
+## 0.5.0
+
+### Minor Changes
+
+- b1eb2a7: Add `agents.evals` for per-agent eval scenarios: `list`, `create`, `update`, `remove`, `run` (enqueues a run of the agent's enabled scenarios), `runs`, and `getRun` (poll for the pass/fail verdict per scenario).
+- 03b9919: Add `agents.health(identifier, { days })` for rolling-window agent observability: turn/reply/note counts, turn latency (avg + p95), token averages, and per-tool call/failure tallies.
+
 ## 0.4.0
 
 ### Minor Changes
