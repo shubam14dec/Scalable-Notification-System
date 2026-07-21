@@ -889,8 +889,9 @@ interface AgentEval {
 /** One scenario's outcome inside a run (shape from scripts/eval.ts's core). */
 interface ScenarioResult {
   name: string;
-  status: 'pass' | 'fail' | 'skip' | 'error';
-  detail?: string;
+  passed: boolean;
+  failures: string[];
+  attempts: number;
 }
 
 /** An eval run — an enqueued job; poll until status leaves 'running'. */
@@ -916,8 +917,8 @@ function runSummary(run: EvalRun): { passed: number; failed: number; total: numb
   const results = run.results ?? [];
   return {
     total: results.length,
-    passed: results.filter((r) => r.status === 'pass').length,
-    failed: results.filter((r) => r.status === 'fail' || r.status === 'error').length,
+    passed: results.filter((r) => r.passed).length,
+    failed: results.filter((r) => !r.passed).length,
   };
 }
 
@@ -928,12 +929,6 @@ function runDot(run: EvalRun): string {
   return 'var(--err)';
 }
 
-/** Per-scenario dot color — pass green, fail/error red, skip muted. */
-function scenarioDot(status: ScenarioResult['status']): string {
-  if (status === 'pass') return 'var(--ok)';
-  if (status === 'skip') return 'var(--t3)';
-  return 'var(--err)';
-}
 
 /** The one-line advisory shown next to Save; `ok:false` means show a warn dot. */
 function runAdvisory(run: EvalRun): { text: string; ok: boolean } {
@@ -1002,7 +997,7 @@ function EvalFormModal({
   const save = useMutation({
     mutationFn: (body: { name: string; scenario: object; enabled: boolean }) =>
       editing
-        ? api(`/v1/agents/${agent.identifier}/evals/${evalItem!.id}`, { method: 'PATCH', body })
+        ? api(`/v1/agents/${agent.identifier}/evals/${evalItem!.id}`, { method: 'PUT', body })
         : api(`/v1/agents/${agent.identifier}/evals`, { method: 'POST', body }),
     onSuccess: () => onSaved(),
     onError: (err) => setError(err.message),
@@ -1110,7 +1105,7 @@ function EvalsModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const toggleEnabled = useMutation({
     mutationFn: (vars: { id: string; enabled: boolean }) =>
       api(`/v1/agents/${agent.identifier}/evals/${vars.id}`, {
-        method: 'PATCH',
+        method: 'PUT',
         body: { enabled: vars.enabled },
       }),
     onSuccess: invalidateEvals,
@@ -1231,13 +1226,13 @@ function EvalsModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
                   <span
                     aria-hidden
                     className="mt-1 inline-block h-[6px] w-[6px] shrink-0 rounded-full"
-                    style={{ background: scenarioDot(r.status) }}
+                    style={{ background: r.passed ? 'var(--ok)' : 'var(--err)' }}
                   />
                   <div className="min-w-0">
                     <Mono className="text-t2">{r.name}</Mono>
-                    {r.detail && (r.status === 'fail' || r.status === 'error') && (
+                    {!r.passed && r.failures && r.failures.length > 0 && (
                       <Mono className="mt-0.5 block whitespace-pre-wrap break-words text-t3">
-                        {r.detail}
+                        {r.failures.join('\n')}
                       </Mono>
                     )}
                   </div>

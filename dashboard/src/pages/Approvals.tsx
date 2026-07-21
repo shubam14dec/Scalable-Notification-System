@@ -141,6 +141,14 @@ function PendingCard({ approval, onDecided }: { approval: Approval; onDecided: (
         </div>
       </div>
 
+      {/* Guard-tripped pendings carry context for the approver (the ⚠ repeat-
+          action history line) in `note` — the same text the channel cards show. */}
+      {approval.status === 'pending' && approval.note && (
+        <p className="mt-3 text-[12px] text-t2">
+          <Mono>{approval.note}</Mono>
+        </p>
+      )}
+
       <div className="mt-3">
         <ArgsBlock value={approval.args} />
       </div>

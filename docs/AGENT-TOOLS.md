@@ -370,7 +370,10 @@ the skip is breadcrumbed with `used/limit`, and — if approval notifications ar
 wired — the ops audience is paged **once per day**. The agent's **Health** view
 shows tokens used today against the limit; raise the limit and the agent resumes
 on the next turn. (Customer-facing framing and sizing advice are in
-[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).)
+[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).) The ops page rides the same
+reserved `agent-approvals` / `approvals` convention as **Opt-in approval
+notifications** above — wiring steps are in that guide's *Where the alerts go*
+subsection.
 
 ## Evals: test your prompt like you test your code
 

@@ -10,7 +10,7 @@ import { telegram } from '../../channels/telegram';
 import { slack, SlackError } from '../../channels/slack';
 import type { SlackCredentials } from '../../api/routes/slack';
 import { sendWithFailover } from '../../providers/registry';
-import { isSuppressed } from '../../db/repositories';
+import { getWorkflow, isSuppressed } from '../../db/repositories';
 import {
   runManagedTurn,
   postCustomToolCall,
@@ -209,8 +209,12 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       // channel-less subscriber (Phase 18 lesson). Debounced to one alert per
       // agent per UTC day via a Redis claim; content-keyed txn makes a job
       // retry a dupe no-op.
+      // BOTH halves of the reserved pair must exist BEFORE the day-claim is
+      // spent — claiming first and then failing to trigger (e.g. workflow not
+      // yet created) silently loses the alert for the whole day. E2E-found.
       const opsApprover = await getApprovalsSubscriber(tenantId);
-      if (opsApprover && (await claimBudgetNotify(agent.id))) {
+      const opsWorkflow = opsApprover && (await getWorkflow(tenantId, 'agent-approvals'));
+      if (opsApprover && opsWorkflow && (await claimBudgetNotify(agent.id))) {
         await internalTrigger({
           tenantId,
           workflowKey: 'agent-approvals',
@@ -375,13 +379,18 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           dedupeKey: `reply-${messageId}`,
           // Usage + trace from managed turns (trace also carries the bridge_post
           // event on a bridge reply); buttons/card from either runtime.
+          // platformNote marks a PLATFORM-authored reply (the budget-pause note)
+          // — it is not the model's words, so buildHistory must NOT replay it as
+          // an assistant turn (GLM parroted it verbatim on later turns once the
+          // budget cleared — the lesson-§13 imitable-prose trap).
           raw:
-            turnUsage || turnTrace || buttons || card
+            turnUsage || turnTrace || buttons || card || budgetExhausted
               ? {
                   ...(turnUsage ? { usage: turnUsage } : {}),
                   ...(turnTrace ? { trace: turnTrace } : {}),
                   ...(buttons ? { buttons } : {}),
                   ...(card ? { card } : {}),
+                  ...(budgetExhausted ? { platformNote: true } : {}),
                 }
               : undefined,
         })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));

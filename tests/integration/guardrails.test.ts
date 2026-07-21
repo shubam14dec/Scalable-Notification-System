@@ -538,6 +538,46 @@ describe('G2 daily token budget', () => {
     expect(h.maxDailyTokens).toBe(30);
   });
 
+  test('platform budget-note is NOT replayed to the model (lesson §13 fold)', async () => {
+    // The budget note is PLATFORM-authored, not the model's words. If it replays
+    // as an assistant turn, GLM parrots it verbatim on later turns even after the
+    // budget clears (observed live). It must be tagged and folded out of replay.
+    const foldAgentId = await createManagedAgent('g2-fold-agent', 'G2 Fold Agent');
+    createdAgentIds.push(foldAgentId);
+    await pool.query('update agents set max_daily_tokens = 30 where id = $1', [foldAgentId]);
+    await incrDayTokens(foldAgentId, 50);
+
+    // Turn 1: budget trips → the note is stored, tagged raw.platformNote, no call.
+    const before = llmSeen.length;
+    const t1 = await send('g2-fold-agent', 'fold-user', 'first message', 'fold-1');
+    await runWorker(t1.conversationId, t1.messageId);
+    expect(llmSeen.length).toBe(before);
+    expect(await latestAgentContent(t1.conversationId)).toBe(BUDGET_NOTE);
+    const noteRow = await pool.query<{ raw: { platformNote?: boolean } }>(
+      `select raw from conversation_messages
+         where conversation_id = $1 and role = 'agent' and content = $2
+         order by created_at desc limit 1`,
+      [t1.conversationId, BUDGET_NOTE],
+    );
+    expect(noteRow.rows[0].raw.platformNote).toBe(true);
+
+    // Clear the budget → the next turn is answered by the model.
+    await pool.query('update agents set max_daily_tokens = null where id = $1', [foldAgentId]);
+    llmQueue = [llmText('Sure, how can I help?')];
+    const t2 = await send('g2-fold-agent', 'fold-user', 'second message', 'fold-2');
+    await runWorker(t2.conversationId, t2.messageId);
+
+    // The model WAS called, and the history it received carries NO copy of the
+    // platform note (the fold kept it out), while the real user turns DID replay.
+    expect(llmSeen.length).toBeGreaterThan(before);
+    const sent = JSON.stringify(llmSeen.at(-1)!.messages);
+    expect(sent).not.toContain(BUDGET_NOTE);
+    expect(sent).toContain('first message');
+    expect(sent).toContain('second message');
+    // And the turn produced a normal, model-authored reply.
+    expect(await latestAgentContent(t2.conversationId)).toBe('Sure, how can I help?');
+  });
+
   test('with the reserved pair: exactly 1 ops event; a 2nd trip same day stays 1 (debounced)', async () => {
     // Opt in: the tenant wires an 'approvals' ops subscriber (the 'agent-approvals'
     // workflow already exists from beforeAll). Use a FRESH agent so its

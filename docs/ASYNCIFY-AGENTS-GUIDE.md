@@ -237,9 +237,10 @@ it trips, the agent goes quietly unavailable to customers —
 > I'm temporarily unavailable right now — the team has been notified. Please try
 > again later.
 
-— no model call is made, the team is paged **once** (if approval notifications are
-wired, section 8), and the agent's **Health** view shows the day's tokens against
-the limit. Raise the limit and it resumes on the very next turn.
+— no model call is made, the team is paged **once** (if ops notifications are
+wired — see *Where the alerts go* below), and the agent's **Health** view shows
+the day's tokens against the limit. Raise the limit and it resumes on the very
+next turn.
 
 **Size the budget from real data, not a guess.** The Health view shows **tokens
 used today** — watch it across a normal day, then set the limit to a comfortable
@@ -252,6 +253,34 @@ drift slightly under retries; the exact record always lives in the dashboard's
 audit trail. The guardrail's only job is to decide, in the moment, whether to pump
 the brakes. Full field reference (the `guard` shape, the frozen card format):
 `docs/AGENT-TOOLS.md`.
+
+### Where the alerts go — setting up ops notifications
+
+The budget breaker and every pending approval reach the team the **same** way, and
+Sam wires it once with two ordinary product actions:
+
+1. **Create the ops workflow.** On the **Workflows** page, add a workflow with the
+   reserved key **`agent-approvals`**. It's a normal workflow — give it whatever
+   steps the team wants (an email to on-call, an in-app note, an SMS). The platform
+   triggers it on ops events: a tool pausing for approval, and the daily budget
+   tripping.
+2. **Give the ops audience an address.** Put a real contact on the reserved
+   **`approvals`** subscriber — one upsert from Acme's backend:
+
+   ```ts
+   await asyncify.subscribers.upsert({ subscriberId: 'approvals', email: 'oncall@acme.com' });
+   ```
+
+   The **Add approver** button on the **Approvals** page already creates this
+   subscriber when Sam's team links Telegram; this just adds an email or SMS
+   address to the same one.
+
+Two hats, one audience: Telegram and Slack surfaces can **approve** (their cards
+carry buttons); email and SMS only **inform**.
+
+Honest boundary: if the `agent-approvals` workflow doesn't exist, these alerts are
+**silently skipped** — the platform never invents a recipient, and the dashboard's
+Approvals page stays the authoritative record. No workflow, no ping, by design.
 
 ---
 

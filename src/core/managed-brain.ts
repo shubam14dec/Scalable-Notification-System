@@ -359,6 +359,12 @@ export async function runManagedTurn(
             ? `I've asked a teammate to approve ${names[0]} — I'll follow up here as soon as it's decided.`
             : `I've asked a teammate to approve these actions (${names.join(', ')}) — ` +
               `I'll follow up here as soon as they're decided.`;
+        // NOT tagged platformNote: this note is conversationally TRUE (the agent
+        // really did request approval) and the follow-up turn SHOULD see it as
+        // its own prior words — replaying it is honest, and imitating "I've asked
+        // a teammate" is harmless (there's no false claim to parrot). Contrast
+        // the budget-pause note, which is platform bookkeeping the model never
+        // authored — that one is tagged and excluded from replay.
         return { reply: note, resolved, usage, trace: trace() };
       }
       continue;
@@ -429,6 +435,18 @@ function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] 
       continue;
     }
     if (m.role === 'agent') {
+      // Platform-authored replies (raw.platformNote) are NOT the model's words.
+      // Excluded entirely — the deleted-row idiom — never replayed as an
+      // assistant turn: a budget-pause note that replays as prose gets IMITATED
+      // (GLM parroted it verbatim after the budget cleared, live). Unlike a tool
+      // action, a budget pause carries no conversational fact the model must
+      // reason about later, so there is nothing to fold — and any prose
+      // annotation would itself be imitable (lesson §13: never show an LLM a
+      // marker it must not write).
+      if ((m.raw as { platformNote?: boolean } | null)?.platformNote) {
+        pending = [];
+        continue;
+      }
       const calls = pending.map((p) => ({ id: `hist_${p.id}`, ...p.action }));
       // A reply that carried buttons replays as the present_buttons call
       // that produced it — same honesty rule as the breadcrumb actions.
