@@ -27,6 +27,7 @@ import {
   type Agent,
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
+import { enqueueSummarize } from '../../core/episodic';
 import { CardSchema } from '../../shared/cards';
 import { logExec } from '../../core/execution-log';
 import { tenantRateLimit } from '../rate-limit';
@@ -691,6 +692,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
       // Fire the resolved event exactly once — only when THIS call did the flip.
       const flipped = await resolveConversation(conversation.id, 'resolved manually');
       if (flipped) {
+        // Phase 23 (D7): summarize + embed on operator resolve (managed-only job;
+        // idempotent jobId). Only when THIS call did the flip.
+        await enqueueSummarize(req.tenant.id, conversation.id);
         const agent = await getAgentById(conversation.agent_id);
         if (agent && agent.runtime === 'bridge' && agent.bridge_url) {
           await getQueue(QUEUE.CONVERSATION).add(

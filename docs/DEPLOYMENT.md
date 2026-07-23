@@ -84,3 +84,14 @@ tunnel was never a feature; it was a stand-in for DNS.
 counters (daily token budget, per-tool rate cap) ride the existing Redis, and the
 eval-run queue rides the existing worker — no new service, secret, or env var.
 Deploy day is the checklist above, unchanged.
+
+**Agent knowledge & memory add nothing global either.** Grounding (indexed
+knowledge) and episodic memory run entirely on **two per-tenant BYO
+credentials** each tenant adds itself on the **Integrations** page — an
+OpenAI-shaped **embeddings endpoint** and a **Pinecone** vector store — exactly
+like every other provider (Twilio, FCM, an LLM key). There is **no shared infra
+change**: the Postgres image is untouched (it stores chunk text, statuses, and
+vector ids only — no vector extension), and the indexing/summary work rides the
+existing worker. The one env var that exists, `PINECONE_CONTROL_URL`, **defaults
+correctly to `https://api.pinecone.io`** and is only a test / self-host seam —
+**leave it unset in production; there is no deploy-day action for it.**

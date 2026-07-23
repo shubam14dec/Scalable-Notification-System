@@ -31,6 +31,10 @@ const RESERVED_TOOL_NAMES = [
   'present_choices',
   'present_buttons',
   'request_input',
+  // Phase 23 built-ins: a custom def with these names would SHADOW the
+  // built-in (custom dispatch is checked first in executeTool).
+  'search_knowledge',
+  'search_history',
 ];
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;

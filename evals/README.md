@@ -96,6 +96,13 @@ any non-skipped scenario failed all its attempts.
 | `replyNotContains: "s"` | the reply does **not** include `s` |
 | `pendingApproval: X` | a gated tool `X` paused for human approval this turn |
 
+`X` is any tool name the agent can call — a custom tool, a built-in
+(`resolve_conversation`, `trigger_workflow`…), or a **built-in retrieval tool**.
+So for a grounded agent, `{ "expect": { "tool": "search_knowledge" } }` asserts
+it actually looked a policy question up before answering (that tool is offered
+only once the agent has a `ready` knowledge source — see
+[docs/AGENT-TOOLS.md](../docs/AGENT-TOOLS.md), *Built-in retrieval tools*).
+
 ## How tool calls are observed (and why the read path is the DB)
 
 The DRIVE path is the real product path: `POST /v1/agents/:id/messages` → queue →

@@ -226,6 +226,35 @@ export interface AgentEvalRun {
   finishedAt: string | null;
 }
 
+/**
+ * One knowledge source an agent can search — pasted text or a fetched URL,
+ * chunked and embedded for retrieval. `status` walks
+ * pending → indexing → ready (or → error); `chunkCount` is 0 until ready.
+ */
+export interface KnowledgeSource {
+  id: string;
+  name: string;
+  kind: 'text' | 'url';
+  status: 'pending' | 'indexing' | 'ready' | 'error';
+  /** Set only when `status` is 'error' — why indexing failed. */
+  error: string | null;
+  /** Number of embedded chunks; 0 until the source reaches 'ready'. */
+  chunkCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateKnowledgeSourceOptions {
+  /** Display name, unique per agent (a duplicate → 409). */
+  name: string;
+  /** 'text' carries `text`; 'url' carries `url` (fetched + converted server-side). */
+  kind: 'text' | 'url';
+  /** Required when `kind` is 'text'; the raw material to index (≤1 MB). */
+  text?: string;
+  /** Required when `kind` is 'url'; SSRF-checked at write time. */
+  url?: string;
+}
+
 /** Which connections carry approval cards; each field null when unset. */
 export interface ApprovalSettings {
   slackConnectionId: string | null;
@@ -487,6 +516,43 @@ export class AsyncifyClient {
         this.request<{ run: AgentEvalRun }>(
           'GET',
           `/v1/agents/${encodeURIComponent(identifier)}/evals/runs/${encodeURIComponent(runId)}`,
+        ),
+    },
+
+    /**
+     * Per-agent knowledge sources (managed runtime): the material the agent
+     * grounds its answers in. Requires the tenant's embeddings + vector-store
+     * integrations to exist first (else create → 400). Reads as
+     * `client.agents.knowledge.create('acme-support', { name, kind, text })`.
+     */
+    knowledge: {
+      /** Every source on this agent, with its indexing status + chunk count. */
+      list: (identifier: string) =>
+        this.request<{ sources: KnowledgeSource[] }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/knowledge`,
+        ),
+      /**
+       * Add a source. Returns it in status 'pending'; indexing runs async —
+       * poll `list` until `status` is 'ready'. A duplicate name → 409.
+       */
+      create: (identifier: string, options: CreateKnowledgeSourceOptions) =>
+        this.request<{ source: KnowledgeSource }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/knowledge`,
+          options,
+        ),
+      /** Re-embed a source (re-fetches a URL; re-embeds a text source in place). */
+      reindex: (identifier: string, sourceId: string) =>
+        this.request<{ status: string }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/knowledge/${encodeURIComponent(sourceId)}/reindex`,
+        ),
+      /** Delete a source and its chunks; the vectors are cleaned up async. */
+      remove: (identifier: string, sourceId: string) =>
+        this.request<{ deleted: boolean }>(
+          'DELETE',
+          `/v1/agents/${encodeURIComponent(identifier)}/knowledge/${encodeURIComponent(sourceId)}`,
         ),
     },
   };

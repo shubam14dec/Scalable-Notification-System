@@ -62,6 +62,21 @@ export async function runInactivitySweep(): Promise<number> {
     }
     await pipe.exec();
 
+    // Phase 23 (D7): managed conversations that auto-resolved get summarized +
+    // embedded off the hot path. Bulk-enqueue (the 10-20M rule: never a per-row
+    // round trip); jobId = summarize-<convId> is idempotent, and the job itself
+    // self-filters trivial (<2-turn) conversations.
+    const managedRows = swept.filter((r) => r.agent_runtime === 'managed');
+    if (managedRows.length > 0) {
+      await getQueue(QUEUE.KNOWLEDGE).addBulk(
+        managedRows.map((r) => ({
+          name: `summarize-${r.id}`,
+          data: { kind: 'summarize', tenantId: r.tenant_id, conversationId: r.id },
+          opts: { jobId: `summarize-${r.id}`, attempts: 5 },
+        })),
+      );
+    }
+
     // Bridge agents also get a resolved lifecycle event (managed agents have
     // no bridge to notify). One bulk enqueue per batch; the jobId keys on the
     // row's idle epoch so a re-swept row can't double-fire the event.

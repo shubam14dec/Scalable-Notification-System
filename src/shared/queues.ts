@@ -43,6 +43,7 @@ export const QUEUE = {
    * (minutes), never a hot path; jobId = runId so a re-enqueue can't double-run.
    */
   EVAL_RUN: 'eval-run',
+  KNOWLEDGE: 'knowledge',
 } as const;
 
 export function deliveryQueueName(channel: Channel, priority: Priority): string {
@@ -57,6 +58,7 @@ export const ALL_QUEUE_NAMES: string[] = [
   QUEUE.DLQ,
   QUEUE.CONVERSATION,
   QUEUE.EVAL_RUN,
+  QUEUE.KNOWLEDGE,
   ...CHANNELS.flatMap((c) => PRIORITIES.map((p) => deliveryQueueName(c, p))),
 ];
 

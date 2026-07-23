@@ -27,6 +27,7 @@ import { registerIdentityRoutes } from './routes/identities';
 import { registerMeRoutes } from './routes/me';
 import { registerDeviceRoutes } from './routes/devices';
 import { registerAgentEvalRoutes } from './routes/agent-evals';
+import { registerKnowledgeRoutes } from './routes/knowledge';
 import { registerSmsWebhookRoutes } from './routes/sms-webhooks';
 import { registerConnectionRoutes } from './routes/connections';
 import { registerHandoffRoutes } from './routes/handoff';
@@ -88,6 +89,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerMeRoutes(app);
   registerDeviceRoutes(app);
   registerAgentEvalRoutes(app);
+  registerKnowledgeRoutes(app);
   registerSmsWebhookRoutes(app);
   registerConnectionRoutes(app);
   registerSettingsRoutes(app);

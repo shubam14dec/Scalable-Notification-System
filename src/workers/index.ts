@@ -24,6 +24,7 @@ import { processStatus } from './processors/status.processor';
 import { processOverflow } from './processors/overflow.processor';
 import { processConversation, onConversationDead } from './processors/conversation.processor';
 import { processEvalRun } from './processors/eval-run.processor';
+import { processKnowledge, onKnowledgeDead } from './processors/knowledge.processor';
 import { runInactivitySweep, SWEEP_INTERVAL_MS } from './inactivity-sweep';
 
 const workers: Worker[] = [];
@@ -64,6 +65,12 @@ function main() {
   // which the conversation workers (concurrency 10) service in parallel, so an
   // eval run never starves the pipeline it drives.
   makeWorker(QUEUE.EVAL_RUN, processEvalRun, { concurrency: 1 });
+
+  // Knowledge ingestion (Phase 23): chunk + embed source content, drive
+  // episodic summaries, and clean up vectors. Concurrency 1 keeps a tenant's
+  // ingestion serial (D4) — it's an explicit user action, never a hot path,
+  // and the embeddings/vector calls block on external BYO endpoints.
+  makeWorker(QUEUE.KNOWLEDGE, processKnowledge, { concurrency: 1 }, onKnowledgeDead);
 
   // Overflow trickle: low concurrency + a global replay cap, so diverted
   // bursts re-enter the pipeline gently no matter how many tenants burst.

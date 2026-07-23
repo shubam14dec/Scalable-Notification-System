@@ -10,6 +10,8 @@ import { withSpan } from '../shared/tracing';
 import { listWorkflows } from '../db/repositories';
 import { pool } from '../db/pool';
 import { internalTrigger } from './internal-trigger';
+import { getEmbeddingsConfig, embedTexts, type EmbeddingsConfig } from './embeddings';
+import { getVectorStore, type VectorStore } from './vector-store';
 import {
   listToolDefs,
   recordToolCall,
@@ -126,20 +128,15 @@ interface Subscriber {
   push_token: string | null;
 }
 
-export async function runManagedTurn(
-  agent: Agent,
-  conversation: Conversation,
-  subscriber: Subscriber,
-  history: ConversationMessage[],
-  inbound: ConversationMessage,
-  hooks?: {
-    onModelCall?: () => void;
-    /** Fired BEFORE each tool executes — drives the plan card's per-step post. */
-    onToolCall?: (tool: string, input: Record<string, unknown>) => void | Promise<void>;
-    /** Fired AFTER each tool executes — closes that step (done/error). */
-    onToolResult?: (tool: string, ok: boolean) => void | Promise<void>;
-  },
-): Promise<BrainTurnResult> {
+/**
+ * Build the Anthropic (or Anthropic-compatible) client for a managed agent —
+ * shared by the turn loop and the episodic summarizer so both open the sealed
+ * key and SSRF-pin the base URL identically. Throws PermanentError for config
+ * faults (no creds, blocked base URL) that a retry can never fix.
+ */
+export async function buildManagedClient(
+  agent: Pick<Agent, 'identifier' | 'llm_base_url' | 'llm_credentials'>,
+): Promise<Anthropic> {
   if (!agent.llm_credentials) {
     throw new PermanentError(`managed agent ${agent.identifier} has no LLM credentials`);
   }
@@ -155,8 +152,7 @@ export async function runManagedTurn(
     }
   }
   const { apiKey } = JSON.parse(openSecret(agent.llm_credentials)) as { apiKey: string };
-
-  const client = new Anthropic({
+  return new Anthropic({
     apiKey,
     baseURL: agent.llm_base_url ?? undefined,
     timeout: REQUEST_TIMEOUT_MS,
@@ -171,6 +167,59 @@ export async function runManagedTurn(
         dispatcher: safeDispatcher(),
       })) as unknown as typeof globalThis.fetch,
   });
+}
+
+/**
+ * Phase 23 retrieval context, loaded ONCE per turn: the tenant's embeddings +
+ * vector-store handles plus whether each corpus exists. The two built-in search
+ * tools are offered only when their `knowledge`/`history` flag is true, and the
+ * executors reuse `cfg`/`store` so a turn makes at most one existence check per
+ * corpus (never a config re-load mid-loop).
+ */
+interface RetrievalContext {
+  cfg: EmbeddingsConfig;
+  store: VectorStore;
+  /** search_knowledge offered: this agent has >=1 ready knowledge source. */
+  knowledge: boolean;
+  /** search_history offered: this subscriber has >=1 embedded past summary. */
+  history: boolean;
+}
+
+/** Cheap existence check: does this agent have any fully-indexed source? */
+async function agentHasReadySource(agentId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `select 1 from knowledge_sources where agent_id = $1 and status = 'ready' limit 1`,
+    [agentId],
+  );
+  return rows.length > 0;
+}
+
+/** Cheap existence check: does this subscriber have any COMPLETE past summary
+ * for this agent (embedding_dim set = vector written, not a half-finished row)? */
+async function subscriberHasSummary(agentId: string, subscriberId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `select 1 from conversation_summaries
+       where agent_id = $1 and subscriber_id = $2 and embedding_dim is not null limit 1`,
+    [agentId, subscriberId],
+  );
+  return rows.length > 0;
+}
+
+export async function runManagedTurn(
+  agent: Agent,
+  conversation: Conversation,
+  subscriber: Subscriber,
+  history: ConversationMessage[],
+  inbound: ConversationMessage,
+  hooks?: {
+    onModelCall?: () => void;
+    /** Fired BEFORE each tool executes — drives the plan card's per-step post. */
+    onToolCall?: (tool: string, input: Record<string, unknown>) => void | Promise<void>;
+    /** Fired AFTER each tool executes — closes that step (done/error). */
+    onToolResult?: (tool: string, ok: boolean) => void | Promise<void>;
+  },
+): Promise<BrainTurnResult> {
+  const client = await buildManagedClient(agent);
 
   const workflowKeys = (await listWorkflows(conversation.tenant_id)).map(
     (w: { key: string }) => w.key,
@@ -179,7 +228,30 @@ export async function runManagedTurn(
   // tool menu; a name->def map hands executeTool the routing + endpoint/secret.
   const toolDefs = await listToolDefs(conversation.tenant_id, agent.id, { activeOnly: true });
   const defsByName = new Map(toolDefs.map((d) => [d.name, d]));
-  const tools = buildTools(workflowKeys, toolDefs);
+
+  // Phase 23: retrieval is offered only when the tenant has BOTH an embeddings
+  // config and a vector store (like any channel needing its provider) AND the
+  // corpus exists — one existence check per corpus, cached for the turn.
+  const embeddingsCfg = await getEmbeddingsConfig(conversation.tenant_id);
+  const vectorStore = embeddingsCfg ? await getVectorStore(conversation.tenant_id) : null;
+  let retrieval: RetrievalContext | null = null;
+  if (embeddingsCfg && vectorStore) {
+    const [knowledge, history] = await Promise.all([
+      agentHasReadySource(agent.id),
+      subscriberHasSummary(agent.id, conversation.subscriber_id),
+    ]);
+    retrieval = { cfg: embeddingsCfg, store: vectorStore, knowledge, history };
+  }
+
+  const tools = buildTools(workflowKeys, toolDefs, {
+    knowledge: retrieval?.knowledge ?? false,
+    history: retrieval?.history ?? false,
+  });
+
+  // D6 grounding scaffold: when search_knowledge is offered, the system content
+  // gains a directive to answer factual questions ONLY from retrieved results
+  // and cite the source; a one-liner points at search_history when offered.
+  const systemContent = buildSystem(agent.system_prompt, retrieval);
 
   // The last tokens before generation win with weak models: a per-turn
   // reminder rides the CURRENT message only — synthesized at request time,
@@ -236,7 +308,7 @@ export async function runManagedTurn(
         client.messages.create({
           model,
           max_tokens: agent.max_tokens ?? DEFAULT_MAX_TOKENS,
-          ...(agent.system_prompt ? { system: agent.system_prompt } : {}),
+          ...(systemContent ? { system: systemContent } : {}),
           tools,
           messages,
         }),
@@ -320,7 +392,7 @@ export async function runManagedTurn(
           'brain.tool',
           { agent: agent.identifier, tool: use.name },
           () =>
-            executeTool(use, agent, conversation, subscriber, inbound, defsByName, {
+            executeTool(use, agent, conversation, subscriber, inbound, defsByName, retrieval, {
               onResolve: () => {
                 resolved = true;
               },
@@ -569,7 +641,11 @@ export function sanitizeReply(text: string): { text: string; forged: boolean } {
 }
 
 /** The tool menu — descriptions say WHEN to call, not just what it does. */
-function buildTools(workflowKeys: string[], toolDefs: AgentToolDef[] = []): Anthropic.Tool[] {
+function buildTools(
+  workflowKeys: string[],
+  toolDefs: AgentToolDef[] = [],
+  retrieval: { knowledge: boolean; history: boolean } = { knowledge: false, history: false },
+): Anthropic.Tool[] {
   const tools: Anthropic.Tool[] = [
     {
       name: 'set_metadata',
@@ -717,6 +793,48 @@ function buildTools(workflowKeys: string[], toolDefs: AgentToolDef[] = []): Anth
     });
   }
 
+  // Phase 23 retrieval tools ride the same menu, offered only when the corpus
+  // exists. Anti-fabrication voice: they say WHEN to call and that facts must
+  // come FROM the results — never from the model's own prior knowledge.
+  if (retrieval.knowledge) {
+    tools.push({
+      name: 'search_knowledge',
+      description:
+        "Look up the answer in this business's own indexed knowledge (policies, " +
+        'product facts, documentation). Call it BEFORE answering any policy, ' +
+        'product, or factual question — do NOT answer such questions from your ' +
+        'own prior knowledge. It returns numbered excerpts, each tagged ' +
+        '[source: <name>]; base your reply on them and cite the source. If it ' +
+        'returns no relevant excerpts, say you do not know rather than guessing.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: "What to look up, in the user's own words" },
+        },
+        required: ['query'],
+      },
+    });
+  }
+
+  if (retrieval.history) {
+    tools.push({
+      name: 'search_history',
+      description:
+        "Look up this customer's earlier resolved conversations with you. Call it " +
+        'when the customer refers to prior contact ("like last time", "the issue ' +
+        'from before") and you need that context. It returns short dated ' +
+        'summaries; use them only as background, and never state a past detail ' +
+        'you did not find here.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What past topic or issue to recall' },
+        },
+        required: ['query'],
+      },
+    });
+  }
+
   // Customer-registered tools ride the same menu. `parameters` IS the JSON
   // schema the customer stored; a name collision with a built-in never happens
   // in practice (the built-ins own their names), and if it did the built-in
@@ -729,6 +847,35 @@ function buildTools(workflowKeys: string[], toolDefs: AgentToolDef[] = []): Anth
     });
   }
   return tools;
+}
+
+/**
+ * D6 grounding scaffold. Directives, not imitable prose: the citation format
+ * [source: …] is the model's OWN intended output (a citation it should write),
+ * not a platform receipt like [action taken:], so appending it here is safe.
+ * Returns undefined when there is neither a system prompt nor any retrieval —
+ * so a plain agent's request stays byte-for-byte as before.
+ */
+function buildSystem(
+  systemPrompt: string | null,
+  retrieval: RetrievalContext | null,
+): string | undefined {
+  let system = systemPrompt ?? '';
+  if (retrieval?.knowledge) {
+    system +=
+      "\n\nYou have a search_knowledge tool backed by this business's own indexed " +
+      'material. Answer policy, product, and factual questions ONLY from ' +
+      'search_knowledge results — never from your own prior knowledge. For any ' +
+      'fact you state from them, cite the source inline as [source: <name>]. If ' +
+      'the results do not contain the answer, say you do not know and offer to ' +
+      'connect the customer with a human — never invent or guess a policy detail.';
+  }
+  if (retrieval?.history) {
+    system +=
+      "\n\nYou may check this customer's past conversations with search_history " +
+      'when they reference prior contact.';
+  }
+  return system.length > 0 ? system : undefined;
 }
 
 /** The outcome of one tool call. `pausedToolName` is set only when an
@@ -747,6 +894,7 @@ async function executeTool(
   subscriber: Subscriber,
   inbound: ConversationMessage,
   defsByName: Map<string, AgentToolDef>,
+  retrieval: RetrievalContext | null,
   hooks: {
     onResolve: () => void;
     onButtons: (buttons: ReplyButton[]) => void;
@@ -759,6 +907,17 @@ async function executeTool(
   const def = defsByName.get(use.name);
   if (def) {
     return executeCustomTool(use, def, agent, conversation, subscriber, inbound);
+  }
+
+  // Phase 23 retrieval tools. Offered only when `retrieval` is present; a model
+  // that somehow calls one without it gets a benign is_error.
+  if (use.name === 'search_knowledge') {
+    if (!retrieval) return { message: 'knowledge search is not available', isError: true };
+    return searchKnowledge(String(input.query ?? ''), agent, retrieval);
+  }
+  if (use.name === 'search_history') {
+    if (!retrieval) return { message: 'history search is not available', isError: true };
+    return searchHistory(String(input.query ?? ''), agent, conversation, retrieval);
   }
 
   if (use.name === 'present_buttons') {
@@ -924,6 +1083,153 @@ async function executeTool(
   }
 
   return { message: `unknown tool ${use.name}`, isError: true };
+}
+
+/** Total budget for a retrieval tool result (kept well under the model's window). */
+const RETRIEVAL_RESULT_MAX = 6 * 1024;
+
+/**
+ * search_knowledge executor: embed the query (1 provider call), pull the top-4
+ * chunks from the vector store scoped to this agent, then fetch their TEXT +
+ * source name from Postgres (the system of record) IN MATCH ORDER. Result is
+ * numbered excerpts each prefixed [source: <name>], capped at 6KB. Empty ->
+ * a plain "no relevant knowledge found." Errors -> is_error, never a throw.
+ */
+async function searchKnowledge(
+  query: string,
+  agent: Agent,
+  retrieval: RetrievalContext,
+): Promise<ToolOutcome> {
+  if (!query.trim()) return { message: 'query is required', isError: true };
+  try {
+    const [vector] = await embedTexts(retrieval.cfg, [query]);
+    const matches = await retrieval.store.query({
+      vector,
+      topK: 4,
+      filter: { agentId: agent.id },
+    });
+    if (matches.length === 0) return { message: 'no relevant knowledge found.' };
+
+    // NOTE: slice B owns src/db/knowledge.repo.ts (getByIds) — not present when
+    // this was written, so the chunk fetch is an inline parameterized query the
+    // manager can later swap for the repo helper. embedding_dim guard drops any
+    // stale-dim chunk the store might surface (D2 mixed-dim protection).
+    const ids = matches.map((m) => m.id);
+    const { rows } = await pool.query<{ id: string; content: string; source_name: string }>(
+      `select c.id, c.content, s.name as source_name
+         from knowledge_chunks c
+         join knowledge_sources s on s.id = c.source_id
+        where c.id = any($1::uuid[]) and c.embedding_dim = $2`,
+      [ids, retrieval.cfg.dim],
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const excerpts = matches
+      .map((m) => byId.get(m.id))
+      .filter((r): r is { id: string; content: string; source_name: string } => Boolean(r))
+      .map((r) => ({ tag: `[source: ${r.source_name}] `, body: r.content }));
+    if (excerpts.length === 0) return { message: 'no relevant knowledge found.' };
+    return { message: formatExcerpts(excerpts) };
+  } catch (err) {
+    return { message: `knowledge search failed: ${(err as Error).message}`, isError: true };
+  }
+}
+
+/**
+ * search_history executor: same shape over conversation_summaries, top-3,
+ * scoped to this agent AND this subscriber. Result lines are
+ * "<relative age> — <summary>". Empty/errors mirror searchKnowledge.
+ */
+async function searchHistory(
+  query: string,
+  agent: Agent,
+  conversation: Conversation,
+  retrieval: RetrievalContext,
+): Promise<ToolOutcome> {
+  if (!query.trim()) return { message: 'query is required', isError: true };
+  try {
+    const [vector] = await embedTexts(retrieval.cfg, [query]);
+    const matches = await retrieval.store.query({
+      vector,
+      topK: 3,
+      filter: { agentId: agent.id, subscriberId: conversation.subscriber_id },
+    });
+    if (matches.length === 0) return { message: 'no relevant past conversations found.' };
+
+    const ids = matches.map((m) => m.id);
+    const { rows } = await pool.query<{ id: string; summary: string; created_at: string }>(
+      `select id, summary, created_at from conversation_summaries
+        where id = any($1::uuid[]) and embedding_dim = $2`,
+      [ids, retrieval.cfg.dim],
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const excerpts = matches
+      .map((m) => byId.get(m.id))
+      .filter((r): r is { id: string; summary: string; created_at: string } => Boolean(r))
+      .map((r) => ({ tag: `${relativeAge(r.created_at)} — `, body: r.summary }));
+    if (excerpts.length === 0) return { message: 'no relevant past conversations found.' };
+    return { message: formatExcerpts(excerpts, false) };
+  } catch (err) {
+    return { message: `history search failed: ${(err as Error).message}`, isError: true };
+  }
+}
+
+/**
+ * Join retrieval excerpts under a shared byte budget, truncating each body's
+ * TAIL with an ellipsis so the total never exceeds RETRIEVAL_RESULT_MAX.
+ * `numbered` prefixes "N. " (knowledge excerpts); history lines carry their own
+ * date tag instead.
+ */
+function formatExcerpts(
+  items: Array<{ tag: string; body: string }>,
+  numbered = true,
+): string {
+  const lines: string[] = [];
+  let used = 0;
+  items.forEach((it, i) => {
+    const prefix = (numbered ? `${i + 1}. ` : '') + it.tag;
+    const sep = lines.length > 0 ? 2 : 0; // the "\n\n" joiner
+    const remaining = RETRIEVAL_RESULT_MAX - used - sep - Buffer.byteLength(prefix, 'utf8');
+    if (remaining <= 0) return;
+    let body = it.body.trim();
+    if (Buffer.byteLength(body, 'utf8') > remaining) {
+      body = truncateBytes(body, Math.max(0, remaining - 3)) + '…';
+    }
+    const line = prefix + body;
+    lines.push(line);
+    used += sep + Buffer.byteLength(line, 'utf8');
+  });
+  return lines.join('\n\n');
+}
+
+/** Truncate a string to at most `maxBytes` UTF-8 bytes without splitting a codepoint. */
+function truncateBytes(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return s;
+  let lo = 0;
+  let hi = s.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (Buffer.byteLength(s.slice(0, mid), 'utf8') <= maxBytes) lo = mid;
+    else hi = mid - 1;
+  }
+  return s.slice(0, lo);
+}
+
+/** Coarse human age of a past summary: "just now" / "3 days ago" / "2 weeks ago". */
+function relativeAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+  const weeks = Math.floor(days / 7);
+  if (days < 30) return `${weeks} week${weeks === 1 ? '' : 's'} ago`;
+  const months = Math.floor(days / 30);
+  if (days < 365) return `${months} month${months === 1 ? '' : 's'} ago`;
+  const years = Math.floor(days / 365);
+  return `${years} year${years === 1 ? '' : 's'} ago`;
 }
 
 /**

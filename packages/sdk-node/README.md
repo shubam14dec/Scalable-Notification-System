@@ -73,6 +73,30 @@ await asyncify.approvals.decide(approvals[0].id, 'approve');
 await asyncify.settings.putApprovals({ slackConnectionId, slackChannelId: 'C0123' });
 ```
 
+## Grounding an agent in your own knowledge
+
+Give a managed agent material to answer from — pasted text or a URL. Indexing
+runs async, so poll `list` until the source is `ready` (needs the tenant's
+embeddings + vector-store integrations configured first):
+
+```ts
+const { source } = await asyncify.agents.knowledge.create('acme-support', {
+  name: 'returns-policy',
+  kind: 'text',
+  text: 'Opened electronics can be returned within 14 days…',
+});
+
+// poll until ready
+const { sources } = await asyncify.agents.knowledge.list('acme-support');
+
+// re-embed after the underlying page/text changes, or drop a source
+await asyncify.agents.knowledge.reindex('acme-support', source.id);
+await asyncify.agents.knowledge.remove('acme-support', source.id);
+```
+
+Once a source is `ready`, the managed brain is offered a `search_knowledge`
+tool and cites what it finds as `[source: returns-policy]`.
+
 ## API surface
 
 | Method | Purpose |
@@ -86,6 +110,7 @@ await asyncify.settings.putApprovals({ slackConnectionId, slackChannelId: 'C0123
 | `workflows.upsert / list` · `templates.upsert / get / list / delete` | Manage workflows & MJML templates |
 | `agents.create / list / get / update / rotateSecret / delete / linkToken` | Manage AI agents |
 | `agents.tools.create / list / update / delete / rotateSecret` | Per-agent custom tool registry |
+| `agents.knowledge.create / list / reindex / remove` | Per-agent knowledge sources for grounded answers |
 | `approvals.list / decide` | Human-in-the-loop tool-call queue |
 | `settings.getApprovals / putApprovals` | Which channels carry approval cards |
 | `subscriberToken(subscriberId, ttlSeconds?)` | Browser-safe inbox token |

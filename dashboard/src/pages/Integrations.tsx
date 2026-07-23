@@ -28,7 +28,10 @@ interface Integration {
 /** Credential form fields per provider (mirrors the API's validation schemas). */
 const PROVIDER_FIELDS: Record<
   string,
-  { channel: string; fields: Array<{ key: string; label: string; type?: string; textarea?: boolean }> }
+  {
+    channel: string;
+    fields: Array<{ key: string; label: string; type?: string; textarea?: boolean; placeholder?: string }>;
+  }
 > = {
   smtp: {
     channel: 'email',
@@ -66,7 +69,28 @@ const PROVIDER_FIELDS: Record<
     channel: 'push',
     fields: [{ key: 'serviceAccountJson', label: 'Service account JSON', textarea: true }],
   },
+  // Phase 23 (knowledge/episodic): an OpenAI-shaped embeddings endpoint and a
+  // Pinecone vector store — the two BYO credentials RAG needs. Same catalog +
+  // sealed-credentials + /test idiom as every other provider.
+  'openai-compat': {
+    channel: 'embeddings',
+    fields: [
+      { key: 'baseUrl', label: 'Base URL', placeholder: 'https://api.openai.com/v1' },
+      { key: 'apiKey', label: 'API key', type: 'password' },
+      { key: 'model', label: 'Model', placeholder: 'text-embedding-3-small' },
+    ],
+  },
+  pinecone: {
+    channel: 'vectorstore',
+    fields: [
+      { key: 'apiKey', label: 'API key', type: 'password' },
+      { key: 'indexName', label: 'Index name', placeholder: 'acme-knowledge' },
+    ],
+  },
 };
+
+/** Channels whose Test button validates config (no recipient) rather than sending. */
+const CONFIG_TEST_CHANNELS = new Set(['embeddings', 'vectorstore']);
 
 function TestIntegrationModal({
   integration,
@@ -129,6 +153,72 @@ function TestIntegrationModal({
             </Button>
           </div>
         </form>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Config-validation Test for the embeddings + vector-store providers. No
+ * recipient: the probe embeds a "ping" (embeddings) or creates/validates the
+ * index (pinecone) and returns a detail line we surface verbatim.
+ */
+function ConfigTestModal({
+  integration,
+  onClose,
+}: {
+  integration: Integration;
+  onClose: () => void;
+}) {
+  const isEmbeddings = integration.channel === 'embeddings';
+  const test = useMutation({
+    mutationFn: () =>
+      api<{ ok: boolean; dim?: number; host?: string; created?: boolean }>(
+        `/v1/integrations/${integration.id}/test`,
+        { method: 'POST' },
+      ),
+  });
+
+  // Shape per slice A's /test responses: embeddings -> {ok, dim};
+  // vectorstore -> {ok, dim, host, created}.
+  const detailLine =
+    test.data?.dim != null
+      ? `${test.data.dim} dimensions${test.data.created != null ? (test.data.created ? ' · index created' : ' · index validated') : ' recorded'}`
+      : 'Test passed.';
+
+  return (
+    <Modal open onClose={onClose} title={`Test ${integration.provider}`}>
+      {test.isSuccess ? (
+        <div className="space-y-3">
+          <p className="text-t2">
+            {isEmbeddings
+              ? 'Endpoint reachable — embedding dimension recorded.'
+              : 'Index ready at the recorded embedding dimension.'}
+          </p>
+          <Mono className="block text-t3">{detailLine}</Mono>
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-[12px] text-t3">
+            {isEmbeddings
+              ? 'Sends a test embedding ("ping") to validate the endpoint and record the dimension it returns.'
+              : 'Creates or validates the index at the embedding config’s recorded dimension. A dimension mismatch is reported here, never at query time.'}
+          </p>
+          {test.isError && <p className="text-[12px] text-err">{test.error.message}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={() => test.mutate()} disabled={test.isPending}>
+              {test.isPending ? 'Testing…' : 'Run test'}
+            </Button>
+          </div>
+        </div>
       )}
     </Modal>
   );
@@ -233,7 +323,12 @@ export default function IntegrationsPage() {
         />
       )}
 
-      {testing && <TestIntegrationModal integration={testing} onClose={() => setTesting(null)} />}
+      {testing &&
+        (CONFIG_TEST_CHANNELS.has(testing.channel) ? (
+          <ConfigTestModal integration={testing} onClose={() => setTesting(null)} />
+        ) : (
+          <TestIntegrationModal integration={testing} onClose={() => setTesting(null)} />
+        ))}
 
       <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add integration">
         <form
@@ -275,7 +370,7 @@ export default function IntegrationsPage() {
               </Field>
             ) : (
               <Field key={f.key} label={f.label}>
-                <Input name={f.key} type={f.type ?? 'text'} />
+                <Input name={f.key} type={f.type ?? 'text'} placeholder={f.placeholder} />
               </Field>
             ),
           )}

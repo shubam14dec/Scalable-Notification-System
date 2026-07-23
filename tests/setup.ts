@@ -14,3 +14,11 @@ process.env.PUBLIC_URL = 'http://localhost:3000';
 // the SSRF guard exactly the way local dev does (same code path, config
 // decides; prod leaves this empty).
 process.env.OUTBOUND_URL_ALLOW = 'localhost,127.0.0.1';
+
+// Phase 23: vector-store.ts captures the Pinecone CONTROL-plane URL in a
+// module-load const (`process.env.PINECONE_CONTROL_URL ?? api.pinecone.io`),
+// so a knowledge test's in-process fake control plane must be reachable at a
+// URL known BEFORE any import runs — hence a fixed loopback port pinned here
+// (fileParallelism is off, so at most one Pinecone-using file binds it at a
+// time). Only vector-store.ts reads this; other suites never dial it.
+process.env.PINECONE_CONTROL_URL ??= 'http://127.0.0.1:51733';

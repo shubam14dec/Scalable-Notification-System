@@ -703,3 +703,63 @@ alter table agents add column if not exists max_daily_tokens int;
 -- window (joined to conversations for the subscriber scope).
 create index if not exists agent_tool_calls_guard_idx
   on agent_tool_calls (tool_def_id, requested_at) where status = 'executed';
+
+-- ---- Phase 23: knowledge (RAG) + episodic memory ----
+-- Postgres is the SYSTEM OF RECORD: sources, chunk TEXT, statuses, and the
+-- vector ids (= row ids). Pinecone holds only id->embedding; deletes are
+-- driven from these rows via retryable jobs, never external filter-deletes.
+
+create table if not exists knowledge_sources (
+  id         uuid primary key default gen_random_uuid(),
+  tenant_id  uuid not null references tenants(id),
+  agent_id   uuid not null references agents(id) on delete cascade,
+  name       text not null,
+  kind       text not null default 'text',        -- text | url
+  -- kind url: {url}; kind text: {} — original content is NOT retained
+  -- beyond its chunks (the chunks ARE the indexed copy).
+  meta       jsonb not null default '{}',
+  status     text not null default 'pending',     -- pending|indexing|ready|error
+  error      text,
+  chunk_count int not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (agent_id, name)
+);
+
+create index if not exists knowledge_sources_agent_idx
+  on knowledge_sources (agent_id);
+
+-- One row per chunk; the row id doubles as the Pinecone vector id.
+create table if not exists knowledge_chunks (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants(id),
+  source_id     uuid not null references knowledge_sources(id) on delete cascade,
+  agent_id      uuid not null references agents(id) on delete cascade,
+  seq           int  not null,
+  content       text not null,
+  token_count   int  not null default 0,
+  embedding_dim int,                               -- null until embedded
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists knowledge_chunks_source_idx
+  on knowledge_chunks (source_id, seq);
+create index if not exists knowledge_chunks_agent_idx
+  on knowledge_chunks (agent_id);
+
+-- Episodic memory: one summarized, embedded row per RESOLVED conversation
+-- (managed agents, >=2 user turns). Row id doubles as the Pinecone id.
+create table if not exists conversation_summaries (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants(id),
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  agent_id        uuid not null references agents(id) on delete cascade,
+  subscriber_id   uuid not null references subscribers(id) on delete cascade,
+  summary         text not null,
+  embedding_dim   int,
+  created_at      timestamptz not null default now(),
+  unique (conversation_id)
+);
+
+create index if not exists conversation_summaries_subscriber_idx
+  on conversation_summaries (agent_id, subscriber_id);

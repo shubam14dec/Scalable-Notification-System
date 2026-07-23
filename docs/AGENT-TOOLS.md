@@ -2,7 +2,10 @@
 
 A **managed** agent ships with a fixed built-in menu (`trigger_workflow`,
 `set_metadata`, `resolve_conversation`, `present_buttons`, `present_choices`,
-`request_input`). **Custom tools** extend that menu with *your* code: you
+`request_input`), plus two **conditional** built-ins that appear only when
+there's something to search (`search_knowledge`, `search_history` — see
+**Built-in retrieval tools** below). **Custom tools** extend that menu with
+*your* code: you
 register a tool — a model-facing name, a description, and a JSON-Schema
 parameter shape — pointed at an **HTTPS endpoint you own**. Mid-conversation
 the model decides when to call it; the platform POSTs the arguments to your
@@ -31,6 +34,79 @@ what dispatches them. (Registration itself doesn't refuse a bridge agent, so a
 bridge agent that's later re-pointed to the managed runtime keeps its defs, but
 a bridge agent never calls them.) They're per-agent: each agent has its own
 registry.
+
+## Built-in retrieval tools (`search_knowledge`, `search_history`)
+
+Beyond the always-on built-in menu, a managed agent can gain **two more built-in
+tools** — one for its business's indexed knowledge, one for a customer's past
+conversations. They aren't registered or configured per tool; they appear
+**automatically, and only when there is something to search**. Both ride the
+tenant's **embeddings + vector-store integrations** (set up on the Integrations
+page — customer-facing walkthrough in
+[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md), *"Teach your agent"*); with
+those absent, neither tool is ever offered.
+
+### `search_knowledge(query)`
+
+- **Offered when** this agent has **≥1 knowledge source in status `ready`**.
+- **What the executor does:** embeds `query` (one call to the tenant's embeddings
+  endpoint), pulls the **top 4** chunks by cosine similarity scoped to *this
+  agent*, then reads their text + source name back from Postgres in match order
+  (dropping any chunk whose embedding dimension no longer matches the current
+  config).
+- **Result format:** numbered excerpts, each prefixed with its source tag —
+
+  ```
+  1. [source: returns-policy] Opened electronics can be returned within 14 days…
+  2. [source: shipping-faq] Standard orders ship within 2 business days…
+  ```
+
+  The whole result is capped at ~6 KB (excerpt bodies are tail-truncated with an
+  ellipsis to fit). **No match →** the fixed string `no relevant knowledge
+  found.`
+- **Grounding:** whenever this tool is offered, the agent's system instructions
+  gain a directive to answer policy/product/factual questions **only** from its
+  results, cite `[source: <name>]` inline, and otherwise say it doesn't know and
+  offer a human — see *Grounding v1* note below.
+
+### `search_history(query)`
+
+- **Offered when** **this subscriber** has **≥1 embedded summary** of a past
+  resolved conversation with **this agent** (episodic memory; managed runtime
+  only — bridge agents produce no summaries).
+- **What the executor does:** embeds `query`, then queries the **top 3** past
+  conversation summaries scoped to *this agent **and** this subscriber*, reading
+  the summary text + date back from Postgres.
+- **Result format:** one line per summary, tagged with a **relative age** instead
+  of a source —
+
+  ```
+  2 weeks ago — Refund issued for order #1042 that never arrived; customer satisfied.
+  3 days ago — Walked through resetting the app password.
+  ```
+
+  (Ages read as `just now`, `N minutes/hours/days/weeks/months/years ago`.) **No
+  match →** the fixed string `no relevant past conversations found.`
+
+### Shared behavior
+
+- Both take a single `query` string and return their result to the model as an
+  ordinary tool result — so **evals assert them like any tool** (`expect: { tool:
+  "search_knowledge" }`), and they show up in the conversation's turn trace and
+  the Turn Inspector with **zero extra instrumentation**.
+- An empty `query`, or an internal failure (embeddings/vector-store error),
+  comes back as an `is_error` result the model can recover from — never a thrown
+  turn.
+- **Not customer-registrable:** these names are on the reserved list — the
+  registration API rejects a custom tool named `search_knowledge` or
+  `search_history`, so a built-in can never be shadowed.
+
+> **Grounding v1 — honest scope.** Grounding is three real mechanisms: the prompt
+> **directive**, the **conditional availability** of `search_knowledge`, and the
+> **retrieval audit trail** (every lookup is a visible tool call). It is *not* an
+> automated faithfulness **judge** that scores and blocks un-grounded replies —
+> that enforcement layer is a roadmap item, not shipped. Knowledge sources are
+> **text, URL, or `.txt`/`.md`** today; **PDF is not yet supported**.
 
 ## Registering a tool
 
@@ -78,7 +154,7 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
 
 | Field | Rules |
 |---|---|
-| `name` | required; must match **`^[a-z][a-z0-9_]{0,63}$`** (lowercase, starts with a letter, ≤64 chars). May **not** be a reserved built-in name: `trigger_workflow`, `set_metadata`, `resolve_conversation`, `present_choices`, `present_buttons`, `request_input`. Immutable after create; a duplicate name on the same agent → **409**. |
+| `name` | required; must match **`^[a-z][a-z0-9_]{0,63}$`** (lowercase, starts with a letter, ≤64 chars). May **not** be a reserved built-in name: `trigger_workflow`, `set_metadata`, `resolve_conversation`, `present_choices`, `present_buttons`, `request_input`, `search_knowledge`, `search_history`. Immutable after create; a duplicate name on the same agent → **409**. |
 | `description` | required; 1–1024 chars. |
 | `parameters` | required; a **JSON Schema object with `type: "object"`** (not an array, not `null`). Shallow-validated — this becomes the tool's `input_schema` verbatim. |
 | `endpointUrl` | required; a valid URL, ≤2048 chars. **SSRF-gated at write time** — it must not resolve to private/internal infrastructure, or you get a 400. |

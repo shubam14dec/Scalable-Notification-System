@@ -19,6 +19,7 @@ import {
   type TurnTrace,
 } from '../../core/managed-brain';
 import { pool } from '../../db/pool';
+import { enqueueSummarize } from '../../core/episodic';
 import {
   getToolCall,
   getToolDef,
@@ -303,6 +304,9 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           type: 'conversation.resolved',
         });
       }
+      // Phase 23 (D7): a resolved managed conversation gets summarized + embedded
+      // off the hot path (idempotent jobId; the job self-filters trivial/bridge).
+      if (turn.resolved) await enqueueSummarize(tenantId, conversationId);
     } catch (err) {
       if (err instanceof PermanentError) {
         // Bad key / model / endpoint: retrying can't fix it — make it
@@ -884,6 +888,9 @@ async function applySignals(
       );
     } else if (signal.type === 'resolve') {
       await resolveConversation(conversation.id, signal.summary);
+      // Phase 23 (D7): summarize on resolve. Bridge agents no-op inside the job
+      // (episodic is managed-only), but the hook lives at every resolve site.
+      await enqueueSummarize(conversation.tenant_id, conversation.id);
       await systemNote(conversation, messageId, signalIndex, `conversation resolved${signal.summary ? `: ${signal.summary}` : ''}`);
       if (conversation.channel === 'inapp') {
         await publishConversationEvent(conversation, subscriber.external_id, agent, {
