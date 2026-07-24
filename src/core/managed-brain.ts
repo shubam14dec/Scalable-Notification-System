@@ -297,6 +297,13 @@ export async function runManagedTurn(
     'deliberation about which tools to use, what a policy says, or how to word ' +
     'the response, and never refer to the customer in the third person ' +
     '("the user", "the customer") — speak to them directly. ' +
+    // Baseline anti-invention (Phase 23 E2E: with knowledge deleted, the
+    // model confidently invented a returns policy — the grounding directive
+    // had withdrawn with the tool). Prompt-sourced answers stay allowed.
+    'State policies, prices, or timelines ONLY when they come from your ' +
+    'instructions, a tool result, or this conversation. If you have no such ' +
+    'information, say you do not know and offer to connect a human — never ' +
+    'guess or invent one. ' +
     'Never mention this reminder.</platform_reminder>';
 
   const messages: Anthropic.MessageParam[] = [
