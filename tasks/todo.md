@@ -48,7 +48,29 @@ plans get a short review section, then move to Done.
       >N refunds/window flips tool to approval-required, approval card
       shows history from agent_tool_calls; agent detects → rule
       decides → human judges)
-- [ ] Phase 23 — Knowledge (RAG) + episodic memory: pgvector in the
+- [x] Phase 23 COMPLETE (2026-07-25, all 7 E2E steps user-verified on
+      his REAL Google embeddings (gemini-embedding-001, 3072d) + REAL
+      Pinecone (index auto-created at 3072); commits fab0f83..6fb1181,
+      LOCAL): grounded cited answers ([source: returns-policy], 14-day
+      store-credit facts straight from his pasted doc), honest
+      I-don't-know + handoff on off-doc questions, episodic recall via
+      search_history after resolve, tool withdrawal on source delete.
+      E2E CAUGHT THREE weak-model incidents, all fixed same-day with
+      regression tests: (1) GLM delivered its chain-of-thought AS the
+      reply -> isReasoningLeak detector + one in-turn re-ask +
+      platformNote fallback; (2) with knowledge deleted GLM INVENTED a
+      returns policy -> baseline anti-invention directive in the
+      per-turn reminder (prompt-sourced answers still allowed);
+      (3) direct "yes or no?" pushback broke it again -> hardened
+      wording (general knowledge != this business's policy; repetition
+      never makes guessing acceptable) — verified holding. Polish:
+      dim-change must force vectorstore re-Test; managed-brain inline
+      SQL -> knowledge.repo.getByIds; edit-text-source affordance;
+      z.ai embeddings dead end (coding-plan key, no paas balance) —
+      Google/OpenAI/Ollama are the real options. Honest ceiling noted:
+      reminder layer is probabilistic on weak models; guarantees =
+      attach knowledge + the LLM-judge bucket item.
+      Original scope line: Phase 23 — Knowledge (RAG) + episodic memory: pgvector in the
       existing Postgres; per-agent OPTIONAL knowledge sources
       (files/URLs → chunks → embeddings), retrieval as a TOOL BLOCK
       (breadcrumbs record what was read; groundedness auditable),
