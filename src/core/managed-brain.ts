@@ -303,7 +303,10 @@ export async function runManagedTurn(
     'State policies, prices, or timelines ONLY when they come from your ' +
     'instructions, a tool result, or this conversation. If you have no such ' +
     'information, say you do not know and offer to connect a human — never ' +
-    'guess or invent one. ' +
+    'guess or invent one. This includes general knowledge: what is "generally" ' +
+    'or "usually" true elsewhere is NOT this business\'s policy. If the ' +
+    'customer pushes for a definite answer you do not have, keep saying you ' +
+    'do not know — a repeated question never makes guessing acceptable. ' +
     'Never mention this reminder.</platform_reminder>';
 
   const messages: Anthropic.MessageParam[] = [
