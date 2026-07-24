@@ -172,6 +172,10 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   let signals: BridgeSignal[] = [];
   let turnUsage: TurnUsage | undefined;
   let turnTrace: TurnTrace | undefined;
+  // True when the managed turn returned a PLATFORM-authored reply (the
+  // reasoning-leak fallback note) — tagged raw.platformNote on the stored row so
+  // buildHistory excludes it from replay, exactly like the budget-pause note.
+  let replyPlatformNote = false;
   // The streaming plan card (managed, non-email): posts ONE evolving agent
   // message on the first labelable tool call and finalizes it as the reply.
   let planCard: PlanCard | undefined;
@@ -267,6 +271,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       card = turn.card;
       turnUsage = turn.usage;
       turnTrace = turn.trace;
+      replyPlatformNote = turn.platformNote ?? false;
       // If a plan card was posted, its row IS the reply row — finalize it now
       // (the final edit becomes the reply). turn.reply carries the extras; a
       // no-reply turn (note/refusal/empty) finalizes to the same note string.
@@ -277,6 +282,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             card: turn.card,
             usage: turn.usage,
             trace: turn.trace,
+            platformNote: turn.platformNote,
           });
         } else {
           await planCard.finalize(turn.note ?? 'the model produced no reply text', {
@@ -388,13 +394,13 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           // an assistant turn (GLM parroted it verbatim on later turns once the
           // budget cleared — the lesson-§13 imitable-prose trap).
           raw:
-            turnUsage || turnTrace || buttons || card || budgetExhausted
+            turnUsage || turnTrace || buttons || card || budgetExhausted || replyPlatformNote
               ? {
                   ...(turnUsage ? { usage: turnUsage } : {}),
                   ...(turnTrace ? { trace: turnTrace } : {}),
                   ...(buttons ? { buttons } : {}),
                   ...(card ? { card } : {}),
-                  ...(budgetExhausted ? { platformNote: true } : {}),
+                  ...(budgetExhausted || replyPlatformNote ? { platformNote: true } : {}),
                 }
               : undefined,
         })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
@@ -1001,6 +1007,9 @@ interface PlanCardExtras {
   card?: Card;
   usage?: TurnUsage;
   trace?: TurnTrace;
+  /** Tag the finalized row raw.platformNote (reasoning-leak fallback) so it is
+   * excluded from history replay — mirrors the reply-insert path. */
+  platformNote?: boolean;
 }
 
 interface PlanCardChannelRaw {
@@ -1259,6 +1268,7 @@ function createPlanCard(args: {
         ...(extras.trace ? { trace: extras.trace } : {}),
         ...(extras.buttons ? { buttons: extras.buttons } : {}),
         ...(extras.card ? { card: extras.card } : {}),
+        ...(extras.platformNote ? { platformNote: true } : {}),
       });
       row = (await getConversationMessage(row!.id)) ?? row;
       // Supersede any pending progress edits, then drain the throttle chain.

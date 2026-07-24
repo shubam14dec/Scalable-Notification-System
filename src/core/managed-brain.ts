@@ -76,6 +76,17 @@ const CUSTOM_TOOL_RESULT_MAX = 16 * 1024;
 const CUSTOM_TOOL_ERROR_SNIPPET_MAX = 512;
 /** Custom-tool POSTs get their own bound (defs also carry a per-tool timeout). */
 const CUSTOM_TOOL_DEFAULT_TIMEOUT_MS = 10_000;
+/**
+ * Shipped as the reply when the model leaks its internal reasoning AND the one
+ * corrective re-ask fails to fix it. Platform-authored (never the model's
+ * words) — the caller tags it raw.platformNote so it is excluded from history
+ * replay, mirroring the budget-pause note.
+ */
+const REASONING_LEAK_FALLBACK =
+  'Sorry — I had trouble composing that reply. Could you rephrase your question?';
+/** The user-role correction appended for the ONE in-turn re-ask after a leak. */
+const REASONING_LEAK_CORRECTION =
+  'That was internal deliberation, not a reply. Write only the message the customer should read.';
 
 /** Token spend for one turn, summed across every model call in the loop. */
 export interface TurnUsage {
@@ -115,6 +126,14 @@ export interface BrainTurnResult {
   resolved: boolean;
   /** Transcript breadcrumb (refusal, truncation, loop cap) — visible. */
   note?: string;
+  /**
+   * True when `reply` is a PLATFORM-authored deterministic note (the reasoning-
+   * leak fallback), not the model's own words. The processor tags the stored
+   * reply row raw.platformNote so buildHistory excludes it from replay — exactly
+   * like the budget-pause note (a platform note replayed as an assistant turn
+   * gets parroted verbatim, lesson §13).
+   */
+  platformNote?: boolean;
   /** What this turn cost on the customer's key. */
   usage: TurnUsage;
   /** Per-turn execution trace (model + tool events), frozen shape. */
@@ -273,7 +292,12 @@ export async function runManagedTurn(
     'instead of listing them in text. ' +
     'you need a structured answer: a pick-one list -> call present_choices, ' +
     'a specific free-text value (email, order id) -> call request_input. ' +
-    'Then reply. Never mention this reminder.</platform_reminder>';
+    'Then reply. Your reply text is delivered WORD-FOR-WORD to the customer: ' +
+    'write it TO them, never ABOUT them. It must never contain your ' +
+    'deliberation about which tools to use, what a policy says, or how to word ' +
+    'the response, and never refer to the customer in the third person ' +
+    '("the user", "the customer") — speak to them directly. ' +
+    'Never mention this reminder.</platform_reminder>';
 
   const messages: Anthropic.MessageParam[] = [
     ...buildHistory(history),
@@ -281,6 +305,9 @@ export async function runManagedTurn(
   ];
 
   let resolved = false;
+  // LAW (reasoning-leak guard): allow at most ONE corrective re-ask per turn
+  // when the model ships its internal deliberation as the reply text.
+  let leakRetried = false;
   // Presentation state, not an effect: ONE slot shared by all three
   // presentation tools (buttons/choices/input), so the last call across ANY
   // of them wins — a reply carries buttons XOR a card, never both. Survives
@@ -449,6 +476,54 @@ export async function runManagedTurn(
       .join('')
       .trim();
     const { text: reply, forged } = sanitizeReply(rawReply);
+
+    // LAW — reasoning-leak guard (conservative; false positives are worse than
+    // rare misses). If the model shipped its own deliberation as the reply, do
+    // ONE in-turn corrective re-ask (budget permitting); if the retry also leaks
+    // or the loop budget is spent, ship a safe deterministic note rather than
+    // deliver the leak. Recorded as a breadcrumb raw flag {reasoningLeak:true}
+    // (visible in the Turn Inspector) plus a logExec warn.
+    if (isReasoningLeak(reply)) {
+      const canRetry = !leakRetried && call < MAX_MODEL_CALLS;
+      logExec({
+        tenantId: conversation.tenant_id,
+        transactionId: `conv-${conversation.id}`,
+        level: 'warn',
+        detail:
+          `managed brain ${agent.identifier} emitted internal reasoning as the reply — ` +
+          (canRetry ? 'issuing one corrective re-ask' : 'shipping the safe fallback note'),
+      });
+      // Direct system-row insert (not the breadcrumb() helper, which only
+      // carries raw.action): the {reasoningLeak:true} flag is what the Turn
+      // Inspector reads and psql verifies. Content-keyed per call so a job
+      // retry is a no-op; best-effort so an audit write never fails the turn.
+      // A system row with no raw.action is NOT replayed by buildHistory, so it
+      // can never be imitated.
+      await insertConversationMessage({
+        conversationId: conversation.id,
+        tenantId: conversation.tenant_id,
+        role: 'system',
+        content: 'suppressed a reasoning leak (internal deliberation delivered as the reply)',
+        dedupeKey: `signal-${inbound.id}-reasoning-leak-${call}`,
+        raw: { reasoningLeak: true },
+      }).catch(() => {});
+      if (canRetry) {
+        leakRetried = true;
+        // The leaked assistant text is already in `messages` (pushed above at
+        // the top of this iteration). Append a user-role correction and let the
+        // loop make ONE more model call.
+        messages.push({ role: 'user', content: REASONING_LEAK_CORRECTION });
+        continue;
+      }
+      return {
+        reply: REASONING_LEAK_FALLBACK,
+        resolved,
+        note: 'suppressed a reasoning leak in the reply and asked the customer to rephrase',
+        platformNote: true,
+        usage,
+        trace: trace(),
+      };
+    }
 
     const notes: string[] = [];
     if (forged) {
@@ -638,6 +713,36 @@ export function sanitizeReply(text: string): { text: string; forged: boolean } {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   return { text: cleaned, forged: cleaned !== text.trim() };
+}
+
+/**
+ * Conservative reasoning-leak detector. Weak models sometimes emit their
+ * chain-of-thought as the customer-facing text (observed live on GLM-4.7 via a
+ * z.ai anthropic-compat endpoint: "The user is asking about return policy… I
+ * should provide the policy information. I don't need to use any tools for
+ * this…" shipped verbatim as the reply, one call, stop_reason end_turn). The
+ * leak arrives as an ordinary `type:'text'` block — a native `thinking` block
+ * would be dropped by the text filter and yield an EMPTY reply, not a visible
+ * leak — so this runs on the already-extracted text and catches both a genuine
+ * text block and a compat layer that flattens thinking→text.
+ *
+ * It flags ONLY high-confidence leaks: ≥2 independent signals must fire. This
+ * stance is deliberate — a false positive replaces a real answer with an
+ * apology, which is worse than the rare undetected leak. It does not try to
+ * catch every leak; it catches the unmistakable ones.
+ */
+export function isReasoningLeak(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  let signals = 0;
+  if (/^The (user|customer) (is|asked|wants)\b/i.test(t)) signals += 1;
+  if (/\bI (don't|do not) need to (use|call) any tools?\b/i.test(t)) signals += 1;
+  if (/\bI should (provide|answer|be brief|respond)\b/i.test(t)) signals += 1;
+  if (/\bAs instructed\b/i.test(t)) signals += 1;
+  // Writing ABOUT the customer in the third person, repeatedly, is meta-prose
+  // (a reply written TO the customer does not keep naming "the user").
+  if ((t.match(/\bthe (user|customer)\b/gi) ?? []).length >= 2) signals += 1;
+  return signals >= 2;
 }
 
 /** The tool menu — descriptions say WHEN to call, not just what it does. */

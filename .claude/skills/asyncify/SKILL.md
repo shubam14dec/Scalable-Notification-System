@@ -387,6 +387,18 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   t.me deep-link surface must ship the copyable `/start <token>` fallback
   beside it. Corollary: a QR test proves decode, not destination
   reachability — they fail independently.
+- **Weak models can emit chain-of-thought AS the customer-facing text
+  block** (Phase 23 E2E, live GLM-4.7: "The user is asking... I don't
+  need to call any tools..." delivered verbatim to the customer, plain
+  type:'text' block, end_turn). Guard = advice + law: platform-reminder
+  directive (write TO the customer, never ABOUT them) + conservative
+  deterministic isReasoningLeak detector (>=2 signals, false positives
+  worse than misses) -> ONE in-turn corrective re-ask -> platformNote-
+  tagged deterministic fallback if it leaks twice (fold mechanism from
+  the budget note — never replayed/imitable). Record via breadcrumb
+  raw flag {reasoningLeak:true}, NEVER a new TurnTraceEvent variant:
+  the trace union is frozen and the dashboard renders unknown events
+  via an else-fallthrough (would paint NaN).
 - **FCM web SW must NOT showNotification for notification payloads**
   (Phase 20 E2E, user counted 4 banners for 1 trigger): the Firebase SDK
   AUTO-displays every notification-carrying push (title/body/image, and
