@@ -15,6 +15,7 @@ import {
   getAgent,
   getAgentById,
   getConversation,
+  getSubscriberByExternalId,
   insertConversationMessage,
   listAgents,
   listConnectionsForAgent,
@@ -25,6 +26,7 @@ import {
   rotateAgentSecret,
   updateAgent,
   type Agent,
+  type AgentContext,
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { enqueueSummarize } from '../../core/episodic';
@@ -33,6 +35,13 @@ import { logExec } from '../../core/execution-log';
 import { tenantRateLimit } from '../rate-limit';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
 import { agentHealth, type AgentHealth } from '../../db/agent-health.repo';
+import {
+  listMemories,
+  upsertMemory,
+  deleteMemory,
+  MemoryCapError,
+  type SubscriberMemory,
+} from '../../db/memories.repo';
 
 /**
  * The health aggregate is a whole-window scan — cheap to serve slightly stale,
@@ -97,6 +106,23 @@ const SuggestedPromptSchema = z.object({
 const welcomeMessageSchema = z.string().max(2000).nullable().optional();
 const suggestedPromptsSchema = z.array(SuggestedPromptSchema).max(6).nullable().optional();
 
+/**
+ * D6 rolling-summarization knobs on the agent's `context` bag. Both optional;
+ * defaults (trigger 20, tail 10) are applied at fold time, not stored. When
+ * BOTH are given the law is 1 ≤ tailTurns < triggerTurns ≤ 200 (a fold must
+ * always leave the tail strictly smaller than the trigger).
+ */
+const AgentContextSchema = z
+  .object({
+    triggerTurns: z.number().int().min(2).max(200).optional(),
+    tailTurns: z.number().int().min(1).max(199).optional(),
+  })
+  .refine(
+    (c) =>
+      c.triggerTurns === undefined || c.tailTurns === undefined || c.tailTurns < c.triggerTurns,
+    { message: 'tailTurns must be less than triggerTurns (1 ≤ tail < trigger ≤ 200)', path: ['tailTurns'] },
+  );
+
 const AgentSchema = z
   .object({
     identifier: z
@@ -117,6 +143,7 @@ const AgentSchema = z
     llm: LlmConfigSchema.optional(),
     welcomeMessage: welcomeMessageSchema,
     suggestedPrompts: suggestedPromptsSchema,
+    context: AgentContextSchema.optional(),
   })
   .refine((a) => a.runtime !== 'bridge' || Boolean(a.bridgeUrl), {
     message: 'bridgeUrl is required for the bridge runtime',
@@ -143,6 +170,7 @@ const AgentPatchSchema = z.object({
   llm: LlmConfigSchema.optional(),
   welcomeMessage: welcomeMessageSchema,
   suggestedPrompts: suggestedPromptsSchema,
+  context: AgentContextSchema.optional(),
 });
 
 const InboundMessageSchema = z.object({
@@ -184,6 +212,21 @@ const PushMessageSchema = z
     message: 'a reply may carry buttons or a card, not both',
   });
 
+/**
+ * D11 memory admin: an operator edit of one durable fact. Bounds mirror the D2
+ * caps (the repo re-enforces them as law — a 400 here on a too-long value, a
+ * 409 there on a full profile).
+ */
+const MemoryPutSchema = z.object({
+  key: z.string().min(1).max(64),
+  value: z.string().min(1).max(300),
+});
+
+/** Public shape for a memory row (no internal ids). */
+function memoryView(m: SubscriberMemory) {
+  return { key: m.key, value: m.value, source: m.source, updatedAt: m.updated_at };
+}
+
 /** Public shape — sealed secrets (signing, LLM key) never leave the API. */
 function agentView(agent: Agent) {
   return {
@@ -200,6 +243,8 @@ function agentView(agent: Agent) {
     autoResolveMinutes: agent.auto_resolve_minutes,
     welcomeMessage: agent.welcome_message,
     suggestedPrompts: agent.suggested_prompts,
+    // D6 rolling knobs (empty object when unconfigured — defaults apply at fold time).
+    context: (agent.context ?? {}) as AgentContext,
     hasLlmKey: Boolean(agent.llm_credentials),
     status: agent.status,
     createdAt: agent.created_at,
@@ -276,6 +321,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
         : undefined,
       welcomeMessage: parsed.data.welcomeMessage,
       suggestedPrompts: parsed.data.suggestedPrompts,
+      context: parsed.data.context,
     });
     if (!agent) {
       return reply.code(409).send({ error: `agent "${parsed.data.identifier}" already exists` });
@@ -380,6 +426,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
           : undefined,
         welcomeMessage: parsed.data.welcomeMessage,
         suggestedPrompts: parsed.data.suggestedPrompts,
+        context: parsed.data.context,
       });
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };
@@ -421,6 +468,88 @@ export function registerAgentRoutes(app: FastifyInstance) {
         });
       }
       return { deleted: (await deleteAgent(req.tenant.id, req.params.identifier)) > 0 };
+    },
+  );
+
+  // ---- long-term memory admin (D11 backend) ----
+  // A subscriber is addressed by its tenant-scoped external_id here (the id
+  // operators know), resolved to the uuid the memory rows key on. Unknown agent
+  // OR unknown subscriber -> 404.
+
+  app.get<{ Params: { identifier: string; subscriberExternalId: string } }>(
+    '/v1/agents/:identifier/memories/:subscriberExternalId',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      const subscriber = await getSubscriberByExternalId(
+        req.tenant.id,
+        req.params.subscriberExternalId,
+      );
+      if (!subscriber) return reply.code(404).send({ error: 'unknown subscriber' });
+      const memories = await listMemories(agent.id, subscriber.id);
+      return { memories: memories.map(memoryView) };
+    },
+  );
+
+  app.put<{ Params: { identifier: string; subscriberExternalId: string } }>(
+    '/v1/agents/:identifier/memories/:subscriberExternalId',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const parsed = MemoryPutSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+      }
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      const subscriber = await getSubscriberByExternalId(
+        req.tenant.id,
+        req.params.subscriberExternalId,
+      );
+      if (!subscriber) return reply.code(404).send({ error: 'unknown subscriber' });
+      try {
+        const memory = await upsertMemory({
+          tenantId: req.tenant.id,
+          agentId: agent.id,
+          subscriberId: subscriber.id,
+          key: parsed.data.key,
+          value: parsed.data.value,
+          source: 'operator',
+        });
+        return { memory: memoryView(memory) };
+      } catch (err) {
+        // A full profile is not a client bug — 409 with the current keys so the
+        // dashboard can offer an overwrite (never a silent drop).
+        if (err instanceof MemoryCapError) {
+          return reply.code(409).send({
+            error: err.message,
+            reason: err.reason,
+            currentKeys: err.currentKeys,
+            limits: err.limits,
+          });
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.delete<{
+    Params: { identifier: string; subscriberExternalId: string };
+    Querystring: { key?: string };
+  }>(
+    '/v1/agents/:identifier/memories/:subscriberExternalId',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      const subscriber = await getSubscriberByExternalId(
+        req.tenant.id,
+        req.params.subscriberExternalId,
+      );
+      if (!subscriber) return reply.code(404).send({ error: 'unknown subscriber' });
+      // ?key= deletes one fact; no key deletes the whole profile.
+      const deleted = await deleteMemory(agent.id, subscriber.id, req.query.key);
+      return { deleted };
     },
   );
 
@@ -657,6 +786,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
           status: conversation.status,
           metadata: conversation.metadata,
           summary: conversation.summary,
+          // D11: the auto rolling summary (null until the conversation first
+          // folds) — the Details panel surfaces it as "Conversation summary (auto)".
+          rollingSummary: conversation.rolling_summary,
           messageCount: conversation.message_count,
           lastMessageAt: conversation.last_message_at,
           createdAt: conversation.created_at,

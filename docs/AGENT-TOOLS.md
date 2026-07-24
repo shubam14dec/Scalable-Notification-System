@@ -2,9 +2,10 @@
 
 A **managed** agent ships with a fixed built-in menu (`trigger_workflow`,
 `set_metadata`, `resolve_conversation`, `present_buttons`, `present_choices`,
-`request_input`), plus two **conditional** built-ins that appear only when
-there's something to search (`search_knowledge`, `search_history` — see
-**Built-in retrieval tools** below). **Custom tools** extend that menu with
+`request_input`, `remember` — see **Built-in memory tool** below), plus two
+**conditional** built-ins that appear only when there's something to search
+(`search_knowledge`, `search_history` — see **Built-in retrieval tools** below).
+**Custom tools** extend that menu with
 *your* code: you
 register a tool — a model-facing name, a description, and a JSON-Schema
 parameter shape — pointed at an **HTTPS endpoint you own**. Mid-conversation
@@ -34,6 +35,51 @@ what dispatches them. (Registration itself doesn't refuse a bridge agent, so a
 bridge agent that's later re-pointed to the managed runtime keeps its defs, but
 a bridge agent never calls them.) They're per-agent: each agent has its own
 registry.
+
+## Built-in memory tool (`remember`)
+
+Always offered to a **managed** agent (no setup) — the tool that writes a
+customer's **long-term profile**: durable facts the managed brain LOADS into
+every future conversation with that subscriber (never searches — see the
+customer guide's *Memory & cost*).
+
+- **Input shape:** `{ key, value }` — `key` a short snake_case handle
+  (`channel_pref`, `plan`), `value` the fact (`"prefers email over SMS"`). Both
+  required; upsert by `key` (saving the same key overwrites).
+- **Result:** `remembered <key>` on success — invisible to the customer, visible
+  as a tool breadcrumb in the turn trace.
+- **Caps (enforced as law, both writers):** **≤32 keys** per (agent,
+  subscriber), **key ≤64 chars**, **value ≤300 chars**. Nothing is truncated
+  silently — an over-cap call comes back as an **instructive `is_error` result**
+  the model can act on:
+  - profile full → `cannot remember a new fact — this customer's profile is full
+    (32 keys max). To save this, reuse one of the existing keys to overwrite it:
+    <current keys>.` (an *existing* key can always be overwritten, even at the
+    cap — that's how the model frees space);
+  - value too long → `cannot remember — the value is longer than 300 characters.
+    Store a shorter, essential version of the fact.`;
+  - key too long → `cannot remember — the key is longer than 64 characters. Use a
+    short snake_case key.`
+- **No content filter (v1):** the tool stores whatever it's handed — it does
+  **not** refuse a value by content. Keeping secrets, passwords, and payment data
+  out is the tool description's instruction (and the system prompt's), not an
+  enforced check.
+- **Reserved name:** `remember` is on the reserved list — a custom tool may not
+  be named `remember` (registration → 400), so the built-in can't be shadowed.
+
+**`remember` vs `set_metadata` — two different horizons:**
+
+| | `set_metadata` | `remember` |
+|---|---|---|
+| **Scope** | THIS conversation | THIS customer, all future conversations |
+| **Read by** | support staff, later turns of this chat | the agent, loaded into every later conversation |
+| **Lifetime** | lives on the conversation | durable profile until deleted |
+| **Example** | `order_id: 1042`, `sentiment: frustrated` | `channel_pref: prefers email`, `plan: Pro` |
+| **Storage** | conversation metadata | per-(agent, subscriber) profile (≤32 keys) |
+
+The platform reminder the model sees carries this one-line disambiguation so it
+picks the right tool: a fact about *this* conversation → `set_metadata`; a
+durable fact about the *customer* → `remember`.
 
 ## Built-in retrieval tools (`search_knowledge`, `search_history`)
 
@@ -154,7 +200,7 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
 
 | Field | Rules |
 |---|---|
-| `name` | required; must match **`^[a-z][a-z0-9_]{0,63}$`** (lowercase, starts with a letter, ≤64 chars). May **not** be a reserved built-in name: `trigger_workflow`, `set_metadata`, `resolve_conversation`, `present_choices`, `present_buttons`, `request_input`, `search_knowledge`, `search_history`. Immutable after create; a duplicate name on the same agent → **409**. |
+| `name` | required; must match **`^[a-z][a-z0-9_]{0,63}$`** (lowercase, starts with a letter, ≤64 chars). May **not** be a reserved built-in name: `trigger_workflow`, `set_metadata`, `resolve_conversation`, `present_choices`, `present_buttons`, `request_input`, `search_knowledge`, `search_history`, `remember`. Immutable after create; a duplicate name on the same agent → **409**. |
 | `description` | required; 1–1024 chars. |
 | `parameters` | required; a **JSON Schema object with `type: "object"`** (not an array, not `null`). Shallow-validated — this becomes the tool's `input_schema` verbatim. |
 | `endpointUrl` | required; a valid URL, ≤2048 chars. **SSRF-gated at write time** — it must not resolve to private/internal infrastructure, or you get a 400. |

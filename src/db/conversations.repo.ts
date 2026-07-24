@@ -30,8 +30,20 @@ export interface Agent {
   /** Up to 6 one-tap starters offered with the welcome (null = none). */
   suggested_prompts: Array<{ title: string; message: string }> | null;
   status: 'active' | 'disabled';
+  /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
+  context: AgentContext;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Per-agent free-form config (the `context` jsonb column). Today it holds only
+ * the rolling-summarization knobs (D6); both optional — defaults (trigger 20,
+ * tail 10) are applied at read time in the fold logic, never stored.
+ */
+export interface AgentContext {
+  triggerTurns?: number;
+  tailTurns?: number;
 }
 
 export interface Conversation {
@@ -46,6 +58,10 @@ export interface Conversation {
   status: 'active' | 'resolved';
   metadata: Record<string, unknown>;
   summary: string | null;
+  /** D5 rolling-summarization state: the folded-so-far summary (null = none). */
+  rolling_summary: string | null;
+  /** D5: the newest message id already folded into rolling_summary (null = none). */
+  rolling_upto: string | null;
   message_count: number;
   last_message_at: string;
   created_at: string;
@@ -84,13 +100,15 @@ export async function createAgent(a: {
   autoResolveMinutes?: number;
   welcomeMessage?: string | null;
   suggestedPrompts?: Array<{ title: string; message: string }> | null;
+  context?: AgentContext;
 }): Promise<Agent | null> {
   const { rows } = await pool.query(
     `insert into agents
        (tenant_id, identifier, name, description, runtime, bridge_url,
         signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
-        auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens, context)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+             coalesce($17::jsonb, '{}'::jsonb))
      on conflict (tenant_id, identifier) do nothing
      returning *`,
     [
@@ -110,6 +128,7 @@ export async function createAgent(a: {
       a.welcomeMessage ?? null,
       a.suggestedPrompts ? JSON.stringify(a.suggestedPrompts) : null,
       a.maxDailyTokens ?? null,
+      a.context ? JSON.stringify(a.context) : null,
     ],
   );
   return rows[0] ?? null;
@@ -158,6 +177,8 @@ export async function updateAgent(
     welcomeMessage?: string | null;
     /** null clears the starters (jsonb 'null' is the wire sentinel for null). */
     suggestedPrompts?: Array<{ title: string; message: string }> | null;
+    /** D6 rolling knobs; undefined leaves untouched (no clear sentinel — the bag is small). */
+    context?: AgentContext;
   },
 ): Promise<Agent | null> {
   const { rows } = await pool.query(
@@ -185,6 +206,8 @@ export async function updateAgent(
        -- 0 sentinel clears the daily token budget (bounds are 1+)
        max_daily_tokens = case when $16::int = 0 then null
                                else coalesce($16, max_daily_tokens) end,
+       -- undefined leaves the config bag untouched; a provided object replaces it
+       context         = coalesce($17::jsonb, context),
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -209,6 +232,7 @@ export async function updateAgent(
           ? null
           : JSON.stringify(patch.suggestedPrompts),
       patch.maxDailyTokens === null ? 0 : (patch.maxDailyTokens ?? null),
+      patch.context === undefined ? null : JSON.stringify(patch.context),
     ],
   );
   return rows[0] ?? null;
@@ -535,6 +559,29 @@ export async function getSubscriberById(id: string): Promise<{
   const { rows } = await pool.query(
     'select id, external_id, email, phone, push_token from subscribers where id = $1',
     [id],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Resolve a subscriber by its tenant-scoped external_id (the id customers use
+ * in the API/widget). Returns null when unknown — callers 404. Used by the
+ * memory admin API, which addresses a subscriber by external_id, not uuid.
+ */
+export async function getSubscriberByExternalId(
+  tenantId: string,
+  externalId: string,
+): Promise<{
+  id: string;
+  external_id: string;
+  email: string | null;
+  phone: string | null;
+  push_token: string | null;
+} | null> {
+  const { rows } = await pool.query(
+    `select id, external_id, email, phone, push_token
+       from subscribers where tenant_id = $1 and external_id = $2`,
+    [tenantId, externalId],
   );
   return rows[0] ?? null;
 }
@@ -981,11 +1028,19 @@ export async function conversationTranscript(
   return rows;
 }
 
-/** The user/agent turns before (and excluding) the message being dispatched. */
+/**
+ * The user/agent turns before (and excluding) the message being dispatched.
+ * `afterMessageId` (D8 rolling-summarization) narrows the window to rows
+ * strictly AFTER that message's created_at — the replay backstop stays as a
+ * safety limit. NOTE: this role-filtered variant feeds the BRIDGE dispatch,
+ * which never sees breadcrumbs; the managed brain replays via
+ * conversationTranscriptBefore (see its note).
+ */
 export async function conversationHistoryBefore(
   conversationId: string,
   beforeMessageId: string,
   limit = 30,
+  afterMessageId?: string | null,
 ): Promise<ConversationMessage[]> {
   const { rows } = await pool.query(
     `select * from (
@@ -994,9 +1049,11 @@ export async function conversationHistoryBefore(
          and m.role in ('user', 'agent')
          and m.deleted_at is null
          and m.created_at < (select created_at from conversation_messages where id = $2)
+         and ($4::uuid is null
+              or m.created_at > (select created_at from conversation_messages where id = $4))
        order by m.created_at desc limit $3
      ) t order by created_at asc`,
-    [conversationId, beforeMessageId, limit],
+    [conversationId, beforeMessageId, limit, afterMessageId ?? null],
   );
   return rows;
 }
@@ -1006,20 +1063,51 @@ export async function conversationHistoryBefore(
  * breadcrumbs). The managed brain folds these back into the history it
  * replays to the model — without them, past tool-backed replies look like
  * bare claims, and the model learns to imitate claiming instead of calling.
+ * THIS is the managed replay path (buildHistory consumes these rows), so the
+ * D8 rolling window is applied HERE: `afterMessageId` = the conversation's
+ * rolling_upto, so folded turns AND their breadcrumbs drop out (their
+ * created_at ≤ rolling_upto's), while every breadcrumb AFTER rolling_upto —
+ * belonging to a still-replayed tail turn — is preserved.
  */
 export async function conversationTranscriptBefore(
   conversationId: string,
   beforeMessageId: string,
   limit = 40,
+  afterMessageId?: string | null,
 ): Promise<ConversationMessage[]> {
   const { rows } = await pool.query(
     `select * from (
        select m.* from conversation_messages m
        where m.conversation_id = $1
          and m.created_at < (select created_at from conversation_messages where id = $2)
+         and ($4::uuid is null
+              or m.created_at > (select created_at from conversation_messages where id = $4))
        order by m.created_at desc limit $3
      ) t order by created_at asc`,
-    [conversationId, beforeMessageId, limit],
+    [conversationId, beforeMessageId, limit, afterMessageId ?? null],
+  );
+  return rows;
+}
+
+/**
+ * Every transcript row (all roles) strictly AFTER a message's created_at,
+ * oldest first — the rolling-fold recompute's source. Unlike the *Before
+ * loaders this has no upper bound (it reaches the newest reply) and a generous
+ * limit so a fold that skipped several triggers still captures the whole
+ * un-summarized region. `afterMessageId` null = from the very start.
+ */
+export async function conversationRowsAfter(
+  conversationId: string,
+  afterMessageId: string | null,
+  limit = 500,
+): Promise<ConversationMessage[]> {
+  const { rows } = await pool.query(
+    `select * from conversation_messages
+      where conversation_id = $1
+        and ($2::uuid is null
+             or created_at > (select created_at from conversation_messages where id = $2))
+      order by created_at asc limit $3`,
+    [conversationId, afterMessageId, limit],
   );
   return rows;
 }

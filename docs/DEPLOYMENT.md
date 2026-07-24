@@ -95,3 +95,15 @@ vector ids only — no vector extension), and the indexing/summary work rides th
 existing worker. The one env var that exists, `PINECONE_CONTROL_URL`, **defaults
 correctly to `https://api.pinecone.io`** and is only a test / self-host seam —
 **leave it unset in production; there is no deploy-day action for it.**
+
+**Long-term memory, rolling summaries, caching, and budget hints add nothing
+either.** Durable customer profiles are Postgres rows (a table + two columns on
+existing tables, created by the same migration path as every other); rolling
+summaries ride the existing worker queue; the budget suggestion is a read-time
+aggregate over data already stored. **No new infra, no new env var, no one-time
+console step.** Two honesty notes for production, both self-adjusting: **prompt
+caching** cuts token cost only on LLM providers that honor `cache_control` — real
+Anthropic endpoints do (full discount), some Anthropic-compat layers ignore it
+(no discount, no error, no behavior change); and the **daily-budget suggestion**
+stays blank until an agent has **7+ days of production usage** — it appears on its
+own once the data exists, nothing to enable.

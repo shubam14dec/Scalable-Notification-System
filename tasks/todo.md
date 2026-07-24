@@ -77,7 +77,22 @@ plans get a short review section, then move to Done.
       citations; episodic = same retrieval over past conversation
       summaries (continuity, repeat-problem escalation, product
       intelligence, tone calibration)
-- [ ] Phase 24 — Long-term memory + cost: subscriber_memories keyed
+- [x] Phase 24 BUILD COMPLETE (2026-07-25, all 6 slices first-try, suite
+      614->654 double-green, ZERO revision rounds — third phase running):
+      long-term memory (subscriber_memories 32/64/300 caps-as-law, remember
+      tool w/ instructive cap results, Memory modal w/ agent-dot vs
+      operator-ring, GDPR cascade, memories API + SDK agents.memories.* +
+      changeset), ROLLING SUMMARIZATION (user-flagged mandatory: fold via
+      knowledge queue kind summarize-rolling, knobs agents.context
+      trigger20/tail10 + 4k token guard validated vs real p90=6, replay =
+      summary-in-volatile-system + post-fold rows, breadcrumb boundary safe
+      via finalize created_at bump, episodic handoff), PROMPT CACHING
+      (cache_control on stable block [tools+prompt+scaffold], volatile
+      [profile+summary] after breakpoint, cache fields in TurnUsage/raw.usage/
+      trace model_call optional fields, dashboard "· cached N"), BUDGET
+      INTELLIGENCE (30d per-day p95 CTE, suggested = ceil(p95*3/50k)*50k,
+      null<7 days, hint in budget field). E2E pending user.
+      Original scope line: Phase 24 — Long-term memory + cost: subscriber_memories keyed
       rows (NOT vectors; load-all each turn; dashboard view/edit +
       GDPR delete; `remember` tool); rolling summarization (summary +
       recent turns replay — also the big cost lever); prompt caching

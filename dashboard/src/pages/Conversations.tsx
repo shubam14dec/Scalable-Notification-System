@@ -40,6 +40,13 @@ type TraceEvent =
       outputTokens: number;
       stopReason: string;
       model: string;
+      /**
+       * Phase 24 D9 (slice C, in flight) — prompt tokens served from / written
+       * to the provider cache. Optional; absent on providers without caching
+       * (z.ai) and on turns recorded before the field shipped.
+       */
+      cacheRead?: number;
+      cacheWrite?: number;
     }
   | { t: 'tool_call'; name: string; ms: number; ok: boolean; paused?: boolean }
   | { t: 'bridge_post'; ms: number; status: number; ok: boolean };
@@ -156,7 +163,10 @@ export default function ConversationsPage() {
                   // without a dedicated lookup (detail response omits the agent).
                   onClick={() =>
                     navigate(`/conversations/${c.id}`, {
-                      state: { agentIdentifier: c.agent.identifier },
+                      state: {
+                        agentIdentifier: c.agent.identifier,
+                        subscriberExternalId: c.subscriberId,
+                      },
                     })
                   }
                 >
@@ -289,8 +299,13 @@ function MessageTrace({
               return (
                 <div key={i} className="text-[11px]">
                   <Mono className="text-t3">
-                    model call #{modelN} · {fmtMs(e.ms)} · {e.inputTokens} in / {e.outputTokens} out ·{' '}
-                    {stopTail(e.stopReason)}
+                    model call #{modelN} · {fmtMs(e.ms)} · {e.inputTokens} in / {e.outputTokens} out
+                    {e.cacheRead != null && e.cacheRead > 0 && (
+                      <span title="prompt tokens served from provider cache">
+                        {' '}· cached {e.cacheRead.toLocaleString()}
+                      </span>
+                    )}{' '}
+                    · {stopTail(e.stopReason)}
                   </Mono>
                 </div>
               );
@@ -352,19 +367,50 @@ export function ConversationDetailPage() {
           createdAt: string;
           /** Present if the API includes it; otherwise we use the router state. */
           agent?: { identifier: string; name: string };
+          /** Phase 24 D11 — the customer's external id, if the API exposes it. */
+          subscriberExternalId?: string;
+          /** Phase 24 D5 (slice B, in flight) — the auto rolling summary. */
+          rolling_summary?: string | null;
         };
+        /** The owning agent, returned top-level by the API. */
+        agent?: { identifier: string; name: string } | null;
         messages: TranscriptMessage[];
         usage: { inputTokens: number; outputTokens: number; modelCalls: number };
       }>(`/v1/conversations/${id}`),
     refetchInterval: 5_000,
   });
 
-  // Agent id for "Save as eval": router state (from the list) first, then the
-  // detail payload if the API grew an agent block.
+  // Agent id for "Save as eval" and the memory block: router state (from the
+  // list) first, then either agent block the API returns.
+  const navState = location.state as
+    | { agentIdentifier?: string; subscriberExternalId?: string }
+    | null;
   const agentIdentifier =
-    (location.state as { agentIdentifier?: string } | null)?.agentIdentifier ??
+    navState?.agentIdentifier ??
+    data?.agent?.identifier ??
     data?.conversation.agent?.identifier ??
     null;
+
+  // Customer external id for the read-only memory block: router state first,
+  // then the detail payload if the API exposes it (guarded — slice B/API may
+  // not carry it yet, in which case the block simply stays hidden).
+  const subscriberExternalId =
+    navState?.subscriberExternalId ?? data?.conversation.subscriberExternalId ?? null;
+
+  // What the agent durably remembers about this customer (Phase 24 D11) —
+  // read-only here; editing lives on the Agents page. A 404 (unknown pairing)
+  // or an empty profile simply hides the block.
+  const memoryQuery = useQuery({
+    queryKey: ['agent-memories', agentIdentifier, subscriberExternalId],
+    queryFn: () =>
+      api<{ memories: Array<{ key: string; value: string; source: 'agent' | 'operator' }> }>(
+        `/v1/agents/${agentIdentifier}/memories/${encodeURIComponent(subscriberExternalId!)}`,
+      ),
+    enabled: Boolean(agentIdentifier && subscriberExternalId),
+    retry: false,
+  });
+  const memories = memoryQuery.data?.memories ?? [];
+  const rollingSummary = data?.conversation.rolling_summary;
 
   // Tiny transient toast — no global provider, monochrome per the design system.
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null);
@@ -609,6 +655,37 @@ export function ConversationDetailPage() {
                 )}
               </dl>
             </Card>
+
+            {rollingSummary && (
+              <Card className="p-4">
+                <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-t3">
+                  Conversation summary (auto)
+                </p>
+                <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-t2">
+                  {rollingSummary}
+                </p>
+              </Card>
+            )}
+
+            {memories.length > 0 && (
+              <Card className="p-4">
+                <p className="mb-3 text-[11px] font-medium uppercase tracking-wider text-t3">
+                  Agent memory
+                </p>
+                <dl className="space-y-2 text-[12px]">
+                  {memories.map((m) => (
+                    <div key={m.key} className="flex items-start justify-between gap-2">
+                      <dt>
+                        <Mono className="text-t3">{m.key}</Mono>
+                      </dt>
+                      <dd className="min-w-0 text-right">
+                        <span className="break-words text-t2">{m.value}</span>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </Card>
+            )}
 
             <Card className="p-4">
               <p className="mb-3 text-[11px] font-medium uppercase tracking-wider text-t3">

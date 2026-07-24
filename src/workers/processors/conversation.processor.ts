@@ -21,6 +21,13 @@ import {
 import { pool } from '../../db/pool';
 import { enqueueSummarize } from '../../core/episodic';
 import {
+  enqueueRollingFold,
+  isReplayableTurn,
+  resolveRollingKnobs,
+  serializeFoldInput,
+  shouldFold,
+} from '../../core/rolling';
+import {
   getToolCall,
   getToolDef,
   finishToolCall,
@@ -255,8 +262,15 @@ async function processTurn(data: ConversationJobData): Promise<void> {
         : undefined;
     try {
       // Richer history (incl. tool-action breadcrumbs) — the brain folds
-      // them in so past tool-backed replies don't look like bare claims.
-      const fullHistory = await conversationTranscriptBefore(conversationId, messageId);
+      // them in so past tool-backed replies don't look like bare claims. D8:
+      // rolling_upto narrows the window to the un-summarized tail (folded turns
+      // and their breadcrumbs drop out); rolling_summary rides the system block.
+      const fullHistory = await conversationTranscriptBefore(
+        conversationId,
+        messageId,
+        40,
+        conversation.rolling_upto,
+      );
       const turn = await runManagedTurn(agent, conversation, subscriber, fullHistory, message, {
         // Once the plan card is live it carries the "working" signal; keep the
         // typing pulse only for the pre-card model rounds.
@@ -313,6 +327,20 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       // Phase 23 (D7): a resolved managed conversation gets summarized + embedded
       // off the hot path (idempotent jobId; the job self-filters trivial/bridge).
       if (turn.resolved) await enqueueSummarize(tenantId, conversationId);
+
+      // Phase 24 (D6/D7): rolling-fold trigger. Reuse the history ALREADY loaded
+      // for this turn (already the post-rolling_upto window) — NO second load —
+      // and the agent's knobs. When the un-summarized replayable turns exceed the
+      // trigger, or their serialized text exceeds the token guard, enqueue an
+      // idempotent fold on the knowledge queue. Skip a resolved conversation:
+      // episodic summarization owns its close-out, and no more turns will arrive.
+      if (!turn.resolved) {
+        const knobs = resolveRollingKnobs(agent.context);
+        const replayable = fullHistory.filter(isReplayableTurn);
+        if (shouldFold(replayable.length, serializeFoldInput(fullHistory, null), knobs)) {
+          await enqueueRollingFold(tenantId, conversationId, messageId);
+        }
+      }
     } catch (err) {
       if (err instanceof PermanentError) {
         // Bad key / model / endpoint: retrying can't fix it — make it

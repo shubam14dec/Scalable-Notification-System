@@ -242,7 +242,15 @@ describe('the managed turn', () => {
     const last = seen.at(-1)!;
     expect(last.apiKey).toBe('zai-test-key-123456');
     expect(last.body.model).toBe('glm-4-test');
-    expect(last.body.system).toBe('You are the Acme support agent. Be brief.');
+    // D9: system is a cache_control-marked blocks array now. No profile / rolling
+    // summary here -> a SINGLE stable block carrying the cache breakpoint.
+    expect(last.body.system).toEqual([
+      {
+        type: 'text',
+        text: 'You are the Acme support agent. Be brief.',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
     // Second turn carries the full history: user, assistant, then the new turn.
     expect(last.body.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
     expect(String(last.body.messages.at(-1)?.content)).toContain('and again');
@@ -321,6 +329,7 @@ describe('the tool loop', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       'present_buttons',
       'present_choices',
+      'remember',
       'request_input',
       'resolve_conversation',
       'set_metadata',
@@ -516,7 +525,15 @@ describe('the tool loop', () => {
 
     const t = await transcript(turn.conversationId);
     const reply = t.messages.findLast((m: { role: string }) => m.role === 'agent');
-    expect(reply.usage).toEqual({ inputTokens: 20, outputTokens: 10, modelCalls: 2 });
+    // Stub usage carries no cache_*_input_tokens -> the D9 cache counters stay 0
+    // (the z.ai case); the two fields are always present, defaulting to 0.
+    expect(reply.usage).toEqual({
+      inputTokens: 20,
+      outputTokens: 10,
+      modelCalls: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
     // Conversation totals accumulate across every managed turn in the thread.
     expect(t.usage.modelCalls).toBeGreaterThanOrEqual(2);
     expect(t.usage.inputTokens).toBeGreaterThanOrEqual(20);
@@ -595,6 +612,7 @@ describe('the tool loop', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       'present_buttons',
       'present_choices',
+      'remember',
       'request_input',
       'resolve_conversation',
       'set_metadata',

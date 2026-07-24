@@ -11,6 +11,7 @@ import {
 import { getEmbeddingsConfig, embedTexts, type EmbeddingsConfig } from '../../core/embeddings';
 import { getVectorStore, type VectorStore } from '../../core/vector-store';
 import { summarizeAndEmbedConversation } from '../../core/episodic';
+import { foldRollingSummary } from '../../core/rolling';
 import { chunkText } from '../../core/chunker';
 import {
   bulkInsert,
@@ -27,12 +28,15 @@ import {
  * Phase 23 Slice B: the knowledge queue processor (QUEUE.KNOWLEDGE). Three job
  * kinds share the queue (concurrency 1 keeps a tenant's ingestion serial):
  *
- *  - 'index'     — chunk + embed + upsert a source's content (this file).
- *  - 'summarize' — episodic memory on conversation resolve (slice C owns the
- *                  body; we just dispatch to summarizeAndEmbedConversation).
- *  - 'cleanup'   — drive the external vector delete from Postgres-owned ids
- *                  (the D2 consistency rule — GDPR deletes never depend on a
- *                  filter-delete; the row deletion already happened).
+ *  - 'index'            — chunk + embed + upsert a source's content (this file).
+ *  - 'summarize'        — episodic memory on conversation resolve (dispatch to
+ *                         summarizeAndEmbedConversation).
+ *  - 'summarize-rolling'— P24 rolling fold of a long live conversation (dispatch
+ *                         to foldRollingSummary; managed-only, idempotent).
+ *  - 'cleanup'          — drive the external vector delete from Postgres-owned
+ *                         ids (the D2 consistency rule — GDPR deletes never
+ *                         depend on a filter-delete; the row deletion already
+ *                         happened).
  */
 
 const EMBED_BATCH_SIZE = 96;
@@ -41,7 +45,7 @@ const FETCH_TIMEOUT_MS = 15_000;
 const MAX_FETCH_BYTES = 5 * 1024 * 1024;
 
 export interface KnowledgeJobData {
-  kind: 'index' | 'summarize' | 'cleanup';
+  kind: 'index' | 'summarize' | 'summarize-rolling' | 'cleanup';
   tenantId: string;
   /** index/reindex: the source to (re)build. */
   sourceId?: string;
@@ -62,6 +66,14 @@ export async function processKnowledge(job: Job<KnowledgeJobData>): Promise<void
   if (kind === 'summarize') {
     if (!job.data.conversationId) return;
     await summarizeAndEmbedConversation({
+      tenantId: job.data.tenantId,
+      conversationId: job.data.conversationId,
+    });
+    return;
+  }
+  if (kind === 'summarize-rolling') {
+    if (!job.data.conversationId) return;
+    await foldRollingSummary({
       tenantId: job.data.tenantId,
       conversationId: job.data.conversationId,
     });

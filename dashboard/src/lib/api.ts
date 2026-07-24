@@ -39,6 +39,9 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The full parsed error body — carries structured fields like a 409's
+     *  `currentKeys`/`limits`. Optional so existing throwers stay unchanged. */
+    readonly body?: unknown,
   ) {
     super(message);
   }
@@ -88,7 +91,7 @@ export async function api<T = unknown>(
 
   const body = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) {
-    throw new ApiError(res.status, body.error ?? `request failed (${res.status})`);
+    throw new ApiError(res.status, body.error ?? `request failed (${res.status})`, body);
   }
   return body as T;
 }

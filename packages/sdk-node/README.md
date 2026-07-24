@@ -97,6 +97,34 @@ await asyncify.agents.knowledge.remove('acme-support', source.id);
 Once a source is `ready`, the managed brain is offered a `search_knowledge`
 tool and cites what it finds as `[source: returns-policy]`.
 
+## Long-term memory (per customer)
+
+Knowledge is what your business knows; **memory** is the durable facts an agent
+keeps about *one* customer — a preference, their plan, a constraint — loaded
+into every future conversation with them. The agent writes these itself (its
+`remember` built-in), and you can read or edit them by the subscriber's external
+id:
+
+```ts
+// what the agent remembers about this customer
+const { memories } = await asyncify.agents.memories.list('acme-support', 'user-42');
+// → [{ key: 'channel_pref', value: 'prefers email over SMS', source: 'agent', updatedAt: '…' }]
+
+// set/correct a fact yourself (tagged source: 'operator')
+await asyncify.agents.memories.put('acme-support', 'user-42', {
+  key: 'plan',
+  value: 'Pro',
+});
+
+// forget one fact, or the whole profile (omit the key)
+await asyncify.agents.memories.remove('acme-support', 'user-42', 'plan');
+await asyncify.agents.memories.remove('acme-support', 'user-42');
+```
+
+Caps are enforced: ≤32 keys per customer, key ≤64 chars, value ≤300 chars. A new
+key on a full profile → `AsyncifyError` (409) — overwrite an existing key
+instead. Never store secrets or payment data here.
+
 ## API surface
 
 | Method | Purpose |
@@ -111,6 +139,7 @@ tool and cites what it finds as `[source: returns-policy]`.
 | `agents.create / list / get / update / rotateSecret / delete / linkToken` | Manage AI agents |
 | `agents.tools.create / list / update / delete / rotateSecret` | Per-agent custom tool registry |
 | `agents.knowledge.create / list / reindex / remove` | Per-agent knowledge sources for grounded answers |
+| `agents.memories.list / put / remove` | Per-customer long-term memory (durable facts, by subscriber external id) |
 | `approvals.list / decide` | Human-in-the-loop tool-call queue |
 | `settings.getApprovals / putApprovals` | Which channels carry approval cards |
 | `subscriberToken(subscriberId, ttlSeconds?)` | Browser-safe inbox token |

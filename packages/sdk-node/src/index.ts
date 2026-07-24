@@ -255,6 +255,21 @@ export interface CreateKnowledgeSourceOptions {
   url?: string;
 }
 
+/**
+ * One durable fact an agent keeps about a subscriber for FUTURE conversations
+ * — a preference, plan, or constraint (e.g. `channel_pref: "prefers email"`).
+ * `source` is `'agent'` (written by the `remember` built-in mid-conversation)
+ * or `'operator'` (edited from the dashboard or `agents.memories.put`). The
+ * managed brain loads the whole profile into every later conversation with
+ * this customer. Never holds secrets or payment data.
+ */
+export interface SubscriberMemory {
+  key: string;
+  value: string;
+  source: 'agent' | 'operator';
+  updatedAt: string;
+}
+
 /** Which connections carry approval cards; each field null when unset. */
 export interface ApprovalSettings {
   slackConnectionId: string | null;
@@ -553,6 +568,49 @@ export class AsyncifyClient {
         this.request<{ deleted: boolean }>(
           'DELETE',
           `/v1/agents/${encodeURIComponent(identifier)}/knowledge/${encodeURIComponent(sourceId)}`,
+        ),
+    },
+
+    /**
+     * Per-subscriber long-term memory (managed runtime): the durable facts an
+     * agent remembers about ONE customer across conversations. A subscriber is
+     * addressed by its external id (the id you pass in `to` / `subscriberId`),
+     * not an internal uuid; an unknown agent or subscriber → 404. Reads as
+     * `client.agents.memories.list('acme-support', 'user-42')`.
+     */
+    memories: {
+      /** Every stored fact for this (agent, subscriber), ordered by key. */
+      list: (identifier: string, subscriberExternalId: string) =>
+        this.request<{ memories: SubscriberMemory[] }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/memories/${encodeURIComponent(subscriberExternalId)}`,
+        ),
+      /**
+       * Set one fact (upsert by `key`), tagged `source: 'operator'`. Caps: ≤32
+       * keys per subscriber, key ≤64 chars, value ≤300 chars. A NEW key on a
+       * full profile → 409 (overwrite an existing key instead — no silent drop).
+       */
+      put: (
+        identifier: string,
+        subscriberExternalId: string,
+        fact: { key: string; value: string },
+      ) =>
+        this.request<{ memory: SubscriberMemory }>(
+          'PUT',
+          `/v1/agents/${encodeURIComponent(identifier)}/memories/${encodeURIComponent(subscriberExternalId)}`,
+          fact,
+        ),
+      /**
+       * Delete one fact by `key`, or the WHOLE profile when `key` is omitted
+       * (deleting the subscriber removes it all too — GDPR). Returns the number
+       * of rows removed.
+       */
+      remove: (identifier: string, subscriberExternalId: string, key?: string) =>
+        this.request<{ deleted: number }>(
+          'DELETE',
+          `/v1/agents/${encodeURIComponent(identifier)}/memories/${encodeURIComponent(
+            subscriberExternalId,
+          )}${key === undefined ? '' : `?key=${encodeURIComponent(key)}`}`,
         ),
     },
   };

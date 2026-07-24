@@ -763,3 +763,43 @@ create table if not exists conversation_summaries (
 
 create index if not exists conversation_summaries_subscriber_idx
   on conversation_summaries (agent_id, subscriber_id);
+
+-- ---- Phase 24: long-term memory (subscriber profile) + cost ----
+-- Durable per-(agent, subscriber) key/value facts the agent chooses to keep
+-- for FUTURE conversations (a preference, plan, or constraint — never secrets).
+-- Loaded (never searched) into every managed turn's system content as the
+-- <customer_profile> section; the caps (<=32 keys, key<=64, value<=300) are
+-- law, enforced in memories.repo, not here. Same (agent, subscriber) scoping as
+-- episodic memory; cross-agent sharing is a later bucket. GDPR: deleting the
+-- subscriber (or agent) cascades these rows away — provable in SQL.
+create table if not exists subscriber_memories (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants(id),
+  agent_id      uuid not null references agents(id) on delete cascade,
+  subscriber_id uuid not null references subscribers(id) on delete cascade,
+  key           text not null,
+  value         text not null,
+  source        text not null default 'agent', -- agent | operator
+  updated_at    timestamptz not null default now(),
+  unique (agent_id, subscriber_id, key)
+);
+
+-- The profile load's hot path: one indexed range read per managed turn
+-- (<=32 rows), the same class as the P23 corpus-existence probes.
+create index if not exists subscriber_memories_scope_idx
+  on subscriber_memories (agent_id, subscriber_id);
+
+-- Per-agent free-form config bag. Slice B (rolling summarization) reads the
+-- trigger knobs {triggerTurns?, tailTurns?} from here; slice A only lands the
+-- column so the shape is in place.
+alter table agents add column if not exists context jsonb not null default '{}';
+
+-- D5 rolling summarization state on the conversation (no new table). As a long
+-- managed conversation grows past the trigger, older turns are folded into
+-- rolling_summary (a system-block summary, NEVER replayed as an assistant
+-- turn); rolling_upto is the newest message id already folded, so the replay
+-- loader takes rows strictly AFTER it and injects rolling_summary as the
+-- <prior_conversation_summary> system section. The RESOLVE summary column
+-- (conversations.summary) is a different signal and stays untouched.
+alter table conversations add column if not exists rolling_summary text;
+alter table conversations add column if not exists rolling_upto uuid;

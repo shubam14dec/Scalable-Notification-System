@@ -93,7 +93,13 @@ function startLlmStub(): Promise<void> {
 }
 
 const offeredToolNames = () => (llmSeen.at(-1)!.tools ?? []).map((t) => t.name);
-const lastSystem = () => String(llmSeen.at(-1)!.system ?? '');
+// D9: the brain now sends `system` as a cache_control blocks array; the episodic
+// summarizer still sends a plain string. Flatten either to text for assertions.
+const lastSystem = () => {
+  const s = llmSeen.at(-1)!.system as unknown;
+  if (Array.isArray(s)) return s.map((b: { text?: string }) => b.text ?? '').join('\n\n');
+  return String(s ?? '');
+};
 function lastToolResult(): string {
   const msgs = llmSeen.at(-1)!.messages;
   const last = msgs.at(-1) as { role: string; content: Array<{ content: string }> };

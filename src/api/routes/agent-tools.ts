@@ -35,6 +35,8 @@ const RESERVED_TOOL_NAMES = [
   // built-in (custom dispatch is checked first in executeTool).
   'search_knowledge',
   'search_history',
+  // Phase 24 long-term memory built-in.
+  'remember',
 ];
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;

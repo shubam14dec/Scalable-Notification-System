@@ -37,6 +37,18 @@ export interface AgentHealth {
   toolCalls: number;
   toolFailures: number;
   tools: AgentToolStat[];
+  /**
+   * Phase 24 D10 budget intelligence. p95DailyTokens is the 95th percentile of
+   * per-day token spend (input+output over reply rows) across the last 30 days;
+   * suggestedDailyTokens is that p95 x 3 rounded UP to the nearest 50,000 — a
+   * headroom-padded daily budget the dashboard shows as a hint (never
+   * auto-applied). suggestedDailyTokens is null when fewer than 7 distinct days
+   * of data exist (no suggestion from noise); both are null when the agent has
+   * no usage in the 30-day window. This window is FIXED at 30 days regardless of
+   * the health `windowDays`, so the figure always matches the "30-day" hint.
+   */
+  suggestedDailyTokens: number | null;
+  p95DailyTokens: number | null;
 }
 
 /** node-pg hands numeric/avg back as text; float8 as number. Normalize both. */
@@ -91,6 +103,42 @@ export async function agentHealth(
     [tenantId, agentId, windowDays],
   );
 
+  // D10 budget suggestion: 30-day per-day token spend, then the 95th percentile
+  // of those daily sums. ONE set-based query (the 10-20M rule — cost scales with
+  // matches, not users): a CTE buckets reply-row usage into UTC days (matching
+  // the day-token budget counter's UTC boundary), the outer aggregate takes the
+  // distinct-day count + percentile_cont(0.95) over them. Fixed 30-day window,
+  // independent of `windowDays`, so the suggestion is always the documented
+  // 30-day figure. Reply rows only (role='agent') per the D10 contract.
+  const budget = await pool.query(
+    `with daily as (
+       select date_trunc('day', m.created_at) as day,
+              sum(coalesce((m.raw->'usage'->>'inputTokens')::numeric, 0)
+                + coalesce((m.raw->'usage'->>'outputTokens')::numeric, 0)) as tokens
+         from conversation_messages m
+         join conversations c on c.id = m.conversation_id
+        where c.tenant_id = $1
+          and c.agent_id = $2
+          and m.created_at >= now() - make_interval(days => 30)
+          and m.role = 'agent'
+          and m.raw ? 'usage'
+        group by 1
+     )
+     select count(*)::int as days,
+            percentile_cont(0.95) within group (order by tokens) as p95
+       from daily`,
+    [tenantId, agentId],
+  );
+  const b = budget.rows[0] as { days: number; p95: string | null };
+  const p95Daily = num(b.p95);
+  // <7 distinct days -> no suggestion from noise (D10). p95 x 3, rounded UP to
+  // the nearest 50k so the number reads as a deliberate budget.
+  const suggestedDailyTokens =
+    b.days < 7 || p95Daily === null
+      ? null
+      : Math.ceil((p95Daily * 3) / 50_000) * 50_000;
+  const p95DailyTokens = p95Daily === null ? null : Math.round(p95Daily);
+
   const t = turns.rows[0] as {
     turns: number;
     replies: number;
@@ -130,5 +178,7 @@ export async function agentHealth(
     toolCalls,
     toolFailures,
     tools,
+    suggestedDailyTokens,
+    p95DailyTokens,
   };
 }

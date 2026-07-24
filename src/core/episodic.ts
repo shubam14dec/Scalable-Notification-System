@@ -18,6 +18,7 @@ import {
   getAgentById,
   conversationTranscript,
   type Agent,
+  type Conversation,
   type ConversationMessage,
 } from '../db/conversations.repo';
 import { getEmbeddingsConfig, embedTexts } from './embeddings';
@@ -110,7 +111,7 @@ export async function summarizeAndEmbedConversation(job: {
       logger.debug({ conversationId, userTurns }, 'episodic: <2 user turns, nothing worth remembering');
       return;
     }
-    summaryText = await summarize(agent, transcript);
+    summaryText = await summarize(agent, transcript, conversation);
     if (!summaryText) {
       logger.debug({ conversationId }, 'episodic: empty summary, skipping');
       return;
@@ -153,11 +154,28 @@ export async function summarizeAndEmbedConversation(job: {
  * A brain CONFIG error (bad key/model) is a silent skip; a transient blip
  * throws so BullMQ retries the whole job.
  */
-async function summarize(agent: Agent, transcript: ConversationMessage[]): Promise<string> {
-  const convoText = transcript
-    .filter((m) => (m.role === 'user' || m.role === 'agent') && !m.deleted_at)
-    .map((m) => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${m.content}`)
-    .join('\n')
+async function summarize(
+  agent: Agent,
+  transcript: ConversationMessage[],
+  conversation: Conversation,
+): Promise<string> {
+  // D8 handoff: when the conversation was rolling-folded, its earliest turns
+  // live in rolling_summary, not the transcript window — so feed the summarizer
+  // rolling_summary + only the POST-fold rows, so nothing is lost at resolve.
+  let rows = transcript;
+  let preamble = '';
+  if (conversation.rolling_upto && conversation.rolling_summary) {
+    const idx = transcript.findIndex((m) => m.id === conversation.rolling_upto);
+    if (idx >= 0) rows = transcript.slice(idx + 1);
+    preamble = `Earlier in this conversation (summary): ${conversation.rolling_summary.trim()}\n`;
+  }
+  const convoText = (
+    preamble +
+    rows
+      .filter((m) => (m.role === 'user' || m.role === 'agent') && !m.deleted_at)
+      .map((m) => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${m.content}`)
+      .join('\n')
+  )
     // Bound the prompt — a summary needs the gist, not every token of a long thread.
     .slice(0, 12_000);
 

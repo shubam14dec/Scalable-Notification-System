@@ -13,6 +13,12 @@ import { internalTrigger } from './internal-trigger';
 import { getEmbeddingsConfig, embedTexts, type EmbeddingsConfig } from './embeddings';
 import { getVectorStore, type VectorStore } from './vector-store';
 import {
+  listMemories,
+  upsertMemory,
+  MemoryCapError,
+  type SubscriberMemory,
+} from '../db/memories.repo';
+import {
   listToolDefs,
   recordToolCall,
   finishToolCall,
@@ -93,6 +99,15 @@ export interface TurnUsage {
   inputTokens: number;
   outputTokens: number;
   modelCalls: number;
+  /**
+   * D9 prompt-caching metrics, summed across the turn's model calls. cacheRead
+   * = prompt tokens served from the provider cache (billed ~0.1x);
+   * cacheWrite = tokens written to the cache on a miss. Both default 0 and stay
+   * 0 on providers that don't cache or report no cache activity (z.ai's
+   * anthropic-compat endpoint returns no cache_*_input_tokens fields).
+   */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 /**
@@ -102,7 +117,7 @@ export interface TurnUsage {
  * here). A union must be a `type`, not an `interface`.
  */
 export type TurnTraceEvent =
-  | { t: 'model_call'; ms: number; inputTokens: number; outputTokens: number; stopReason: string | null; model: string }
+  | { t: 'model_call'; ms: number; inputTokens: number; outputTokens: number; stopReason: string | null; model: string; cacheRead?: number; cacheWrite?: number }
   | { t: 'tool_call'; name: string; ms: number; ok: boolean; paused?: true }
   | { t: 'bridge_post'; ms: number; status: number; ok: boolean };
 
@@ -240,12 +255,18 @@ export async function runManagedTurn(
 ): Promise<BrainTurnResult> {
   const client = await buildManagedClient(agent);
 
-  const workflowKeys = (await listWorkflows(conversation.tenant_id)).map(
-    (w: { key: string }) => w.key,
-  );
-  // Customer-registered tools, loaded ONCE per turn and merged into the model's
-  // tool menu; a name->def map hands executeTool the routing + endpoint/secret.
-  const toolDefs = await listToolDefs(conversation.tenant_id, agent.id, { activeOnly: true });
+  // Turn setup loads in parallel: the tenant's workflow keys, this agent's
+  // custom tool defs, and (D4) this subscriber's long-term memory profile —
+  // one indexed listMemories read, folded into the same Promise.all so it adds
+  // no serial latency.
+  const [workflows, toolDefs, profile] = await Promise.all([
+    listWorkflows(conversation.tenant_id),
+    listToolDefs(conversation.tenant_id, agent.id, { activeOnly: true }),
+    listMemories(agent.id, conversation.subscriber_id),
+  ]);
+  const workflowKeys = workflows.map((w: { key: string }) => w.key);
+  // Customer-registered tools, merged into the model's tool menu; a name->def
+  // map hands executeTool the routing + endpoint/secret.
   const defsByName = new Map(toolDefs.map((d) => [d.name, d]));
 
   // Phase 23: retrieval is offered only when the tenant has BOTH an embeddings
@@ -267,10 +288,43 @@ export async function runManagedTurn(
     history: retrieval?.history ?? false,
   });
 
-  // D6 grounding scaffold: when search_knowledge is offered, the system content
-  // gains a directive to answer factual questions ONLY from retrieved results
-  // and cite the source; a one-liner points at search_history when offered.
-  const systemContent = buildSystem(agent.system_prompt, retrieval);
+  // D9 (shape only): buildSystem now returns a STABLE half (system prompt +
+  // grounding scaffold — identical to before) and a VOLATILE half (D4's
+  // <customer_profile> section). Slice C will send these as two cache_control
+  // blocks with the marker on `stable`; for now we send the plain concatenation
+  // so behavior is unchanged except for the new profile section.
+  const { stable, volatile } = buildSystem(
+    agent.system_prompt,
+    retrieval,
+    profile,
+    conversation.rolling_summary,
+  );
+  // --- slice C cache breakpoint: cache_control marks the END of the STABLE
+  // prefix, so the system prompt + grounding scaffold bills at ~0.1x on every
+  // turn after the first. The VOLATILE block (customer profile + rolling
+  // summary) sits BELOW the breakpoint and is never cached — it changes per
+  // subscriber/turn. Tools render before system, so this one marker covers the
+  // whole stable prefix (tools + stable system). z.ai may ignore cache_control
+  // (no discount, no error — harmless); real Anthropic endpoints honor it. The
+  // SDK's `system` param accepts Array<TextBlockParam> with cache_control (SDK
+  // 0.110.0), so no cast is needed.
+  const systemBlocks: Anthropic.TextBlockParam[] = [];
+  if (stable.length > 0) {
+    // Marker ALWAYS sent on the stable prefix (a sub-minimum prefix simply
+    // won't cache — harmless).
+    systemBlocks.push({ type: 'text', text: stable, cache_control: { type: 'ephemeral' } });
+  }
+  if (volatile.length > 0) {
+    // If a rare agent has NO stable prefix, the volatile block carries the
+    // marker so a marker is still always sent (an empty text block is illegal,
+    // so we cannot emit an empty stable block just to hold it). Both empty ->
+    // no `system` at all, matching the prior `systemContent ? …` behavior.
+    systemBlocks.push({
+      type: 'text',
+      text: volatile,
+      ...(stable.length === 0 ? { cache_control: { type: 'ephemeral' as const } } : {}),
+    });
+  }
 
   // The last tokens before generation win with weak models: a per-turn
   // reminder rides the CURRENT message only — synthesized at request time,
@@ -287,7 +341,10 @@ export async function runManagedTurn(
       ? 'a notification -> call trigger_workflow; '
       : '') +
     'the user indicates the issue is settled -> call resolve_conversation; ' +
-    'a durable fact worth remembering -> call set_metadata; ' +
+    'a fact about THIS conversation worth noting -> call set_metadata; ' +
+    'a durable fact about the CUSTOMER for future conversations (a preference, ' +
+    'their plan, a constraint — never passwords, payment details, or secrets) ' +
+    '-> call remember; ' +
     'you are offering the user a small set of choices -> call present_buttons ' +
     'instead of listing them in text. ' +
     'you need a structured answer: a pick-one list -> call present_choices, ' +
@@ -323,7 +380,13 @@ export async function runManagedTurn(
   // of them wins — a reply carries buttons XOR a card, never both. Survives
   // only if the turn ends with reply text to carry it.
   let presentation: { buttons?: ReplyButton[]; card?: Card } | undefined;
-  const usage: TurnUsage = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
+  const usage: TurnUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    modelCalls: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
   // Per-turn execution trace: the product-facing twin of the OTel spans below
   // (D5) — the same model/tool events, but persisted on the transcript row so
   // the dashboard can render a turn with no trace backend. Bounded by
@@ -345,7 +408,7 @@ export async function runManagedTurn(
         client.messages.create({
           model,
           max_tokens: agent.max_tokens ?? DEFAULT_MAX_TOKENS,
-          ...(systemContent ? { system: systemContent } : {}),
+          ...(systemBlocks.length > 0 ? { system: systemBlocks } : {}),
           tools,
           messages,
         }),
@@ -378,6 +441,12 @@ export async function runManagedTurn(
     usage.modelCalls += 1;
     usage.inputTokens += response.usage?.input_tokens ?? 0;
     usage.outputTokens += response.usage?.output_tokens ?? 0;
+    // D9 cache metrics: present (non-null) on real Anthropic endpoints,
+    // absent/null on z.ai's anthropic-compat layer -> coalesce to 0.
+    const cacheRead = response.usage?.cache_read_input_tokens ?? 0;
+    const cacheWrite = response.usage?.cache_creation_input_tokens ?? 0;
+    usage.cacheReadTokens += cacheRead;
+    usage.cacheWriteTokens += cacheWrite;
     events.push({
       t: 'model_call',
       ms: Date.now() - callStart,
@@ -385,6 +454,10 @@ export async function runManagedTurn(
       outputTokens: response.usage?.output_tokens ?? 0,
       stopReason: response.stop_reason ?? null,
       model,
+      // OPTIONAL fields, set ONLY when > 0 (frozen-union rule: no new variant;
+      // the dashboard renders "cached N" only when cacheRead > 0).
+      ...(cacheRead > 0 ? { cacheRead } : {}),
+      ...(cacheWrite > 0 ? { cacheWrite } : {}),
     });
 
     // Check stop_reason before reading content (refusals can carry none).
@@ -778,6 +851,33 @@ function buildTools(
       },
     },
     {
+      name: 'remember',
+      description:
+        'Save a durable fact about THIS customer so you recall it in FUTURE ' +
+        'conversations — a lasting preference, their plan, an ongoing constraint ' +
+        '(e.g. "prefers email over SMS", "on the Pro plan", "ships to Berlin"). ' +
+        'This differs from set_metadata: set_metadata notes something about the ' +
+        'CURRENT conversation, while what you remember here is loaded into every ' +
+        'later conversation with this customer. Call it whenever you learn ' +
+        'something worth recalling next time. NEVER store secrets, passwords, ' +
+        'payment-card details, or other sensitive data. Use a short snake_case ' +
+        'key so you can overwrite the same fact later.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            description: 'Short snake_case key, e.g. "channel_preference"',
+          },
+          value: {
+            type: 'string',
+            description: 'The durable fact to remember (300 characters or fewer)',
+          },
+        },
+        required: ['key', 'value'],
+      },
+    },
+    {
       name: 'resolve_conversation',
       description:
         'Mark this conversation resolved. Call it when the user indicates their issue ' +
@@ -965,19 +1065,27 @@ function buildTools(
 }
 
 /**
- * D6 grounding scaffold. Directives, not imitable prose: the citation format
- * [source: …] is the model's OWN intended output (a citation it should write),
- * not a platform receipt like [action taken:], so appending it here is safe.
- * Returns undefined when there is neither a system prompt nor any retrieval —
- * so a plain agent's request stays byte-for-byte as before.
+ * D9 (shape only): split the system content into a STABLE half and a VOLATILE
+ * half. The stable half is the D6 grounding scaffold — system prompt + the
+ * retrieval directives, byte-for-byte what buildSystem returned before the
+ * split — and is what slice C marks with cache_control. The volatile half is
+ * D4's <customer_profile> section, which varies per subscriber and must live
+ * BELOW the future cache breakpoint. The call site concatenates the two for now
+ * (behavior unchanged except the new profile section).
+ *
+ * Directives, not imitable prose: the citation format [source: …] is the
+ * model's OWN intended output (a citation it should write), not a platform
+ * receipt like [action taken:], so appending it here is safe.
  */
 function buildSystem(
   systemPrompt: string | null,
   retrieval: RetrievalContext | null,
-): string | undefined {
-  let system = systemPrompt ?? '';
+  profile: SubscriberMemory[],
+  rollingSummary: string | null,
+): { stable: string; volatile: string } {
+  let stable = systemPrompt ?? '';
   if (retrieval?.knowledge) {
-    system +=
+    stable +=
       "\n\nYou have a search_knowledge tool backed by this business's own indexed " +
       'material. Answer policy, product, and factual questions ONLY from ' +
       'search_knowledge results — never from your own prior knowledge. For any ' +
@@ -986,11 +1094,75 @@ function buildSystem(
       'connect the customer with a human — never invent or guess a policy detail.';
   }
   if (retrieval?.history) {
-    system +=
+    stable +=
       "\n\nYou may check this customer's past conversations with search_history " +
       'when they reference prior contact.';
   }
-  return system.length > 0 ? system : undefined;
+  return { stable, volatile: buildVolatile(profile, rollingSummary) };
+}
+
+/**
+ * The VOLATILE system half (below the future cache breakpoint): the D4
+ * <customer_profile> section, then — appended AFTER it (D8) — the rolling
+ * conversation summary as its own <prior_conversation_summary> section. The
+ * summary is a SYSTEM block, NEVER an assistant turn (imitation lesson §13);
+ * omitted entirely when null so a short conversation carries nothing extra.
+ */
+function buildVolatile(profile: SubscriberMemory[], rollingSummary: string | null): string {
+  const sections: string[] = [];
+  const customerProfile = buildCustomerProfile(profile);
+  if (customerProfile) sections.push(customerProfile);
+  if (rollingSummary && rollingSummary.trim()) {
+    sections.push(
+      '<prior_conversation_summary>\n' + rollingSummary.trim() + '\n</prior_conversation_summary>',
+    );
+  }
+  return sections.join('\n\n');
+}
+
+/**
+ * D4 customer-profile section: "key: value" lines plus a silent-use directive.
+ * Returns '' for an empty profile so the section is omitted entirely. The
+ * rolling conversation summary is appended after this in buildVolatile (D8).
+ */
+function buildCustomerProfile(profile: SubscriberMemory[]): string {
+  if (profile.length === 0) return '';
+  const lines = profile.map((m) => `${m.key}: ${m.value}`).join('\n');
+  return (
+    '<customer_profile>\n' +
+    lines +
+    '\nUse these facts silently when relevant; do not recite this list to the customer.\n' +
+    '</customer_profile>'
+  );
+}
+
+/**
+ * Turn a MemoryCapError into an INSTRUCTIVE tool result: the model gets told
+ * exactly why the remember failed and how to succeed (overwrite an existing
+ * key, or shorten). Listing the current keys lets it pick one to reuse rather
+ * than silently losing the fact — the D2 "no silent truncation" law.
+ */
+function memoryCapMessage(err: MemoryCapError): string {
+  switch (err.reason) {
+    case 'too_many_keys':
+      return (
+        `cannot remember a new fact — this customer's profile is full ` +
+        `(${err.limits.maxKeys} keys max). To save this, reuse one of the ` +
+        `existing keys to overwrite it: ${err.currentKeys.join(', ')}.`
+      );
+    case 'value_too_long':
+      return (
+        `cannot remember — the value is longer than ${err.limits.maxValueLen} ` +
+        `characters. Store a shorter, essential version of the fact.`
+      );
+    case 'key_too_long':
+      return (
+        `cannot remember — the key is longer than ${err.limits.maxKeyLen} ` +
+        `characters. Use a short snake_case key.`
+      );
+    default:
+      return err.message;
+  }
 }
 
 /** The outcome of one tool call. `pausedToolName` is set only when an
@@ -1140,6 +1312,42 @@ async function executeTool(
     conversation.metadata = merged;
     await updateConversationMetadata(conversation.id, merged);
     return { message: `saved ${key}` };
+  }
+
+  if (use.name === 'remember') {
+    // D3: durable per-(agent, subscriber) fact. Validate shape here (mirrors
+    // set_metadata's manual checks); the D2 CAPS are enforced in the repo,
+    // which throws MemoryCapError -> an INSTRUCTIVE is_error result so the model
+    // can overwrite an existing key instead of losing the fact silently.
+    const key = typeof input.key === 'string' ? input.key.trim() : '';
+    const value = typeof input.value === 'string' ? input.value : '';
+    if (!key) return { message: 'key is required', isError: true };
+    if (!value) return { message: 'value is required', isError: true };
+    try {
+      await upsertMemory({
+        tenantId: conversation.tenant_id,
+        agentId: agent.id,
+        subscriberId: conversation.subscriber_id,
+        key,
+        value,
+        source: 'agent',
+      });
+    } catch (err) {
+      if (err instanceof MemoryCapError) {
+        return { message: memoryCapMessage(err), isError: true };
+      }
+      throw err;
+    }
+    // Breadcrumb the effect so history replay reconstructs it as a REAL
+    // tool_use/tool_result pair (imitating it = calling remember again = a
+    // harmless re-save), same honesty rule as trigger_workflow/resolve.
+    await breadcrumb(
+      conversation,
+      `signal-${inbound.id}-remember-${key}`,
+      `remembered ${key}`,
+      { tool: 'remember', input: { key, value }, result: `remembered ${key}` },
+    );
+    return { message: `remembered ${key}` };
   }
 
   if (use.name === 'resolve_conversation') {
