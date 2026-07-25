@@ -7,8 +7,8 @@ plans get a short review section, then move to Done.
 ## Production-grade agents roadmap (agreed 2026-07-21, ranked; plans
 ## need user approval per phase)
 
-- [ ] Phase 21 — Agent observability — BUILD COMPLETE 2026-07-21, user
-      E2E pending (plan: ~/.claude/plans/phase21-agent-observability.md;
+- [x] Phase 21 — Agent observability — COMPLETE 2026-07-21: user-E2E'd
+      (turn inspector, health, Jaeger walkthrough), pushed same day (plan: ~/.claude/plans/phase21-agent-observability.md;
       suite 543→558 twice; all Opus, audited):
       [x] A capture: TurnTrace on every runManagedTurn exit (model_call
           ms/tokens/stopReason incl. thrown-call event; tool_call
@@ -39,7 +39,11 @@ plans get a short review section, then move to Done.
       column → per-tool avgMs is null; add duration capture with the
       guardrails work. Crash-mid-turn traces still unrecorded (D7).
       PHASE 21 COMPLETE — commits 03b9919 + 018cc7d (LOCAL, unpushed).
-- [ ] Phase 22 — Evals-as-gate + guardrails hardening: CI eval gate;
+- [x] Phase 22 — Evals + guardrails — COMPLETE 2026-07-22: user-E2E'd
+      (8 findings all fixed same-day), pushed; shipped repeat-action
+      guard, daily token budgets + ops alert, platformNote replay
+      exclusion, eval engine as queue jobs + dashboard runs. Later-bucket
+      leftovers from its original scope line: CI eval gate;
       customer-facing pre-save eval runs ("3/12 scenarios regressed");
       LLM-judge dimensions (groundedness/tone/refusals); one-click
       prod-conversation→eval-case; tool-call rate caps; per-agent
@@ -77,7 +81,7 @@ plans get a short review section, then move to Done.
       citations; episodic = same retrieval over past conversation
       summaries (continuity, repeat-problem escalation, product
       intelligence, tone calibration)
-- [x] Phase 24 BUILD COMPLETE (2026-07-25, all 6 slices first-try, suite
+- [x] Phase 24 COMPLETE (built+E2E'd 6/6 2026-07-25/26, pushed, node@0.7.0, all 6 slices first-try, suite
       614->654 double-green, ZERO revision rounds — third phase running):
       long-term memory (subscriber_memories 32/64/300 caps-as-law, remember
       tool w/ instructive cap results, Memory modal w/ agent-dot vs
@@ -234,9 +238,11 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Phase 20: Push & SMS hardening — BUILD COMPLETE, user E2E pending
-(plan approved 2026-07-18 + user added native mobile SDK; full plan in
-`~/.claude/plans/phase20-push-sms-hardening.md`. ALL COMMITS LOCAL.
+### Phase 20: Push & SMS hardening — COMPLETE (user-E2E'd all 6 tests incl.
+native on a borrowed Android 2026-07-20; PUSHED + RELEASED node@0.4.0,
+react@0.7.0, react-native@0.1.0; 4 shipped bugs found in E2E, all fixed:
+SW double-notification, cross-origin click, Metro CJS interop, native tap
+deep-link. Plan: `~/.claude/plans/phase20-push-sms-hardening.md`.
 All slices Opus, audited; suite 543/543 twice.)
 - [x] Foundation (manager): device_tokens table + legacy backfill;
       messages.device_key (5-col dedupe — audit had missed that the
@@ -353,7 +359,7 @@ fits telegram's 64-byte cap. ALL COMMITS LOCAL. All Opus.)
       foreign-ack/regression; branches slot BEFORE conversation
       machinery (taps never open threads); frozen job byte-exact;
       71 existing slack+telegram tests intact)
-- [ ] D. Dashboard: settings section on Approvals page
+- [x] D. Dashboard: settings section on Approvals page (shipped — ApprovalSettings form in Approvals.tsx)
 - [x] E. Tests: posting/taps/race/not_in_channel + parse unit
       (Opus, audited; suite 470→492 green 2x; 22 new incl. the full
       loop pending→tap→POST→cards-finalized→follow-up; adversarial
