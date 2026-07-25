@@ -238,6 +238,11 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+(nothing — production-agents roadmap P21-P24 complete and released;
+next work comes from the Later bucket / backlog, per user's pick)
+
+## Recently finished
+
 ### Phase 20: Push & SMS hardening — COMPLETE (user-E2E'd all 6 tests incl.
 native on a borrowed Android 2026-07-20; PUSHED + RELEASED node@0.4.0,
 react@0.7.0, react-native@0.1.0; 4 shipped bugs found in E2E, all fixed:
@@ -327,8 +332,6 @@ Notes for later (from E's review): updateMessageByProviderId has no
 terminal-state guard (a late 'sent' could regress 'delivered'; today
 unreachable — the webhook 204s intermediates before enqueue). Backlog:
 per-device digest fan-out; inbound two-way SMS (STOP content webhook).
-
-## Recently finished
 
 ### Agents — Phase 19: Channel Approvals (tap Approve/Deny in Slack/Telegram) — COMPLETE
 (plan approved 2026-07-15 auto mode; full plan in
