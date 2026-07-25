@@ -369,8 +369,8 @@ export function ConversationDetailPage() {
           agent?: { identifier: string; name: string };
           /** Phase 24 D11 — the customer's external id, if the API exposes it. */
           subscriberExternalId?: string;
-          /** Phase 24 D5 (slice B, in flight) — the auto rolling summary. */
-          rolling_summary?: string | null;
+          /** Phase 24 D5 — the auto rolling summary (API camelCase). */
+          rollingSummary?: string | null;
         };
         /** The owning agent, returned top-level by the API. */
         agent?: { identifier: string; name: string } | null;
@@ -410,7 +410,7 @@ export function ConversationDetailPage() {
     retry: false,
   });
   const memories = memoryQuery.data?.memories ?? [];
-  const rollingSummary = data?.conversation.rolling_summary;
+  const rollingSummary = data?.conversation.rollingSummary;
 
   // Tiny transient toast — no global provider, monochrome per the design system.
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null);

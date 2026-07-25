@@ -91,7 +91,19 @@ plans get a short review section, then move to Done.
       [profile+summary] after breakpoint, cache fields in TurnUsage/raw.usage/
       trace model_call optional fields, dashboard "· cached N"), BUDGET
       INTELLIGENCE (30d per-day p95 CTE, suggested = ceil(p95*3/50k)*50k,
-      null<7 days, hint in budget field). E2E pending user.
+      null<7 days, hint in budget field). E2E COMPLETE 6/6 (2026-07-26, user-driven): learn/remember verified in DB;
+      clean-room profile proof via message-deletion (transcript emptied ->
+      "saved preferences: email", zero tools — discovered reopen-by-design:
+      one conversation per (agent,channel,subscriber), resolve reopens);
+      operator edit/delete/re-learn cycle (agent re-remembered email address
+      unprompted); rolling fold live (18-turn convo replayed at 1,451 in vs
+      ~2,300 pre-fold, 9911 recalled from summary; note: model also called
+      search_history redundantly — polish: scaffold hint); z.ai HONORS
+      prompt caching (cached 1,856-2,368 live; 5-min TTL expiry observed as
+      0-cached turn); budget hint real numbers (p95 53,601 -> 200,000 ✓).
+      ONE E2E bug: B/D field mismatch rolling_summary vs rollingSummary
+      (manager brief error — D built to plan spelling, B shipped camelCase;
+      C got a match-D order, B/D didn't) -> 2-line dashboard fix, live.
       Original scope line: Phase 24 — Long-term memory + cost: subscriber_memories keyed
       rows (NOT vectors; load-all each turn; dashboard view/edit +
       GDPR delete; `remember` tool); rolling summarization (summary +
