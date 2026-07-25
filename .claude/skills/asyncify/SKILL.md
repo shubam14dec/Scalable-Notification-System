@@ -387,6 +387,17 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   t.me deep-link surface must ship the copyable `/start <token>` fallback
   beside it. Corollary: a QR test proves decode, not destination
   reachability — they fail independently.
+- **BYO providers retire models/params OVERNIGHT without notice** (twice in
+  one week: Google killed text-embedding-004; z.ai killed glm-4.7 on
+  2026-07-26 — code 1210 "invalid parameter" on EVERY request, replaced by
+  glm-5/glm-4.7-flash). Diagnosis pattern that worked: bisect with a
+  throwaway script using buildManagedClient + {timeout: 15s, maxRetries: 0}
+  (default 10-min SDK timeout makes hangs look like mysteries), vary ONE
+  dimension per round; a DIFFERENT error code (1113 balance vs 1210/1211)
+  means the parameter was ACCEPTED — that's the tell. Fix = update agents.model
+  rows; suite/stubs unaffected. Candidate later-bucket law: on 400 at call #1
+  of a turn, probe the provider's model list and surface "model retired by
+  provider" in the transcript note instead of a raw 400.
 - **Weak models can emit chain-of-thought AS the customer-facing text
   block** (Phase 23 E2E, live GLM-4.7: "The user is asking... I don't
   need to call any tools..." delivered verbatim to the customer, plain
