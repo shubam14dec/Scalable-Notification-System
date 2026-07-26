@@ -239,7 +239,7 @@ notes. Order within this cluster is rough — reorder freely.)
 ## In progress
 
 ### Phase 25: Dashboard Live Events (polling -> WS invalidation hints) —
-BUILD COMPLETE 2026-07-26, user E2E pending. USER-DISCOVERED phase (he
+COMPLETE — built + user-E2E'd 6/6 same day 2026-07-26 (live dot, two-window conversations, network-tab silence, approvals live incl. telegram-tap via tunnel, knowledge walk, kill-gateway degraded->recovery). PUSHED. USER-DISCOVERED phase (he
 found the 12-site polling audit himself + proposed the WS fix + pushed
 the queue-gauge event-vs-sample debate to its correct conclusion +
 queue.deadletter true-event was his). All 5 slices Opus first-try, suite
