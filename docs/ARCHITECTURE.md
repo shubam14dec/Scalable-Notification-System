@@ -92,6 +92,26 @@ Design informed by the architecture of production notification systems operating
 - **WebSocket Gateway** — in-app channel; horizontally scalable with Redis pub/sub for cross-node delivery.
 - **Scheduler** — releases delayed/digest jobs, replays DLQ/rate-limited jobs at controlled pace, detects stuck jobs.
 
+### 5.1 Admin live-events plane (dashboard)
+
+The dashboard is push, not poll, over the **same WS gateway** (no new infra):
+
+- **Hint doctrine — the socket is a hint, Postgres is the truth.** The wire
+  carries only `{type, id?, at}` invalidation hints, never row data. The
+  dashboard turns each hint into one react-query refetch through the unchanged
+  REST API. No data on the wire → no second authz surface, and a missed hint
+  costs nothing (a catch-up refetch on reconnect + a 60s safety poll cover gaps).
+- **Writer-announces.** Each write site calls `emitTenantEvent(tenantId, type, id?)`
+  (fire-and-forget, never throws) *after* the Postgres row commits — row-then-hint,
+  the same ordering as the widget's row-then-push. Fan-out is one Redis channel
+  per tenant (`tenant-events:<envId>`), derived server-side from the JWT-verified
+  env, so it is tenant-scoped and O(admin sockets of one tenant), never a broadcast.
+- **Gauge vs. event.** State that changes far faster than anyone looks (queue
+  depths) is *sampled* at the look-rate — the gateway pushes a `queue.depths`
+  gauge every 5s only while an admin is watching, and only when the counts
+  changed. Rare, urgent facts (a job hitting the dead-letter path) are *true
+  events*, emitted the moment they happen.
+
 ## 6. Data Model (core entities)
 
 - `workflows` — steps, channels, templates, digest/delay config

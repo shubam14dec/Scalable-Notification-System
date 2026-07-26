@@ -9,6 +9,7 @@ import {
   listToolCalls,
   type AgentToolCall,
 } from '../../db/agent-tools.repo';
+import { emitTenantEvent } from '../../core/tenant-events';
 
 /**
  * The human-in-the-loop approval queue (Phase 18). A managed agent's tool call
@@ -109,6 +110,9 @@ export function registerApprovalRoutes(app: FastifyInstance) {
         if (existing) return reply.code(409).send({ error: 'already decided' });
         return reply.code(404).send({ error: 'unknown approval' });
       }
+
+      // Phase 25 (slice B): the approval was decided (status write) — Approvals list.
+      void emitTenantEvent(req.tenant.id, 'approval.changed', call.id);
 
       // Hand the decision back to the conversation worker (frozen job contract).
       await getQueue(QUEUE.CONVERSATION).add(

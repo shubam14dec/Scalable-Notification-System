@@ -259,7 +259,7 @@ await asyncify.trigger(<span class="s">'order-shipped'</span>, {
       </div>
       <div class="node">
         <h3>Asyncify dashboard <span class="m dim">:5173</span></h3>
-        <p>Where you shape the flow before any request exists: <strong>workflows</strong> (steps, priorities, conditions, digests), <strong>templates</strong> (MJML, versioned), <strong>integrations</strong> (your provider keys), <strong>topics</strong>, subscribers, activity timeline, analytics. Auth: JWT + <span class="m">x-environment-id</span>.</p>
+        <p>Where you shape the flow before any request exists: <strong>workflows</strong> (steps, priorities, conditions, digests), <strong>templates</strong> (MJML, versioned), <strong>integrations</strong> (your provider keys), <strong>topics</strong>, subscribers, activity timeline, analytics. Auth: JWT + <span class="m">x-environment-id</span>. Also listens on the same WS gateway <span class="m">:3001</span> for tenant-scoped invalidation hints — the socket says a row changed, the dashboard refetches over REST.</p>
       </div>
     </div>
   </section>

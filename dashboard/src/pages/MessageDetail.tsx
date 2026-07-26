@@ -35,7 +35,8 @@ export default function MessageDetailPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['timeline', transactionId],
     queryFn: () => api<Timeline>(`/v1/events/${transactionId}/timeline`),
-    refetchInterval: 10_000,
+    // Phase 25 D8: live via message.changed hints (invalidates ['timeline']); 60s safety poll.
+    refetchInterval: 60_000,
   });
 
   if (isLoading || !data) {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticate } from '../auth';
 import { logger } from '../../shared/logger';
 import { getPublicUrl } from '../../config/public-url';
+import { emitTenantEvent } from '../../core/tenant-events';
 import { sealSecret, openSecret } from '../../auth/secret-box';
 import { mintOauthState } from '../../auth/oauth-state';
 import { pool } from '../../db/pool';
@@ -108,6 +109,8 @@ async function rotateAndPushSlackManifest(
     `update agent_connections set credentials = $2, updated_at = now() where id = $1`,
     [connection.id, sealSecret(JSON.stringify({ ...creds, configRefreshToken: rotated.refreshToken }))],
   );
+  // Phase 25 (slice B): slack reconnect/repair rotated + persisted new creds.
+  void emitTenantEvent(connection.tenant_id, 'connection.changed', connection.id);
 
   const { rows } = await pool.query(
     'select name, description, suggested_prompts from agents where id = $1',
@@ -355,6 +358,9 @@ export function registerConnectionRoutes(app: FastifyInstance) {
       ],
     );
 
+    // Phase 25 (slice B): slack quick-setup created a pending connection.
+    void emitTenantEvent(req.tenant.id, 'connection.changed', connectionId);
+
     const urls = await slackWebhookUrls(connectionId);
     reply.code(201);
     return {
@@ -545,6 +551,8 @@ export function registerConnectionRoutes(app: FastifyInstance) {
       if (connection.channel === 'telegram') {
         try {
           const url = await registerWebhook(connection);
+          // Phase 25 (slice B): telegram (auto-)reconnect re-registered the webhook.
+          void emitTenantEvent(req.tenant.id, 'connection.changed', connection.id);
           return { channel: 'telegram', webhookUrl: url };
         } catch (err) {
           return reply.code(502).send({ error: (err as Error).message });

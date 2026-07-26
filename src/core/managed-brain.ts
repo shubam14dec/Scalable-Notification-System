@@ -10,6 +10,7 @@ import { withSpan } from '../shared/tracing';
 import { listWorkflows } from '../db/repositories';
 import { pool } from '../db/pool';
 import { internalTrigger } from './internal-trigger';
+import { emitTenantEvent } from './tenant-events';
 import { getEmbeddingsConfig, embedTexts, type EmbeddingsConfig } from './embeddings';
 import { getVectorStore, type VectorStore } from './vector-store';
 import {
@@ -1332,6 +1333,9 @@ async function executeTool(
         value,
         source: 'agent',
       });
+      // Phase 25 (slice B): the remember tool wrote a durable fact — Memory modal
+      // hint (id = subscriber uuid; D7 invalidates the memories query broadly).
+      void emitTenantEvent(conversation.tenant_id, 'memory.changed', conversation.subscriber_id);
     } catch (err) {
       if (err instanceof MemoryCapError) {
         return { message: memoryCapMessage(err), isError: true };
@@ -1648,6 +1652,9 @@ async function executeCustomTool(
       return { message: `pending human approval (${call.id})`, pausedToolName: def.name };
     }
 
+    // Phase 25 (slice B): a NEW pending approval row was created (fresh only —
+    // a retry recovering an existing row must not re-hint). Admin Approvals list.
+    void emitTenantEvent(conversation.tenant_id, 'approval.changed', call.id);
     const result = `pending human approval (${call.id})`;
     // G1: stamp the repeat-action history on the paused row so the dashboard's
     // pending entry can show why it paused (the channel cards carry it too).

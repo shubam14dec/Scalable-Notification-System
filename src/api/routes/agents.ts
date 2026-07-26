@@ -30,6 +30,7 @@ import {
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { enqueueSummarize } from '../../core/episodic';
+import { emitTenantEvent } from '../../core/tenant-events';
 import { CardSchema } from '../../shared/cards';
 import { logExec } from '../../core/execution-log';
 import { tenantRateLimit } from '../rate-limit';
@@ -516,6 +517,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
           value: parsed.data.value,
           source: 'operator',
         });
+        // Phase 25 (slice B): an operator memory edit — refresh the Memory modal.
+        void emitTenantEvent(req.tenant.id, 'memory.changed', req.params.subscriberExternalId);
         return { memory: memoryView(memory) };
       } catch (err) {
         // A full profile is not a client bug — 409 with the current keys so the
@@ -549,6 +552,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
       if (!subscriber) return reply.code(404).send({ error: 'unknown subscriber' });
       // ?key= deletes one fact; no key deletes the whole profile.
       const deleted = await deleteMemory(agent.id, subscriber.id, req.query.key);
+      // Phase 25 (slice B): a memory delete — refresh the Memory modal.
+      void emitTenantEvent(req.tenant.id, 'memory.changed', req.params.subscriberExternalId);
       return { deleted };
     },
   );
@@ -824,6 +829,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
       // Fire the resolved event exactly once — only when THIS call did the flip.
       const flipped = await resolveConversation(conversation.id, 'resolved manually');
       if (flipped) {
+        // Phase 25 (slice B): operator manual resolve (status write) — admin hint.
+        void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
         // Phase 23 (D7): summarize + embed on operator resolve (managed-only job;
         // idempotent jobId). Only when THIS call did the flip.
         await enqueueSummarize(req.tenant.id, conversation.id);
@@ -877,6 +884,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
       if (parsed.data.reopen === true && conversation.status === 'resolved') {
         await reopenConversation(conversation.id);
         status = 'active';
+        // Phase 25 (slice B): a push reopened a resolved thread (status write).
+        void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
       }
 
       const row = await insertConversationMessage({

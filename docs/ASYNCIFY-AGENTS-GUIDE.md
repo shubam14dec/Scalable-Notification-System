@@ -638,6 +638,18 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
   idempotent under retries; approval decisions are single-winner across all
   surfaces; the agent's transcript can't contain fabricated tool results —
   the replay machinery only shows the model what really happened.
+- **Live updates.** The dashboard refreshes itself — no manual reload. The
+  little **dot in the sidebar footer** tells you the state: **filled = live**
+  (changes appear the instant they happen), **hollow and pulsing = reconnecting**
+  (it fell back to a periodic refresh in the meantime). What updates instantly:
+  conversations (list and open transcript), approvals, eval runs, knowledge
+  source status, activity timelines, and the Memory panel. **Degraded mode is
+  safe:** if the live connection drops, every page still refreshes on its own at
+  least every 60 seconds, so nothing you see goes stale and nothing breaks — the
+  dot just tells you which mode you're in. Security: these live events carry
+  **only ids, never content**, and are **tenant-scoped** — a hint can at most say
+  "a row in *your* environment changed," and the dashboard then re-fetches it
+  through the normal authenticated API.
 
 ## Capability checklist
 

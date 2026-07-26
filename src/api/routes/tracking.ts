@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { markMessageOpened } from '../../db/repositories';
 import { logExec } from '../../core/execution-log';
+import { emitTenantEvent } from '../../core/tenant-events';
 
 // 1x1 transparent GIF.
 const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
@@ -16,6 +17,8 @@ export function registerTrackingRoutes(app: FastifyInstance) {
     if (/^[0-9a-f-]{36}$/.test(messageId)) {
       const message = await markMessageOpened(messageId).catch(() => null);
       if (message && message.opened_at) {
+        // Phase 25 (slice B): open-pixel status change (opened) — MessageDetail + Activity.
+        void emitTenantEvent(message.tenant_id, 'message.changed', message.id);
         logExec({
           tenantId: message.tenant_id,
           transactionId: message.transaction_id,

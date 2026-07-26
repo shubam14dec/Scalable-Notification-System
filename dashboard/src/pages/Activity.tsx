@@ -89,7 +89,8 @@ export default function ActivityPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['activity'],
     queryFn: () => api<{ activity: ActivityRow[] }>('/v1/activity?limit=100'),
-    refetchInterval: 10_000,
+    // Phase 25 D8: live via message.changed/conversation.changed hints; 60s safety poll.
+    refetchInterval: 60_000,
   });
 
   return (

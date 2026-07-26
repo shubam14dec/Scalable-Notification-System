@@ -2,6 +2,7 @@ import type { Job } from 'bullmq';
 import { addSuppression, updateMessageByProviderId, type MessageRow } from '../../db/repositories';
 import { TransientError } from '../../shared/errors';
 import { logExec } from '../../core/execution-log';
+import { emitTenantEvent } from '../../core/tenant-events';
 
 function suppressibleAddress(message: MessageRow): string | null {
   switch (message.channel) {
@@ -40,6 +41,10 @@ export async function processStatus(
       `no message with provider_message_id=${providerMessageId} yet (provider=${provider})`,
     );
   }
+
+  // Phase 25 (slice B): a provider delivery-status change (delivered/bounced/…)
+  // — the ONE status-change write, not a per-attempt loop. MessageDetail + Activity.
+  void emitTenantEvent(message.tenant_id, 'message.changed', message.id);
 
   logExec({
     tenantId: message.tenant_id,

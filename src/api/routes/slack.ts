@@ -22,6 +22,7 @@ import {
   upsertChannelIdentity,
 } from '../../db/identities.repo';
 import { getToolCall, decideToolCall } from '../../db/agent-tools.repo';
+import { emitTenantEvent } from '../../core/tenant-events';
 import { resolveAgentForInbound } from '../../core/inbound-routing';
 import {
   editConversationMessage,
@@ -376,6 +377,8 @@ export function registerSlackRoutes(app: FastifyInstance) {
         );
 
         if (decided) {
+          // Phase 25 (slice B): a slack-tap decided this approval (status write).
+          void emitTenantEvent(tenant, 'approval.changed', decided.id);
           // Optimistic "processing…" edit BEFORE the enqueue: a fast worker's
           // finalizer edit must land strictly after this one, or the card
           // would stick on "processing…" forever. Edit failure never blocks
@@ -588,6 +591,8 @@ export function registerSlackRoutes(app: FastifyInstance) {
             }),
           ],
         );
+        // Phase 25 (slice B): OAuth install completed — connection flipped active.
+        void emitTenantEvent(connection.tenant_id, 'connection.changed', connection.id);
       } catch (err) {
         // One slack connection per workspace per tenant (the Phase 12/13
         // identity index): installing into a workspace that already has a

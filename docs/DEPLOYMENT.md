@@ -74,6 +74,33 @@ zero code:
 The dashboard Turn Inspector needs nothing: its traces live on the
 transcript rows in Postgres and deploy with the database.
 
+## Live dashboard updates (Phase 25)
+
+The dashboard stopped polling and now takes live invalidation hints over the
+**same WebSocket gateway the widget already uses** (`:3001`) — a tenant-scoped
+admin channel carrying tiny `{type, id?, at}` hints, never row data. **No new
+infra:** no new service, port, queue, or Redis instance; the gateway process
+gains an admin connect path and rides the existing pub/sub. Two production
+considerations, both extensions of things already true:
+
+1. **`JWT_SECRET` must be set IDENTICALLY on the API and the ws gateway.** The
+   gateway verifies the dashboard's access JWT with the *same* HS256 secret the
+   API signs it with (`env.jwtSecret`). In dev both read the same default, so it
+   just works; in production they are separate deployments — **if the two secrets
+   differ, every admin socket is rejected with close code `4401` and the
+   dashboard silently falls back to its 60s degraded-mode polling.** Set the same
+   `JWT_SECRET` on both the api and the ws-gateway deployments (the Helm chart
+   already templates it; confirm it lands on both).
+
+2. **The dashboard's ws origin must point at the deployed gateway** — the exact
+   consideration the widget already has. Acme's embedded `@asyncify-hq/react`
+   widget takes a `wsUrl` prop (e.g. `wss://ws.your-deployment.com`, see the
+   package README); the dashboard's admin client currently uses the same
+   dev literal (`ws://localhost:3001`). Production must make the gateway
+   reachable at the deployed ws origin and the dashboard build must target it —
+   same gateway, same TLS/ingress work you already do for the widget's `wsUrl`.
+   If the origin is wrong the dashboard degrades to 60s polling; nothing breaks.
+
 ## What does NOT change
 
 Everything you verified locally — webhook signature checks, channel

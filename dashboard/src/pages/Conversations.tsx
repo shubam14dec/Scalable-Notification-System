@@ -103,7 +103,8 @@ export default function ConversationsPage() {
       const suffix = qs.toString();
       return api<{ conversations: ConversationRow[] }>(`/v1/conversations${suffix ? `?${suffix}` : ''}`);
     },
-    refetchInterval: 10_000,
+    // Phase 25 D8: live via conversation.changed hints; 60s safety poll.
+    refetchInterval: 60_000,
   });
 
   const setFilter = (key: string, value: string) => {
@@ -377,7 +378,8 @@ export function ConversationDetailPage() {
         messages: TranscriptMessage[];
         usage: { inputTokens: number; outputTokens: number; modelCalls: number };
       }>(`/v1/conversations/${id}`),
-    refetchInterval: 5_000,
+    // Phase 25 D8: live via conversation.changed (id-scoped) hints; 60s safety poll.
+    refetchInterval: 60_000,
   });
 
   // Agent id for "Save as eval" and the memory block: router state (from the

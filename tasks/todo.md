@@ -238,8 +238,22 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-(nothing — production-agents roadmap P21-P24 complete and released;
-next work comes from the Later bucket / backlog, per user's pick)
+### Phase 25: Dashboard Live Events (polling -> WS invalidation hints) —
+BUILD COMPLETE 2026-07-26, user E2E pending. USER-DISCOVERED phase (he
+found the 12-site polling audit himself + proposed the WS fix + pushed
+the queue-gauge event-vs-sample debate to its correct conclusion +
+queue.deadletter true-event was his). All 5 slices Opus first-try, suite
+654->672 double-green, zero revision rounds (fifth consecutive phase).
+Shipped: tenant-events.ts hint emitter (never-throws), gateway admin
+channel (JWT via node:crypto HS256 + timingSafeEqual, org-membership
+query, 4401, refcounted tenant-events:<tid> subscribe), 41 emit points
+(manager added sent/failed after overruling B's volume argument),
+queue.depths push-on-change gauge only-while-watched, dashboard
+useAdminEvents + compile-time-exhaustive invalidation table + all 13
+pollers retired to 60s/30s safety (incl. QueuePulse raw-fetch that the
+interval grep missed — audits find what they grep for), live dot.
+DEPLOY-CRITICAL: JWT_SECRET identical on api+gateway or 4401 degraded.
+Plan: ~/.claude/plans/phase25-dashboard-live-events.md
 
 ## Recently finished
 

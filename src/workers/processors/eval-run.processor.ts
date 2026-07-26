@@ -22,6 +22,7 @@ import type { Job } from 'bullmq';
 import { logger } from '../../shared/logger';
 import { logExec } from '../../core/execution-log';
 import { getQueue, QUEUE } from '../../shared/queues';
+import { emitTenantEvent } from '../../core/tenant-events';
 import { upsertSubscriber } from '../../db/repositories';
 import {
   getAgentById,
@@ -115,6 +116,8 @@ export async function processEvalRun(job: Job<EvalRunJobData>): Promise<void> {
         attempts: 0,
       },
     ]);
+    // Phase 25 (slice B): run reached a terminal status (persist write).
+    void emitTenantEvent(run.tenant_id, 'eval.finished', runId);
     return;
   }
 
@@ -147,6 +150,8 @@ export async function processEvalRun(job: Job<EvalRunJobData>): Promise<void> {
   }
 
   await finishRun(runId, status, stored);
+  // Phase 25 (slice B): run reached a terminal status (persist write) — Evals view.
+  void emitTenantEvent(run.tenant_id, 'eval.finished', runId);
   logExec({
     tenantId: run.tenant_id,
     transactionId: `eval-run-${runId}`,

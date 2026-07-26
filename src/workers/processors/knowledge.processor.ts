@@ -13,6 +13,7 @@ import { getVectorStore, type VectorStore } from '../../core/vector-store';
 import { summarizeAndEmbedConversation } from '../../core/episodic';
 import { foldRollingSummary } from '../../core/rolling';
 import { chunkText } from '../../core/chunker';
+import { emitTenantEvent } from '../../core/tenant-events';
 import {
   bulkInsert,
   bumpChunkCount,
@@ -124,6 +125,8 @@ async function processIndex(data: KnowledgeJobData): Promise<void> {
   try {
     const { cfg, store } = await loadConfigs(tenantId);
     await setStatus(sourceId, 'indexing');
+    // Phase 25 (slice B): status transition → admin Knowledge modal walks the state.
+    void emitTenantEvent(tenantId, 'knowledge.changed', sourceId);
 
     // A text source with no inline text is a reindex: re-embed the EXISTING
     // chunks in place (the raw text was never retained). This is the whole
@@ -134,6 +137,7 @@ async function processIndex(data: KnowledgeJobData): Promise<void> {
       if (existing.length === 0) {
         await setStatus(sourceId, 'ready');
         await bumpChunkCount(sourceId, 0);
+        void emitTenantEvent(tenantId, 'knowledge.changed', sourceId);
         return;
       }
       await store.deleteByIds(existing.map((c) => c.id));
@@ -145,6 +149,7 @@ async function processIndex(data: KnowledgeJobData): Promise<void> {
       );
       await setStatus(sourceId, 'ready');
       await bumpChunkCount(sourceId, existing.length);
+      void emitTenantEvent(tenantId, 'knowledge.changed', sourceId);
       return;
     }
 
@@ -188,6 +193,7 @@ async function processIndex(data: KnowledgeJobData): Promise<void> {
 
     await setStatus(sourceId, 'ready');
     await bumpChunkCount(sourceId, inserted.length);
+    void emitTenantEvent(tenantId, 'knowledge.changed', sourceId);
     logExec({
       tenantId,
       transactionId: `knowledge-${sourceId}`,
@@ -200,6 +206,7 @@ async function processIndex(data: KnowledgeJobData): Promise<void> {
       // Config-shaped / content failures can't be fixed by retrying: record
       // the error on the source (the user-facing signal) and stop.
       await setStatus(sourceId, 'error', reason);
+      void emitTenantEvent(tenantId, 'knowledge.changed', sourceId);
       logExec({
         tenantId,
         transactionId: `knowledge-${sourceId}`,
@@ -337,5 +344,6 @@ export async function onKnowledgeDead(job: Job): Promise<void> {
     await setStatus(data.sourceId, 'error', 'indexing failed after repeated retries').catch((err) =>
       logger.warn({ err }, 'failed to mark knowledge source errored on dead job'),
     );
+    void emitTenantEvent(data.tenantId, 'knowledge.changed', data.sourceId);
   }
 }

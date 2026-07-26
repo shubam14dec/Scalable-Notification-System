@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -21,6 +21,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import { fetchMe, logout, session } from '../lib/api';
+import { useAdminEvents } from '../lib/adminEvents';
 
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
@@ -39,31 +40,54 @@ const NAV = [
   { to: '/keys', label: 'API keys', icon: KeyRound },
 ];
 
-/** Signature element: live queue backlog, 24 ticks, 5s poll. Quiet, mono. */
+/**
+ * Signature element: live queue backlog, 24 ticks. Quiet, mono.
+ *
+ * Phase 25 D8: NO network poll. Reads the ['queues'] react-query cache, which
+ * useAdminEvents feeds via `queue.depths` setQueryData (plus Overview's REST
+ * seed when that page is open). A one-shot fetch runs ONLY if the cache is
+ * empty on mount (staleTime Infinity + refetchInterval off), so the sparkline
+ * isn't blank on non-Overview pages before the first pushed frame. After that,
+ * QueuePulse makes zero network requests: it appends a tick when the cached
+ * value CHANGES, and a 5s keep-alive timer carries the last-known value forward
+ * by reading MEMORY (a ref), never the network — so the pulse keeps animating
+ * on an idle system and reflects last-known depth in degraded mode (socket
+ * down; Overview's 60s poll refreshes it when open).
+ */
 function QueuePulse() {
+  const { data: queues } = useQuery({
+    queryKey: ['queues'],
+    queryFn: async () => {
+      const res = await fetch('/ops/queues');
+      return (await res.json()) as Record<string, Record<string, number>>;
+    },
+    refetchInterval: false,
+    staleTime: Infinity, // fed by queue.depths pushes + Overview's seed; never auto-refetch
+    refetchOnWindowFocus: false,
+  });
+
+  const backlog = queues
+    ? Object.entries(queues)
+        .filter(([name]) => name !== 'dead-letter')
+        .reduce((sum, [, c]) => sum + (c.waiting ?? 0) + (c.active ?? 0), 0)
+    : null;
+
   const [ticks, setTicks] = useState<number[]>(Array(24).fill(0));
+  const backlogRef = useRef(0);
+
+  // Append immediately whenever the pushed cache value changes.
   useEffect(() => {
-    let alive = true;
-    const poll = async () => {
-      try {
-        const res = await fetch('/ops/queues');
-        const depths = (await res.json()) as Record<string, Record<string, number>>;
-        let backlog = 0;
-        for (const [name, c] of Object.entries(depths)) {
-          if (name === 'dead-letter') continue;
-          backlog += (c.waiting ?? 0) + (c.active ?? 0);
-        }
-        if (alive) setTicks((prev) => [...prev.slice(1), backlog]);
-      } catch {
-        /* api offline — pulse just flatlines */
-      }
-    };
-    void poll();
-    const t = setInterval(poll, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
+    if (backlog === null) return;
+    backlogRef.current = backlog;
+    setTicks((prev) => [...prev.slice(1), backlog]);
+  }, [backlog]);
+
+  // Keep-alive on the original 5s grid, reading the ref (memory), never network.
+  useEffect(() => {
+    const t = setInterval(() => {
+      setTicks((prev) => [...prev.slice(1), backlogRef.current]);
+    }, 5000);
+    return () => clearInterval(t);
   }, []);
 
   const max = Math.max(...ticks, 1);
@@ -84,6 +108,31 @@ function QueuePulse() {
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * D9 live-status affordance. Design-system rule: color is delivery-status only,
+ * so this uses filled-vs-hollow (the MemoryModal SourceTag precedent), never a
+ * status color. Filled = live push; hollow + pulse = reconnecting (the per-page
+ * 60s safety poll keeps the UI fresh meanwhile).
+ */
+function LiveDot({ connected }: { connected: boolean }) {
+  return (
+    <span
+      className="flex h-7 w-7 items-center justify-center"
+      title={connected ? 'live updates connected' : 'reconnecting — periodic refresh active'}
+    >
+      <span
+        aria-hidden
+        className={`inline-block h-[7px] w-[7px] rounded-full ${
+          connected ? 'bg-t3' : 'animate-pulse border border-bd-strong'
+        }`}
+      />
+      <span className="sr-only">
+        {connected ? 'Live updates connected' : 'Reconnecting — periodic refresh active'}
+      </span>
+    </span>
   );
 }
 
@@ -122,6 +171,9 @@ export default function Shell() {
   useEffect(() => {
     if (currentEnv && session.envId !== currentEnv.id) session.setEnv(currentEnv.id);
   }, [currentEnv]);
+
+  // One admin socket for the whole authed app; re-opens when the env switches.
+  const { connected: liveConnected } = useAdminEvents(currentEnv?.id);
 
   return (
     <div className="flex h-full">
@@ -191,6 +243,7 @@ export default function Shell() {
               <p className="truncate text-[11px] text-t3">{me?.user.email}</p>
             </div>
             <div className="flex items-center gap-0.5">
+              <LiveDot connected={liveConnected} />
               <ThemeToggle />
               <button
                 className="flex h-7 w-7 items-center justify-center rounded-md text-t3 transition-colors hover:bg-elevated hover:text-t1"

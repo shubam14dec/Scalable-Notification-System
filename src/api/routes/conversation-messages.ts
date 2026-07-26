@@ -8,6 +8,7 @@ import { telegram } from '../../channels/telegram';
 import { slack } from '../../channels/slack';
 import type { SlackCredentials } from './slack';
 import { publishConversationEvent } from '../../core/conversation-events';
+import { emitTenantEvent } from '../../core/tenant-events';
 import {
   editConversationMessage,
   findConversationByThread,
@@ -135,6 +136,10 @@ export function registerConversationMessageRoutes(app: FastifyInstance) {
 
       const deleted = await softDeleteConversationMessage(req.params.messageId, req.tenant.id, 'operator');
       if (!deleted) return { deleted: true }; // already a tombstone / raced
+
+      // Phase 25 (slice B): a dashboard delete changed the transcript — other
+      // admins viewing this conversation must refresh (row-then-hint).
+      void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
 
       if (conversation.channel === 'inapp') {
         const [agent, subscriber] = await Promise.all([

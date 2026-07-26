@@ -591,7 +591,8 @@ export default function ApprovalsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['approvals', apiStatus],
     queryFn: () => api<{ approvals: Approval[] }>(`/v1/approvals?status=${apiStatus}`),
-    refetchInterval: tab === 'pending' ? 10_000 : false,
+    // Phase 25 D8: live via approval.changed hints; 60s safety poll on the pending tab.
+    refetchInterval: tab === 'pending' ? 60_000 : false,
   });
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['approvals'] });

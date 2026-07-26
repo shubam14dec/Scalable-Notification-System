@@ -16,6 +16,7 @@ import {
 } from '../../db/knowledge.repo';
 import type { KnowledgeJobData } from '../../workers/processors/knowledge.processor';
 import { logExec } from '../../core/execution-log';
+import { emitTenantEvent } from '../../core/tenant-events';
 
 /**
  * Phase 23 Slice B: per-agent knowledge sources — CRUD + re-index under
@@ -137,6 +138,9 @@ export function registerKnowledgeRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `a source named "${name}" already exists` });
       }
 
+      // Phase 25 (slice B): source created (pending) — admin Knowledge modal.
+      void emitTenantEvent(req.tenant.id, 'knowledge.changed', source.id);
+
       // kind text: carry the raw text inline in the job (not persisted).
       await enqueueIndex(
         { kind: 'index', tenantId: req.tenant.id, sourceId: source.id, ...(kind === 'text' ? { text } : {}) },
@@ -168,6 +172,8 @@ export function registerKnowledgeRoutes(app: FastifyInstance) {
       // Deleting old chunks + vectors happens INSIDE the job, not here (the
       // consistency rule). Back to pending for immediate UI feedback.
       await setStatus(source.id, 'pending');
+      // Phase 25 (slice B): reindex flipped the source back to pending.
+      void emitTenantEvent(req.tenant.id, 'knowledge.changed', source.id);
       // Nonce in the jobId: a source-scoped id would be swallowed as a dupe of
       // the still-retained completed index job (the jobId-dedupe gotcha) — a
       // reindex is an intentional replay, so it must carry a fresh id.
@@ -194,6 +200,8 @@ export function registerKnowledgeRoutes(app: FastifyInstance) {
       // Postgres row deletion is the truth; the external vector delete is a
       // retryable job driven from the ids we just removed.
       const result = await deleteSource(req.tenant.id, source.id);
+      // Phase 25 (slice B): source deleted — drop it from the Knowledge list live.
+      if (result) void emitTenantEvent(req.tenant.id, 'knowledge.changed', source.id);
       if (result && result.chunkIds.length > 0) {
         await getQueue(QUEUE.KNOWLEDGE).add(
           'knowledge',

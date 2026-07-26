@@ -35,6 +35,7 @@ import {
 import { getDayTokens, incrDayTokens, claimBudgetNotify } from '../../shared/agent-counters';
 import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
+import { emitTenantEvent } from '../../core/tenant-events';
 import { PermanentError, TransientError } from '../../shared/errors';
 import { fetch as safeFetch } from 'undici';
 import {
@@ -327,6 +328,12 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       // Phase 23 (D7): a resolved managed conversation gets summarized + embedded
       // off the hot path (idempotent jobId; the job self-filters trivial/bridge).
       if (turn.resolved) await enqueueSummarize(tenantId, conversationId);
+      // Phase 25 (slice A): admin dashboard hint, ALL channels (not just inapp) —
+      // fire-and-forget after the resolve write (row-then-hint). Slice B sweeps
+      // the remaining conversation emit points (reply/status/fold).
+      if (turn.resolved) {
+        void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
+      }
 
       // Phase 24 (D6/D7): rolling-fold trigger. Reuse the history ALREADY loaded
       // for this turn (already the post-rolling_upto window) — NO second load —
@@ -436,6 +443,10 @@ async function processTurn(data: ConversationJobData): Promise<void> {
         await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
       }
     }
+    // Phase 25 (slice B): the agent reply was persisted — the two slice-A points
+    // cover resolve only. Fire-and-forget after the row write (row-then-hint),
+    // ALL channels, so the admin transcript + list update live for replies.
+    void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
   }
   await applySignals(conversation, messageId, signals, subscriber, agent);
 
@@ -931,6 +942,9 @@ async function applySignals(
           type: 'conversation.resolved',
         });
       }
+      // Phase 25 (slice A): admin dashboard hint, ALL channels — after the
+      // resolveConversation write above (row-then-hint), fire-and-forget.
+      void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
       // Tell the bridge its conversation closed (separate hop; deduped per
       // turn so a retried job can't double-fire the resolved event).
       if (agent.runtime === 'bridge' && agent.bridge_url) {

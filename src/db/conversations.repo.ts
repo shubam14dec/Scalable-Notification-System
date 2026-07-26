@@ -1,4 +1,5 @@
 import { pool } from './pool';
+import { emitTenantEvent } from '../core/tenant-events';
 
 /**
  * Agents + conversations repository. An agent is a customer-registered
@@ -297,6 +298,8 @@ export async function upsertTelegramConnection(c: {
      returning *, (xmax <> 0) as refreshed`,
     [c.tenantId, c.agentId, c.sealedCredentials, JSON.stringify(c.config)],
   );
+  // Phase 25 (slice B): a telegram connect/re-connect write — refresh the admin connections list.
+  void emitTenantEvent(rows[0].tenant_id, 'connection.changed', rows[0].id);
   return rows[0];
 }
 
@@ -319,6 +322,8 @@ export async function upsertEmailConnection(c: {
      returning *, (xmax <> 0) as refreshed`,
     [c.tenantId, c.agentId, c.sealedCredentials, JSON.stringify(c.config)],
   );
+  // Phase 25 (slice B): an email connect/re-connect write.
+  void emitTenantEvent(rows[0].tenant_id, 'connection.changed', rows[0].id);
   return rows[0];
 }
 
@@ -346,6 +351,8 @@ export async function upsertSlackConnection(c: {
      returning *, (xmax <> 0) as refreshed`,
     [c.tenantId, c.agentId, c.sealedCredentials, JSON.stringify(c.config)],
   );
+  // Phase 25 (slice B): a slack connect/re-connect write.
+  void emitTenantEvent(rows[0].tenant_id, 'connection.changed', rows[0].id);
   return rows[0];
 }
 
@@ -430,6 +437,8 @@ export async function updateConnectionAgent(
       [tenantId, connectionId, newAgentId],
     );
     await client.query('COMMIT');
+    // Phase 25 (slice B): re-point committed — the connection's agent changed.
+    void emitTenantEvent(rows[0].tenant_id, 'connection.changed', rows[0].id);
     return { connection: rows[0], movedConversations: moved.rowCount ?? 0 };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -450,6 +459,8 @@ export async function updateConnectionConfig(
       where tenant_id = $1 and id = $2`,
     [tenantId, connectionId, JSON.stringify(patch)],
   );
+  // Phase 25 (slice B): a config-flag write (e.g. manifestAutoUpdate on/broken during reconnect).
+  if ((rowCount ?? 0) > 0) void emitTenantEvent(tenantId, 'connection.changed', connectionId);
   return (rowCount ?? 0) > 0;
 }
 
@@ -459,6 +470,8 @@ export async function deleteConnectionById(tenantId: string, id: string): Promis
     'delete from agent_connections where tenant_id = $1 and id = $2',
     [tenantId, id],
   );
+  // Phase 25 (slice B): disconnect write — drop the row from the admin list live.
+  if ((rowCount ?? 0) > 0) void emitTenantEvent(tenantId, 'connection.changed', id);
   return (rowCount ?? 0) > 0;
 }
 
@@ -608,6 +621,9 @@ export async function openConversation(c: {
      returning *`,
     [c.tenantId, c.agentId, c.subscriberId, c.channel, c.threadKey],
   );
+  // Phase 25 (slice B): the find-or-create/reopen write — a new inbound turn (or
+  // a reopened resolved thread) is a conversation change the admin list must see.
+  void emitTenantEvent(rows[0].tenant_id, 'conversation.changed', rows[0].id);
   return rows[0];
 }
 
@@ -635,6 +651,8 @@ export async function openChannelConversation(c: {
      returning *`,
     [c.tenantId, c.agentId, c.connectionId, c.subscriberId, c.channel, c.threadKey],
   );
+  // Phase 25 (slice B): find-or-create/reopen write for a channel thread — see openConversation.
+  void emitTenantEvent(rows[0].tenant_id, 'conversation.changed', rows[0].id);
   return rows[0];
 }
 

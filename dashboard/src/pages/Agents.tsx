@@ -692,9 +692,11 @@ function KnowledgeModal({ agent, onClose }: { agent: Agent; onClose: () => void 
   const { data, isLoading } = useQuery({
     queryKey: ['agent-knowledge', agent.identifier],
     queryFn: () => api<{ sources: KnowledgeSource[] }>(`/v1/agents/${agent.identifier}/knowledge`),
+    // Phase 25 D8: live via knowledge.changed hints; 30s conditional fallback
+    // while a source is still pending/indexing (was 3s).
     refetchInterval: (query) => {
       const sources = query.state.data?.sources ?? [];
-      return sources.some((s) => s.status === 'pending' || s.status === 'indexing') ? 3000 : false;
+      return sources.some((s) => s.status === 'pending' || s.status === 'indexing') ? 30_000 : false;
     },
   });
 
@@ -1624,9 +1626,11 @@ function useEvalRuns(identifier: string, enabled: boolean) {
     queryKey: ['agent-eval-runs', identifier],
     queryFn: () => api<{ runs: EvalRun[] }>(`/v1/agents/${identifier}/evals/runs`),
     enabled,
+    // Phase 25 D8: live via eval.finished hints; 30s conditional fallback while
+    // the latest run is still running (was 2s).
     refetchInterval: (query) => {
       const latest = query.state.data?.runs?.[0];
-      return latest && latest.status === 'running' ? 2000 : false;
+      return latest && latest.status === 'running' ? 30_000 : false;
     },
   });
 }
@@ -1756,7 +1760,8 @@ function EvalsModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
     queryKey: ['agent-eval-run', agent.identifier, activeRunId],
     queryFn: () => api<{ run: EvalRun }>(`/v1/agents/${agent.identifier}/evals/runs/${activeRunId}`),
     enabled: !!activeRunId,
-    refetchInterval: (query) => (query.state.data?.run.status === 'running' ? 2000 : false),
+    // Phase 25 D8: live via eval.finished hints; 30s conditional fallback while running (was 2s).
+    refetchInterval: (query) => (query.state.data?.run.status === 'running' ? 30_000 : false),
   });
 
   const toggleEnabled = useMutation({

@@ -1270,7 +1270,9 @@ export default function ConnectionsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['connections'],
     queryFn: () => api<{ connections: Connection[] }>('/v1/connections'),
-    refetchInterval: installing ? 2_500 : 10_000,
+    // Phase 25 D8: live via connection.changed hints; 30s conditional fallback
+    // while a connection is installing (was 2.5s), else 60s safety poll (was 10s).
+    refetchInterval: installing ? 30_000 : 60_000,
   });
 
   // Listening→active: each refetch checks whether the installing row flipped.

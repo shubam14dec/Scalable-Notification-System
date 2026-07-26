@@ -1,4 +1,5 @@
 import { UnrecoverableError, type Job } from 'bullmq';
+import { emitTenantEvent } from '../../core/tenant-events';
 import { getPublicUrl } from '../../config/public-url';
 import { getMessage, messageByStep, updateMessage, type MessageRow } from '../../db/repositories';
 import { sendWithFailover } from '../../providers/registry';
@@ -199,6 +200,8 @@ async function deliver(
       providerMessageId: result.providerMessageId,
       error: null,
     });
+    // P25: sent is a status change the Activity feed shows — hint like the rest.
+    void emitTenantEvent(message.tenant_id, 'message.changed', message.id);
     if (job.data.digestKey) {
       await redis.del(`${job.data.digestKey}:closing:${message.id}`).catch(() => undefined);
     }
@@ -223,6 +226,7 @@ async function deliver(
         outcome: 'failed_permanent',
       });
       await updateMessage(message.id, { status: 'failed', error: reason });
+      void emitTenantEvent(message.tenant_id, 'message.changed', message.id);
       logExec({
         tenantId: message.tenant_id,
         transactionId: message.transaction_id,

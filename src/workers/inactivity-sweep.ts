@@ -6,6 +6,7 @@ import { sweepInactiveConversations } from '../db/conversations.repo';
 import { purgeDeadLinkTokens } from '../db/identities.repo';
 import { expirePendingToolCalls } from '../db/agent-tools.repo';
 import { getQueue, QUEUE } from '../shared/queues';
+import { emitTenantEvent } from '../core/tenant-events';
 
 /**
  * The inactivity backstop: conversations idle past their agent's
@@ -47,6 +48,9 @@ export async function runInactivitySweep(): Promise<number> {
         level: 'info',
         detail: `auto-resolved after ${row.auto_resolve_minutes}m of inactivity (agent=${row.agent_identifier})`,
       });
+      // Phase 25 (slice B): the sweep resolved this thread (status write) — admin
+      // hint for ALL channels, placed before the inapp-only widget publish below.
+      void emitTenantEvent(row.tenant_id, 'conversation.changed', row.id);
       if (row.channel !== 'inapp') continue;
       pipe.publish(
         inAppPubSubChannel(row.tenant_id, row.subscriber_external_id),

@@ -17,7 +17,9 @@ export default function OverviewPage() {
   const { data: activity } = useQuery({
     queryKey: ['activity'],
     queryFn: () => api<{ activity: ActivityRow[] }>('/v1/activity?limit=100'),
-    refetchInterval: 10_000,
+    // Phase 25 D8: live via admin socket (conversation/message hints); this is
+    // the degraded-mode safety poll for when the socket is down.
+    refetchInterval: 60_000,
   });
 
   const { data: queues } = useQuery({
@@ -26,7 +28,9 @@ export default function OverviewPage() {
       const res = await fetch('/ops/queues');
       return (await res.json()) as Record<string, Record<string, number>>;
     },
-    refetchInterval: 5_000,
+    // Phase 25 D8: depths are pushed live (queue.depths → setQueryData on this
+    // same key); 60s is the safety poll. Seed-on-mount stays (the first fetch).
+    refetchInterval: 60_000,
   });
 
   const rows = activity?.activity ?? [];

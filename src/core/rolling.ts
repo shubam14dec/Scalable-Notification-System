@@ -19,6 +19,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../shared/logger';
 import { getQueue, QUEUE } from '../shared/queues';
 import { pool } from '../db/pool';
+import { emitTenantEvent } from './tenant-events';
 import { estimateTokens } from './chunker';
 import { buildManagedClient, DEFAULT_MODEL, sanitizeReply } from './managed-brain';
 import {
@@ -219,6 +220,8 @@ export async function foldRollingSummary(job: {
     summary,
     boundary.id,
   ]);
+  // Phase 25 (slice B): the rolling summary was folded (a conversation write).
+  void emitTenantEvent(tenantId, 'conversation.changed', conversationId);
   logger.debug(
     { conversationId, uptoMessageId: boundary.id, folded: foldedRows.length },
     'rolling: summary folded',

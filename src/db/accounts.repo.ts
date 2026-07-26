@@ -84,6 +84,29 @@ export async function membershipRole(
   return rows[0]?.role ?? null;
 }
 
+/**
+ * Phase 25 — admin-socket authz in ONE indexed query: is `userId` a member of
+ * the organization that owns environment `envId`? Same tables and shape as the
+ * API's getEnvironment + membershipRole pair (tenants.organization_id ->
+ * org_members), folded into a single round-trip for the WS gateway's admin
+ * connect path (which cannot run the fastify auth preHandler). Both predicates
+ * hit indexes: tenants.id (PK) and org_members(organization_id, user_id).
+ */
+export async function isOrgMemberForEnvironment(
+  envId: string,
+  userId: string,
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `select 1
+       from tenants t
+       join org_members m on m.organization_id = t.organization_id
+      where t.id = $1 and m.user_id = $2
+      limit 1`,
+    [envId, userId],
+  );
+  return rows.length > 0;
+}
+
 /** All orgs a user belongs to, each with its environments. */
 export async function organizationsForUser(userId: string) {
   const { rows } = await pool.query(
