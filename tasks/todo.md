@@ -238,6 +238,26 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+### Phase 26: HITL Conversation Handoff — BUILD COMPLETE 2026-07-27, user
+E2E pending. Approval = human vetoes one action; handoff = human takes the
+pen. All 5 slices Opus first-try, suite 672->702 double-green, ZERO
+revision rounds (SIXTH consecutive). Shipped: states waiting_human/human
+(+had_human col), handoff_to_human built-in (auto tier, idempotent,
+reserved), D2 brain gate (LAW — slice A's D11 audit caught
+openConversation's on-conflict forcing status='active', which would have
+let the customer's next message steal the pen back mid-takeover; guarded),
+ops notify via reserved 'agent-handoffs' workflow + REUSED 'approvals'
+subscriber, operator replies via existing push route (raw.operator {name},
+dashboard-JWT only), handback + forced rolling fold w/ throughMessageId
+(operator words NEVER replayed verbatim — attributed summary in volatile
+block, D7 reminder, had_human), dashboard operator console (amber/blue via
+STATUS_STYLES, colorless banner — color minted once; reply box Cmd+Enter;
+Return-to-agent), widget «name»·team label (C found+fixed the history
+endpoint missing operatorName AND send()'s optimistic status yanking
+handoffs back to active), sdk-node status widening; changesets react+node
+minor. E2E prereq: user creates 'agent-handoffs' workflow (approvals
+subscriber exists from P22).
+
 ### Phase 25: Dashboard Live Events (polling -> WS invalidation hints) —
 COMPLETE — built + user-E2E'd 6/6 same day 2026-07-26 (live dot, two-window conversations, network-tab silence, approvals live incl. telegram-tap via tunnel, knowledge walk, kill-gateway degraded->recovery). PUSHED. USER-DISCOVERED phase (he
 found the 12-site polling audit himself + proposed the WS fix + pushed
