@@ -387,6 +387,14 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   t.me deep-link surface must ship the copyable `/start <token>` fallback
   beside it. Corollary: a QR test proves decode, not destination
   reachability — they fail independently.
+- **Every push's close-out includes `gh run list` — CI green is part of
+  PUSHED** (learned 2026-07-27: three red main runs went unnoticed since
+  the P25 close-out; the user caught it). Root cause of that redness:
+  a test importing dashboard/src (drift guard) resolves deps from
+  dashboard/node_modules, which CI installed only in the LATER build
+  step — "imports cleanly" probes are environment-dependent; any test
+  importing across a package boundary needs that package's deps
+  installed BEFORE the vitest step in ci.yml.
 - **BYO providers retire models/params OVERNIGHT without notice** (twice in
   one week: Google killed text-embedding-004; z.ai killed glm-4.7 on
   2026-07-26 — code 1210 "invalid parameter" on EVERY request, replaced by
