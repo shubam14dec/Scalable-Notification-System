@@ -238,8 +238,7 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
-### Phase 26: HITL Conversation Handoff — BUILD COMPLETE 2026-07-27, user
-E2E pending. Approval = human vetoes one action; handoff = human takes the
+### Phase 26: HITL Conversation Handoff — COMPLETE: built + user-E2E'd same day 2026-07-27 (handoff->amber queue live, gate proven, reply-as-human w/ widget label, handback fold attributed [DB-verified], agent honored the human's promise). PUSHED. Approval = human vetoes one action; handoff = human takes the
 pen. All 5 slices Opus first-try, suite 672->702 double-green, ZERO
 revision rounds (SIXTH consecutive). Shipped: states waiting_human/human
 (+had_human col), handoff_to_human built-in (auto tier, idempotent,
