@@ -110,7 +110,8 @@ export interface ConversationSummary {
   agent: { identifier: string; name: string };
   subscriberId: string;
   channel: string;
-  status: 'active' | 'resolved';
+  /** `waiting_human`/`human` mean a handoff is in flight — a teammate has the pen. */
+  status: 'active' | 'resolved' | 'waiting_human' | 'human';
   messageCount: number;
   lastMessagePreview: string | null;
   lastMessageAt: string;
@@ -648,7 +649,13 @@ export class AsyncifyClient {
 
   readonly conversations = {
     /** Conversations across your agents, newest first. */
-    list: (filters: { agent?: string; status?: 'active' | 'resolved' } = {}) => {
+    list: (
+      filters: {
+        agent?: string;
+        /** Filter by lifecycle state; `waiting_human`/`human` are handoff states. */
+        status?: 'active' | 'resolved' | 'waiting_human' | 'human';
+      } = {},
+    ) => {
       const qs = new URLSearchParams();
       if (filters.agent) qs.set('agent', filters.agent);
       if (filters.status) qs.set('status', filters.status);
@@ -664,7 +671,8 @@ export class AsyncifyClient {
         conversation: {
           id: string;
           channel: string;
-          status: 'active' | 'resolved';
+          /** `waiting_human`/`human` mean a handoff is in flight — a teammate has the pen. */
+          status: 'active' | 'resolved' | 'waiting_human' | 'human';
           metadata: Record<string, unknown>;
           summary: string | null;
           messageCount: number;

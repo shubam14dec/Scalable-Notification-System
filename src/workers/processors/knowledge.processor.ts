@@ -60,6 +60,9 @@ export interface KnowledgeJobData {
   ids?: string[];
   /** summarize: the resolved conversation to summarize + embed. */
   conversationId?: string;
+  /** summarize-rolling (Phase 26 handback): forced fold boundary — the last
+   * operator message id; everything through it folds, tail = rows after it. */
+  throughMessageId?: string;
 }
 
 export async function processKnowledge(job: Job<KnowledgeJobData>): Promise<void> {
@@ -77,6 +80,7 @@ export async function processKnowledge(job: Job<KnowledgeJobData>): Promise<void
     await foldRollingSummary({
       tenantId: job.data.tenantId,
       conversationId: job.data.conversationId,
+      throughMessageId: job.data.throughMessageId,
     });
     return;
   }

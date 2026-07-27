@@ -89,6 +89,11 @@ export function isReplayableTurn(m: ConversationMessage): boolean {
   if (m.deleted_at) return false;
   if (m.role !== 'user' && m.role !== 'agent') return false;
   if (m.role === 'agent' && (m.raw as { platformNote?: boolean } | null)?.platformNote) return false;
+  // Phase 26 D6: operator (raw.operator) rows are a HUMAN's words, never the
+  // model's — excluded from verbatim replay (buildHistory mirrors this) so the
+  // agent can't imitate making a person's promises. They survive via the fold
+  // SUMMARY (serializeFoldInput attributes them), not as replayable turns.
+  if (m.role === 'agent' && (m.raw as { operator?: unknown } | null)?.operator) return false;
   return true;
 }
 
@@ -130,6 +135,14 @@ export function serializeFoldInput(
     if (m.role === 'user') {
       lines.push(`Customer: ${m.content}`);
     } else if (m.role === 'agent') {
+      // Phase 26 D6: operator turns are attributed to the human, NEVER folded in
+      // as "Agent: …" — the summary must let a later turn honor the teammate's
+      // commitments without the model reading them as its own words.
+      const operator = (m.raw as { operator?: { name?: string } } | null)?.operator;
+      if (operator) {
+        lines.push(`A human teammate (${operator.name ?? 'teammate'}) told the customer: "${m.content}"`);
+        continue;
+      }
       if ((m.raw as { platformNote?: boolean } | null)?.platformNote) continue;
       lines.push(`Agent: ${sanitizeReply(m.content).text}`);
     } else {
@@ -159,6 +172,25 @@ export async function enqueueRollingFold(
 }
 
 /**
+ * Phase 26 D6: the FORCED fold a handback enqueues. Unlike the trigger fold it
+ * carries a `throughMessageId` boundary (the last operator reply): everything up
+ * to and including it folds into the summary — attributing the human turns — and
+ * the tail is only the rows strictly after it. Distinct jobId suffix so it never
+ * collides with a concurrent trigger fold on the same conversation.
+ */
+export async function enqueueHandbackFold(
+  tenantId: string,
+  conversationId: string,
+  throughMessageId: string,
+): Promise<void> {
+  await getQueue(QUEUE.KNOWLEDGE).add(
+    `roll-${conversationId}`,
+    { kind: 'summarize-rolling', tenantId, conversationId, throughMessageId },
+    { jobId: `handback-${conversationId}-${throughMessageId}`, attempts: 5 },
+  );
+}
+
+/**
  * Recompute the rolling summary for one conversation. Silent no-op (each with a
  * debug log) when: the conversation/agent is gone, the agent is not managed
  * runtime (bridge owns its brain), the agent has no LLM config, or nothing older
@@ -167,8 +199,15 @@ export async function enqueueRollingFold(
 export async function foldRollingSummary(job: {
   tenantId: string;
   conversationId: string;
+  /**
+   * Phase 26 D6: a FORCED fold boundary (a handback's last operator message id).
+   * When set, everything through this row folds (regardless of the tail knob) so
+   * the human exchange lands in the summary before the agent speaks again; the
+   * tail is only the rows strictly after it. Absent = the normal trigger fold.
+   */
+  throughMessageId?: string;
 }): Promise<void> {
-  const { tenantId, conversationId } = job;
+  const { tenantId, conversationId, throughMessageId } = job;
 
   const conversation = await getConversation(tenantId, conversationId);
   if (!conversation) {
@@ -187,24 +226,43 @@ export async function foldRollingSummary(job: {
 
   const knobs = resolveRollingKnobs(agent.context);
   const rows = await conversationRowsAfter(conversationId, conversation.rolling_upto);
-  const replayable = rows.filter(isReplayableTurn);
-  if (replayable.length <= knobs.tailTurns) {
-    // Nothing older than the tail — a retry after a prior successful fold lands
-    // here (rolling_upto already advanced), which is what makes re-runs identical.
-    logger.debug(
-      { conversationId, replayable: replayable.length, tail: knobs.tailTurns },
-      'rolling: at or under the tail, nothing to fold',
-    );
-    return;
-  }
 
-  // Keep the newest tailTurns replayable rows verbatim; fold everything up to
-  // (and including) the last row before the tail. rolling_upto = that boundary
-  // row's id, so replay takes rows strictly after it (its own breadcrumbs, which
-  // precede it, fold away too).
-  const boundary = replayable[replayable.length - knobs.tailTurns - 1];
-  const boundaryIdx = rows.findIndex((r) => r.id === boundary.id);
-  const foldedRows = rows.slice(0, boundaryIdx + 1);
+  let boundary: ConversationMessage;
+  let foldedRows: ConversationMessage[];
+  if (throughMessageId) {
+    // FORCED handback fold: fold through the operator's last message inclusive,
+    // tail = rows strictly after it. Idempotent: a retry after the write finds
+    // the boundary now ≤ rolling_upto (not in this post-rolling_upto window) and
+    // no-ops here — identical to the trigger fold's re-run safety.
+    const boundaryIdx = rows.findIndex((r) => r.id === throughMessageId);
+    if (boundaryIdx < 0) {
+      logger.debug(
+        { conversationId, throughMessageId },
+        'rolling: forced boundary already folded (or gone), nothing to fold',
+      );
+      return;
+    }
+    boundary = rows[boundaryIdx];
+    foldedRows = rows.slice(0, boundaryIdx + 1);
+  } else {
+    const replayable = rows.filter(isReplayableTurn);
+    if (replayable.length <= knobs.tailTurns) {
+      // Nothing older than the tail — a retry after a prior successful fold lands
+      // here (rolling_upto already advanced), which is what makes re-runs identical.
+      logger.debug(
+        { conversationId, replayable: replayable.length, tail: knobs.tailTurns },
+        'rolling: at or under the tail, nothing to fold',
+      );
+      return;
+    }
+    // Keep the newest tailTurns replayable rows verbatim; fold everything up to
+    // (and including) the last row before the tail. rolling_upto = that boundary
+    // row's id, so replay takes rows strictly after it (its own breadcrumbs, which
+    // precede it, fold away too).
+    boundary = replayable[replayable.length - knobs.tailTurns - 1];
+    const boundaryIdx = rows.findIndex((r) => r.id === boundary.id);
+    foldedRows = rows.slice(0, boundaryIdx + 1);
+  }
 
   const input = serializeFoldInput(foldedRows, conversation.rolling_summary);
   const summary = await summarizeRolling(agent, input);

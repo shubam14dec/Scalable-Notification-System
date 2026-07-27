@@ -165,6 +165,24 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // A message soft-deleted before we processed it gets no reply.
   if (message.deleted_at) return;
 
+  // D2 BRAIN GATE (LAW): while a human owns the pen (waiting_human/human), the
+  // agent must not speak. The inbound user row already persists (inserted before
+  // this job was enqueued), so we only refresh the operator's live view and stop
+  // — NO model call, NO typing pulse, NO brain side effects. The status here is
+  // FRESH: getConversation ran at the top of this job, re-read per attempt, and
+  // openConversation no longer forces a human-state thread back to active. The
+  // P25 hint carries the customer's new message to the operator's open transcript.
+  if (conversation.status === 'waiting_human' || conversation.status === 'human') {
+    void emitTenantEvent(tenantId, 'conversation.changed', conversationId);
+    logExec({
+      tenantId,
+      transactionId: `conv-${conversationId}`,
+      level: 'info',
+      detail: `turn skipped: a human owns the conversation (${conversation.status}) — message forwarded, no model call`,
+    });
+    return;
+  }
+
   const history = await conversationHistoryBefore(conversationId, messageId);
 
   // Turn-start "composing" pulse for both runtimes; the managed branch pulses
@@ -1335,6 +1353,17 @@ async function deliverReply(
   replyRow: ConversationMessage,
   inboundRow: ConversationMessage | null,
 ): Promise<void> {
+  // Phase 26 D5/D9: an operator push carries raw.operator = {name}. The widget
+  // renders a "«name» · team" label from operatorName (in-app), and external
+  // channels — which have no label affordance — get a "<name> (team): " text
+  // prefix so the customer still sees who is speaking. Absent on agent replies.
+  const operator = (replyRow.raw as { operator?: { name?: string } } | null)?.operator;
+  const operatorName = operator?.name;
+  const operatorPrefixed =
+    operatorName && conversation.channel !== 'inapp'
+      ? `${operatorName} (team): ${replyRow.content}`
+      : replyRow.content;
+
   if (conversation.channel === 'inapp') {
     const raw = (replyRow.raw ?? {}) as {
       buttons?: Array<{ id: string; label: string }>;
@@ -1347,6 +1376,7 @@ async function deliverReply(
         role: 'agent',
         text: replyRow.content,
         createdAt: replyRow.created_at,
+        ...(operatorName ? { operatorName } : {}),
         ...(raw.buttons ? { buttons: raw.buttons } : {}),
         ...(raw.card ? { card: raw.card } : {}),
       },
@@ -1369,7 +1399,7 @@ async function deliverReply(
     const { botToken } = JSON.parse(openSecret(connection.credentials)) as { botToken: string };
     // Buttons/select render as an inline keyboard; a text_input card as a
     // ForceReply prompt. Answers come back as callback_query / reply updates.
-    const sent = await telegram.sendMessage(botToken, conversation.thread_key, replyRow.content, {
+    const sent = await telegram.sendMessage(botToken, conversation.thread_key, operatorPrefixed, {
       buttons: raw.buttons,
       card: raw.card,
     });
@@ -1408,22 +1438,22 @@ async function deliverReply(
       buttons?: Array<{ label: string }>;
       card?: Card;
     };
-    let body = replyRow.content;
+    let body = operatorPrefixed;
     if (emailRaw.buttons?.length) {
       body =
-        `${replyRow.content}\n\nOptions (just reply with your choice):\n` +
+        `${operatorPrefixed}\n\nOptions (just reply with your choice):\n` +
         emailRaw.buttons.map((b, i) => `${i + 1}) ${b.label}`).join('\n');
     } else if (emailRaw.card?.type === 'select') {
       const card = emailRaw.card;
       body =
-        `${replyRow.content}` +
+        `${operatorPrefixed}` +
         (card.prompt ? `\n\n${card.prompt}` : '') +
         `\n\nOptions (just reply with your choice):\n` +
         card.options.map((o, i) => `${i + 1}) ${o.label}`).join('\n');
     } else if (emailRaw.card?.type === 'text_input') {
       const card = emailRaw.card;
       body =
-        `${replyRow.content}\n\n${card.prompt ?? 'Just reply with your answer.'}` +
+        `${operatorPrefixed}\n\n${card.prompt ?? 'Just reply with your answer.'}` +
         (card.placeholder ? ` (e.g. ${card.placeholder})` : '');
     }
 
@@ -1469,7 +1499,7 @@ async function deliverReply(
     const threadTs = colon === -1 ? undefined : conversation.thread_key.slice(colon + 1);
     // Buttons/select render as blocks; a text_input card as an input block.
     // Answers come back on the interactivity webhook.
-    const sent = await slack.postMessage(botToken, channel, replyRow.content, {
+    const sent = await slack.postMessage(botToken, channel, operatorPrefixed, {
       threadTs,
       buttons: raw.buttons,
       card: raw.card,

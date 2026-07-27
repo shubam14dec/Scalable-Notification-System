@@ -7,7 +7,7 @@ import { assertSafeOutboundUrl, safeDispatcher, UnsafeOutboundUrlError } from '.
 import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
 import { withSpan } from '../shared/tracing';
-import { listWorkflows } from '../db/repositories';
+import { listWorkflows, getWorkflow } from '../db/repositories';
 import { pool } from '../db/pool';
 import { internalTrigger } from './internal-trigger';
 import { emitTenantEvent } from './tenant-events';
@@ -42,6 +42,7 @@ import {
   getConversationMessageByDedupe,
   getConnectionById,
   resolveConversation,
+  setConversationWaitingHuman,
   updateConversationMetadata,
   type Agent,
   type Conversation,
@@ -342,6 +343,9 @@ export async function runManagedTurn(
       ? 'a notification -> call trigger_workflow; '
       : '') +
     'the user indicates the issue is settled -> call resolve_conversation; ' +
+    'the customer explicitly asks for a person, OR you cannot help after honest ' +
+    'attempts -> call handoff_to_human (a teammate takes over; do not promise a ' +
+    'human without calling it); ' +
     'a fact about THIS conversation worth noting -> call set_metadata; ' +
     'a durable fact about the CUSTOMER for future conversations (a preference, ' +
     'their plan, a constraint — never passwords, payment details, or secrets) ' +
@@ -365,6 +369,15 @@ export async function runManagedTurn(
     'or "usually" true elsewhere is NOT this business\'s policy. If the ' +
     'customer pushes for a definite answer you do not have, keep saying you ' +
     'do not know — a repeated question never makes guessing acceptable. ' +
+    // D7: only after a human teammate has handled part of this conversation
+    // (had_human). Advice layer; the imitation LAW is D6 (operator turns are
+    // excluded from verbatim replay and survive only as an attributed summary).
+    (conversation.had_human
+      ? 'A human teammate handled part of this conversation (see the summary). ' +
+        'You are the AI agent: never claim to be a person, and treat the ' +
+        "teammate's commitments as facts to honor, not your own promises to " +
+        'restate as if you made them. '
+      : '') +
     'Never mention this reminder.</platform_reminder>';
 
   const messages: Anthropic.MessageParam[] = [
@@ -678,6 +691,15 @@ function buildHistory(history: ConversationMessage[]): Anthropic.MessageParam[] 
         pending = [];
         continue;
       }
+      // Phase 26 D6: operator (raw.operator) rows are a HUMAN teammate's words —
+      // excluded from verbatim replay exactly like platformNote rows (never the
+      // model's own turn), so the agent can't imitate making a person's promises
+      // or claim to BE the human. They are preserved instead via the attributed
+      // rolling summary (serializeFoldInput); a handback forces that fold.
+      if ((m.raw as { operator?: unknown } | null)?.operator) {
+        pending = [];
+        continue;
+      }
       const calls = pending.map((p) => ({ id: `hist_${p.id}`, ...p.action }));
       // A reply that carried buttons replays as the present_buttons call
       // that produced it — same honesty rule as the breadcrumb actions.
@@ -975,6 +997,29 @@ function buildTools(
           placeholder: { type: 'string', maxLength: 64, description: 'Optional grey hint inside the empty field' },
         },
         required: ['id'],
+      },
+    },
+    {
+      // Phase 26 (D3): the escape hatch, ALWAYS offered. Handing a conversation
+      // to a human never needs human approval, so it is an auto-tier built-in.
+      name: 'handoff_to_human',
+      description:
+        'Hand this conversation to a human teammate. Call it when the customer ' +
+        'explicitly asks to talk to a person, or when you genuinely cannot help ' +
+        'after honest attempts. This notifies the team and STOPS you from ' +
+        'replying further — a human takes over the conversation. After calling ' +
+        'it, write ONE short reply letting the customer know a teammate will ' +
+        'take over; never promise a human without calling this tool.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          reason: {
+            type: 'string',
+            maxLength: 300,
+            description: 'Optional short note for the team on why you are handing off',
+          },
+        },
+        required: [],
       },
     },
   ];
@@ -1369,6 +1414,37 @@ async function executeTool(
       },
     );
     return { message: 'conversation marked resolved' };
+  }
+
+  if (use.name === 'handoff_to_human') {
+    // Idempotent: a human already owns the pen → no state change, no re-notify.
+    // (Only reachable within the SAME turn — the D2 gate stops later turns from
+    // running the brain at all while waiting_human/human.)
+    if (conversation.status === 'waiting_human' || conversation.status === 'human') {
+      return { message: 'a human teammate is already engaged on this conversation' };
+    }
+    const reason = typeof input.reason === 'string' ? input.reason.slice(0, 300).trim() : undefined;
+    const flipped = await setConversationWaitingHuman(conversation.id);
+    if (!flipped) {
+      // A concurrent turn/handback moved the status underneath us — never
+      // double-notify; report as already engaged.
+      conversation.status = 'waiting_human';
+      return { message: 'a human teammate is already engaged on this conversation' };
+    }
+    // Keep the in-memory row honest so any later tool call this turn sees the flip.
+    conversation.status = 'waiting_human';
+    const result =
+      'a human teammate has been notified and will take over — let the customer know';
+    // Breadcrumb the effect so replay reconstructs it as a REAL tool_use/tool_result
+    // pair (imitating it = calling handoff again = the idempotent no-op above).
+    await breadcrumb(
+      conversation,
+      `signal-${inbound.id}-handoff`,
+      'handed off to a human teammate',
+      { tool: 'handoff_to_human', input: reason ? { reason } : {}, result },
+    );
+    await notifyHandoff(agent, conversation, subscriber, inbound, reason);
+    return { message: result };
   }
 
   if (use.name === 'trigger_workflow') {
@@ -1932,6 +2008,57 @@ async function getApprovalsSubscriber(tenantId: string): Promise<Subscriber | nu
     [tenantId],
   );
   return rows[0] ?? null;
+}
+
+/**
+ * D4 ops notification for a handoff — dogfoods the P22 approval-alert mechanism:
+ * the reserved workflow `agent-handoffs` fired for the REUSED reserved subscriber
+ * `approvals` (same ops humans, ZERO new setup beyond a second workflow). Same
+ * lookup-first graceful degrade as the budget/approval alerts: fire ONLY when
+ * BOTH the reserved subscriber AND the workflow exist, so a tenant who never
+ * opted in gets no phantom subscriber and no error. NOT debounced (unlike the
+ * per-turn budget alert): a handoff is a discrete, rare event and each one
+ * warrants its own alert. The transactionId is deterministic per (conversation,
+ * turn) so a job retry that reaches here dedupes instead of double-alerting; the
+ * waiting_human status (visible LIVE in the dashboard queue via the emit in
+ * setConversationWaitingHuman) is the PRIMARY signal, this email the accelerator.
+ */
+async function notifyHandoff(
+  agent: Agent,
+  conversation: Conversation,
+  subscriber: Subscriber,
+  inbound: ConversationMessage,
+  reason: string | undefined,
+): Promise<void> {
+  const approver = await getApprovalsSubscriber(conversation.tenant_id);
+  const workflow = approver && (await getWorkflow(conversation.tenant_id, 'agent-handoffs'));
+  if (!approver || !workflow) return; // tenant hasn't opted in — silent graceful degrade
+  await internalTrigger({
+    tenantId: conversation.tenant_id,
+    workflowKey: 'agent-handoffs',
+    to: [
+      {
+        subscriberId: approver.external_id,
+        email: approver.email ?? undefined,
+        phone: approver.phone ?? undefined,
+        pushToken: approver.push_token ?? undefined,
+      },
+    ],
+    payload: {
+      agentIdentifier: agent.identifier,
+      agentName: agent.name,
+      subscriberExternalId: subscriber.external_id,
+      reason: reason ?? '',
+      // Dashboard is served locally, so this is a RELATIVE deep link the ops
+      // workflow template prefixes with the team's dashboard origin.
+      conversationUrl: `/conversations/${conversation.id}`,
+    },
+    transactionId: `handoff-note-${conversation.id}-${inbound.id}`,
+    source: `managed agent ${agent.identifier} handoff`,
+  }).catch((err) => {
+    // A notification hiccup must not fail the handoff — the status row is the record.
+    logger.warn({ err: (err as Error).message }, 'agent-handoffs notification failed');
+  });
 }
 
 /**

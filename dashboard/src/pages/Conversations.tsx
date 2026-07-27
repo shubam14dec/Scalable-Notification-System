@@ -16,12 +16,19 @@ import {
 } from '../ui';
 import { timeAgo } from './Activity';
 
+/**
+ * Phase 26 (D8) — the conversation state machine as the dashboard sees it.
+ * `waiting_human` (a handoff was requested, no teammate has replied yet) and
+ * `human` (a teammate holds the pen) are the handoff states; both are "open".
+ */
+type ConversationStatus = 'active' | 'resolved' | 'waiting_human' | 'human';
+
 interface ConversationRow {
   id: string;
   agent: { identifier: string; name: string };
   subscriberId: string;
   channel: string;
-  status: 'active' | 'resolved';
+  status: ConversationStatus;
   messageCount: number;
   lastMessagePreview: string | null;
   lastMessageAt: string;
@@ -81,6 +88,11 @@ interface TranscriptMessage {
   deletedAt?: string | null;
   /** Who deleted the message — named in the tombstone. */
   deletedBy?: 'user' | 'operator' | null;
+  /**
+   * Phase 26 (D5/D8) — set on agent rows a human teammate authored via the
+   * reply box; drives the quiet "<name> · team" sender tag on that bubble.
+   */
+  operator?: { name: string };
 }
 
 export default function ConversationsPage() {
@@ -133,6 +145,8 @@ export default function ConversationsPage() {
             <select aria-label="Filter by status" className={selectCls} value={status} onChange={(e) => setFilter('status', e.target.value)}>
               <option value="" className="bg-surface">any status</option>
               <option value="active" className="bg-surface">active</option>
+              <option value="waiting_human" className="bg-surface">waiting for human</option>
+              <option value="human" className="bg-surface">human</option>
               <option value="resolved" className="bg-surface">resolved</option>
             </select>
           </div>
@@ -197,6 +211,11 @@ export default function ConversationsPage() {
             </tbody>
           </table>
         </Card>
+      ) : status === 'waiting_human' ? (
+        <EmptyState
+          title="No customers waiting"
+          body="No customers waiting — handoffs appear here the moment an agent escalates."
+        />
       ) : (
         <EmptyState
           title="No conversations yet"
@@ -361,7 +380,7 @@ export function ConversationDetailPage() {
         conversation: {
           id: string;
           channel: string;
-          status: 'active' | 'resolved';
+          status: ConversationStatus;
           metadata: Record<string, unknown>;
           summary: string | null;
           messageCount: number;
@@ -440,6 +459,39 @@ export function ConversationDetailPage() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['conversation', id] }),
   });
 
+  // Phase 26 (D8) — the handoff surface. `inHumanFlow` gates the banner, the
+  // reply box, and the header's handoff buttons; it stays false for the
+  // unchanged active/resolved view.
+  const status = data?.conversation.status;
+  const inHumanFlow = status === 'waiting_human' || status === 'human';
+
+  // Operator reply (D5 push route). {text} → 202; the first reply while
+  // waiting_human flips the thread to `human`, so we invalidate to pick up the
+  // new status (banner + buttons follow).
+  const [reply, setReply] = useState('');
+  const sendReply = useMutation({
+    mutationFn: (text: string) =>
+      api(`/v1/conversations/${id}/messages`, { method: 'POST', body: { text } }),
+    onSuccess: () => {
+      setReply('');
+      void queryClient.invalidateQueries({ queryKey: ['conversation', id] });
+    },
+    onError: (err) => flash(`couldn't send — ${err.message}`, true),
+  });
+  const onSendReply = () => {
+    const text = reply.trim();
+    if (!text || sendReply.isPending) return;
+    sendReply.mutate(text);
+  };
+
+  // "Return to agent" (D6 handback route) → active; a 409 means it was resolved
+  // out from under us, surfaced as a toast.
+  const handback = useMutation({
+    mutationFn: () => api(`/v1/conversations/${id}/handback`, { method: 'POST' }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['conversation', id] }),
+    onError: (err) => flash(`couldn't return to agent — ${err.message}`, true),
+  });
+
   // Which messages have their "Turn details" trace expanded (per-message, local).
   const [expandedTraces, setExpandedTraces] = useState<Set<string>>(() => new Set());
   const toggleTrace = (messageId: string) =>
@@ -487,7 +539,12 @@ export function ConversationDetailPage() {
                   {saveAsEval.isPending ? 'Saving…' : 'Save as eval'}
                 </Button>
               )}
-              {data.conversation.status === 'active' && (
+              {inHumanFlow && (
+                <Button onClick={() => handback.mutate()} disabled={handback.isPending}>
+                  {handback.isPending ? 'Returning…' : 'Return to agent'}
+                </Button>
+              )}
+              {data.conversation.status !== 'resolved' && (
                 <Button onClick={() => resolve.mutate()} disabled={resolve.isPending}>
                   {resolve.isPending ? 'Resolving…' : 'Mark resolved'}
                 </Button>
@@ -511,6 +568,17 @@ export function ConversationDetailPage() {
         <Skeleton className="h-64 w-full" />
       ) : (
         <div className="flex flex-col gap-5 lg:flex-row">
+          <div className="flex min-w-0 flex-1 flex-col gap-4">
+          {/* Handoff banner (D8) — a quiet monochrome strip that names the
+              state and instructs; the sole coloured signal for this status is
+              the Details-panel StatusBadge, so the strip stays chrome. */}
+          {inHumanFlow && (
+            <div className="rounded-lg border border-bd bg-elevated px-3 py-2 text-[12px] text-t2">
+              {status === 'waiting_human'
+                ? 'Customer is waiting for a human teammate'
+                : 'A teammate is handling this conversation'}
+            </div>
+          )}
           {/* Transcript — the story, oldest first */}
           <Card className="min-w-0 flex-1 p-4">
             {data.messages.map((m) =>
@@ -525,11 +593,25 @@ export function ConversationDetailPage() {
                 >
                   <div className="max-w-[75%]">
                     <p className="mb-0.5 flex items-center gap-1.5 text-[11px] text-t3">
-                      <span>
-                        {m.role === 'user' ? 'subscriber' : 'agent'}
-                        {m.clicked ? ' · clicked' : ''} · {timeAgo(m.createdAt)}
-                        {m.editedAt && !m.deletedAt ? ` · edited ${timeAgo(m.editedAt)}` : ''}
-                      </span>
+                      {m.operator ? (
+                        // D8: a human teammate authored this reply — the quiet
+                        // fill-style tag (hollow ring, same idiom as the Memory
+                        // modal's operator SourceTag), no new colour.
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            aria-hidden
+                            className="inline-block h-[7px] w-[7px] shrink-0 rounded-full border border-bd-strong"
+                          />
+                          {m.operator.name} · team · {timeAgo(m.createdAt)}
+                          {m.editedAt && !m.deletedAt ? ` · edited ${timeAgo(m.editedAt)}` : ''}
+                        </span>
+                      ) : (
+                        <span>
+                          {m.role === 'user' ? 'subscriber' : 'agent'}
+                          {m.clicked ? ' · clicked' : ''} · {timeAgo(m.createdAt)}
+                          {m.editedAt && !m.deletedAt ? ` · edited ${timeAgo(m.editedAt)}` : ''}
+                        </span>
+                      )}
                       {!m.deletedAt && (
                         <button
                           type="button"
@@ -608,6 +690,34 @@ export function ConversationDetailPage() {
               ),
             )}
           </Card>
+
+          {/* Reply box (D8) — the operator composer, present only while a human
+              owns the pen. Send → the D5 push route; Cmd/Ctrl+Enter is a
+              shortcut for the button. */}
+          {inHumanFlow && (
+            <Card className="p-3">
+              <textarea
+                value={reply}
+                onChange={(e) => setReply(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    onSendReply();
+                  }
+                }}
+                rows={3}
+                placeholder="Reply to the customer as a teammate…"
+                className="w-full resize-y rounded-md border border-bd bg-transparent px-2.5 py-2 text-[13px] leading-relaxed text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong focus:outline-none"
+              />
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-[11px] text-t3">Sent to the customer over their channel · ⌘↵ to send</span>
+                <Button variant="primary" onClick={onSendReply} disabled={!reply.trim() || sendReply.isPending}>
+                  {sendReply.isPending ? 'Sending…' : 'Send'}
+                </Button>
+              </div>
+            </Card>
+          )}
+          </div>
 
           {/* Facts panel */}
           <div className="w-full shrink-0 space-y-4 lg:w-[260px]">

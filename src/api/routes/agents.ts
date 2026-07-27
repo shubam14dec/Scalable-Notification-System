@@ -5,7 +5,7 @@ import { authenticate } from '../auth';
 import { getDayTokens } from '../../shared/agent-counters';
 import { verifySubscriberToken } from '../../auth/subscriber-token';
 import { sealSecret } from '../../auth/secret-box';
-import { getEnvironment } from '../../db/accounts.repo';
+import { getEnvironment, getUserById } from '../../db/accounts.repo';
 import { upsertSubscriber } from '../../db/repositories';
 import {
   conversationTranscript,
@@ -23,6 +23,9 @@ import {
   openConversation,
   reopenConversation,
   resolveConversation,
+  setConversationHuman,
+  handbackConversation,
+  lastOperatorMessage,
   rotateAgentSecret,
   updateAgent,
   type Agent,
@@ -30,6 +33,7 @@ import {
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { enqueueSummarize } from '../../core/episodic';
+import { enqueueHandbackFold } from '../../core/rolling';
 import { emitTenantEvent } from '../../core/tenant-events';
 import { CardSchema } from '../../shared/cards';
 import { logExec } from '../../core/execution-log';
@@ -725,6 +729,11 @@ export function registerAgentRoutes(app: FastifyInstance) {
             deletedAt: m.deleted_at,
             buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
             card: (m.raw as { card?: unknown } | null)?.card,
+            // D9: operator (human teammate) attribution — the widget renders a
+            // quiet "«name» · team" label above these bubbles. Top-level
+            // operatorName mirrors the inapp ws 'conversation.message' payload
+            // so the history and live paths carry the field identically.
+            operatorName: (m.raw as { operator?: { name?: string } } | null)?.operator?.name,
           })),
       };
     },
@@ -811,6 +820,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
           trace: (m.raw as { trace?: unknown } | null)?.trace,
           buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
           clicked: Boolean((m.raw as { action?: unknown } | null)?.action),
+          // D5/D8: operator (human teammate) attribution — {name} — so the
+          // dashboard transcript renders the quiet sender-name tag on these rows.
+          operator: (m.raw as { operator?: { name: string } } | null)?.operator,
         })),
         usage: totals,
       };
@@ -888,6 +900,21 @@ export function registerAgentRoutes(app: FastifyInstance) {
         void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
       }
 
+      // D5 operator attribution: a DASHBOARD JWT caller is a human operator. The
+      // authenticate preHandler only runs req.jwtVerify() for the Bearer-token
+      // path, so req.user is populated for dashboard users and undefined for
+      // API-key (SDK) callers — the exact seam we key on. API-key pushes stay
+      // untagged (unchanged behavior). Name from the users row, email local-part
+      // as the fallback. raw.operator = {name} is what the delivery path threads
+      // into the widget label / channel prefix, what buildHistory + the fold
+      // exclude/attribute (D6), and what episodic attributes (D10).
+      let operator: { name: string } | undefined;
+      if (req.user?.type === 'access') {
+        const u = await getUserById(req.user.sub);
+        const name = u?.name?.trim() || u?.email?.split('@')[0] || 'teammate';
+        operator = { name };
+      }
+
       const row = await insertConversationMessage({
         conversationId: conversation.id,
         tenantId: req.tenant.id,
@@ -897,16 +924,26 @@ export function registerAgentRoutes(app: FastifyInstance) {
           ? `push-${parsed.data.messageId}`
           : `push-${crypto.randomUUID()}`,
         raw:
-          parsed.data.buttons || parsed.data.card
+          parsed.data.buttons || parsed.data.card || operator
             ? {
                 ...(parsed.data.buttons ? { buttons: parsed.data.buttons } : {}),
                 ...(parsed.data.card ? { card: parsed.data.card } : {}),
+                ...(operator ? { operator } : {}),
               }
             : undefined,
       });
       if (!row) {
         // Same client messageId seen before — accepted once, never twice.
         return reply.code(200).send({ conversationId: conversation.id, duplicate: true });
+      }
+
+      // D5: the FIRST operator reply while waiting_human takes the pen —
+      // waiting_human → human (+ stamps had_human, + one P25 emit inside the
+      // helper). Guarded to fire exactly once; a later operator reply (already
+      // human) is a no-op flip. Only for operator (JWT) pushes.
+      if (operator && status === 'waiting_human') {
+        const flipped = await setConversationHuman(conversation.id);
+        if (flipped) status = 'human';
       }
 
       await getQueue(QUEUE.CONVERSATION).add(
@@ -928,6 +965,55 @@ export function registerAgentRoutes(app: FastifyInstance) {
       });
 
       return reply.code(202).send({ conversationId: conversation.id, messageId: row.id, status });
+    },
+  );
+
+  /**
+   * D6 "Return to agent": hand a waiting_human/human conversation back to the
+   * agent (→ active) and enqueue a FORCED rolling fold through the last operator
+   * message so the human exchange is preserved as an attributed summary before
+   * the agent speaks again. The fold is NOT awaited — if it hasn't landed when
+   * the next customer message arrives, that turn runs on pre-handoff context
+   * (transient, self-heals on the next turn); the status flip and the operator's
+   * durable rows are the record. Idempotent: a double-click after the flip
+   * returns 200 with the current active status.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/v1/conversations/:id/handback',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      if (!z.string().uuid().safeParse(req.params.id).success) {
+        return reply.code(400).send({ error: 'invalid conversation id' });
+      }
+      const conversation = await getConversation(req.tenant.id, req.params.id);
+      if (!conversation) return reply.code(404).send({ error: 'unknown conversation' });
+
+      // Guarded flip (waiting_human|human → active); emits conversation.changed
+      // exactly when THIS call did the flip.
+      const flipped = await handbackConversation(conversation.id);
+      if (!flipped) {
+        // Not in a human state: idempotent 200 if already active, else 409.
+        if (conversation.status === 'active') {
+          return reply.code(200).send({ status: 'active' });
+        }
+        return reply.code(409).send({ error: 'conversation is not awaiting handback' });
+      }
+
+      // Fold through the last operator reply (inclusive). No operator ever
+      // replied (a handoff returned to the agent with no human turn) → nothing to
+      // attribute, skip the fold entirely.
+      const boundary = await lastOperatorMessage(conversation.id);
+      if (boundary) {
+        await enqueueHandbackFold(req.tenant.id, conversation.id, boundary.id);
+      }
+
+      logExec({
+        tenantId: req.tenant.id,
+        transactionId: `conv-${conversation.id}`,
+        level: 'info',
+        detail: `conversation handed back to the agent${boundary ? ' (forced fold enqueued)' : ''}`,
+      });
+      return reply.code(200).send({ status: 'active' });
     },
   );
 }

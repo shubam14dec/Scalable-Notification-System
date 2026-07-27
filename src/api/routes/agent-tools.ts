@@ -37,6 +37,8 @@ const RESERVED_TOOL_NAMES = [
   'search_history',
   // Phase 24 long-term memory built-in.
   'remember',
+  // Phase 26 HITL handoff built-in (always offered on managed agents).
+  'handoff_to_human',
 ];
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;

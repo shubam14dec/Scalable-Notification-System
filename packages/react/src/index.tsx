@@ -214,6 +214,15 @@ export type Card =
   | { type: 'select'; id: string; prompt?: string; options: CardOption[] }
   | { type: 'text_input'; id: string; prompt?: string; placeholder?: string };
 
+/**
+ * Conversation lifecycle as the widget sees it. `active` and `resolved` are the
+ * everyday states; `waiting_human`/`human` mean a handoff is in flight — a human
+ * teammate owns the pen. The widget treats the human states like `active` for
+ * input (the customer keeps typing, now to the person) but suppresses the agent
+ * typing indicator, since no agent is composing.
+ */
+export type ConversationStatus = 'active' | 'resolved' | 'waiting_human' | 'human';
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'agent';
@@ -229,6 +238,11 @@ export interface ChatMessage {
   editedAt?: string | null;
   /** Set when the message was deleted; renders a tombstone. */
   deletedAt?: string | null;
+  /**
+   * Present when a human teammate (not the agent) authored this reply during a
+   * handoff. Drives the quiet "«name» · team" sender label above the bubble.
+   */
+  operatorName?: string;
 }
 
 export interface UseAgentChatOptions {
@@ -266,7 +280,7 @@ export function useAgentChat({
   wsUrl,
 }: UseAgentChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [status, setStatus] = useState<'active' | 'resolved'>('active');
+  const [status, setStatus] = useState<ConversationStatus>('active');
   const [connected, setConnected] = useState(false);
   const [typing, setTyping] = useState(false);
   const [agent, setAgent] = useState<AgentInfo | null>(null);
@@ -298,7 +312,7 @@ export function useAgentChat({
       .then((res) => res.json())
       .then(
         (data: {
-          conversation: { status: 'active' | 'resolved' } | null;
+          conversation: { status: ConversationStatus } | null;
           messages: ChatMessage[];
           // May arrive from a newer backend; absent/null = onboarding off.
           agent?: AgentInfo | null;
@@ -335,6 +349,8 @@ export function useAgentChat({
             card?: Card;
             editedAt?: string | null;
             deletedAt?: string | null;
+            /** Set on human-teammate replies during a handoff (D9). */
+            operatorName?: string;
           };
         };
         if (msg.conversation?.agentIdentifier !== agentIdentifier) return;
@@ -354,11 +370,14 @@ export function useAgentChat({
             createdAt: msg.message.createdAt,
             buttons: msg.message.buttons,
             card: msg.message.card,
+            operatorName: msg.message.operatorName,
           };
           setMessages((prev) =>
             prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming],
           );
-          setStatus('active');
+          // An operator reply means a human owns the pen → the conversation is
+          // in the `human` state; a plain agent reply means the agent is live.
+          setStatus(msg.message.operatorName ? 'human' : 'active');
         } else if (msg.type === 'conversation.message.updated' && msg.message) {
           // Plan-card finalize rides .updated: it carries the reply text and
           // its presentation (buttons/card) but no editedAt — remap those
@@ -407,7 +426,9 @@ export function useAgentChat({
         ...prev,
         { id: messageId, role: 'user', content: trimmed, createdAt: new Date().toISOString(), pending: true },
       ]);
-      setStatus('active');
+      // Sending reopens a `resolved` thread, but must NOT yank a handoff back to
+      // `active` — in waiting_human/human the customer is typing to the person.
+      setStatus((s) => (s === 'resolved' ? 'active' : s));
       try {
         const res = await fetch(
           `${apiUrl}/v1/agents/${encodeURIComponent(agentIdentifier)}/messages`,
@@ -452,7 +473,8 @@ export function useAgentChat({
         ...prev,
         { id: actionEventId, role: 'user', content: bubble, createdAt: new Date().toISOString(), pending: true },
       ]);
-      setStatus('active');
+      // Same rule as send(): reopen `resolved`, never override a live handoff.
+      setStatus((s) => (s === 'resolved' ? 'active' : s));
       try {
         const res = await fetch(
           `${apiUrl}/v1/agents/${encodeURIComponent(agentIdentifier)}/actions`,
@@ -985,6 +1007,14 @@ export function AgentChat(props: AgentChatProps) {
                   </div>
                 ) : (
                   <>
+                    {m.role === 'agent' && m.operatorName && (
+                      // A human teammate answered during a handoff — a quiet
+                      // sender label sits above the reply so the customer knows
+                      // a person (not the agent) is speaking.
+                      <span style={{ marginBottom: 3, fontSize: 11, color: c.text2 }}>
+                        «{m.operatorName}» · team
+                      </span>
+                    )}
                     <div
                       style={{
                         maxWidth: '80%',

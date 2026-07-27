@@ -327,6 +327,7 @@ describe('the tool loop', () => {
     await runWorker(turn.conversationId, turn.messageId);
     const tools = seen.at(-1)!.body.tools!;
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'handoff_to_human',
       'present_buttons',
       'present_choices',
       'remember',
@@ -610,6 +611,7 @@ describe('the tool loop', () => {
 
     const tools = seen.at(-1)!.body.tools!;
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'handoff_to_human',
       'present_buttons',
       'present_choices',
       'remember',

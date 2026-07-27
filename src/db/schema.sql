@@ -308,7 +308,12 @@ create table if not exists conversations (
   -- One conversation per (agent, channel, thread): for in-app the thread IS
   -- the subscriber; external channels (Phase 2) put their thread id here.
   thread_key      text not null,
-  status          text not null default 'active', -- active | resolved
+  -- active | resolved | waiting_human | human  (Phase 26 HITL handoff: a
+  -- managed agent handing off flips active -> waiting_human; the first operator
+  -- reply -> human; "Return to agent" -> active. No CHECK constraint here (the
+  -- column has always been a free text status); the Conversation type union in
+  -- conversations.repo.ts is the enforced surface.
+  status          text not null default 'active',
   metadata        jsonb not null default '{}',    -- ctx.metadata.*, <=64KB
   summary         text,
   message_count   int not null default 0,
@@ -803,3 +808,12 @@ alter table agents add column if not exists context jsonb not null default '{}';
 -- (conversations.summary) is a different signal and stays untouched.
 alter table conversations add column if not exists rolling_summary text;
 alter table conversations add column if not exists rolling_upto uuid;
+
+-- ---- Phase 26 Slice A: HITL handoff ----
+-- A durable, honest flag that a human teammate has engaged on this conversation
+-- (set the moment the first operator reply flips waiting_human -> human). It
+-- survives handback and the folding-away of the operator turns into the rolling
+-- summary, so the post-handback per-turn reminder (D7) can warn the agent NOT to
+-- claim to be a person WITHOUT a new query or a fragile string-match on the
+-- summary text — the flag rides the conversation row already loaded per turn.
+alter table conversations add column if not exists had_human boolean not null default false;

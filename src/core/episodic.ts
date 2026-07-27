@@ -173,7 +173,16 @@ async function summarize(
     preamble +
     rows
       .filter((m) => (m.role === 'user' || m.role === 'agent') && !m.deleted_at)
-      .map((m) => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${m.content}`)
+      .map((m) => {
+        if (m.role === 'user') return `Customer: ${m.content}`;
+        // Phase 26 D10: operator turns are attributed to the human teammate (same
+        // rule as the rolling fold input), never rendered as the agent's words.
+        const operator = (m.raw as { operator?: { name?: string } } | null)?.operator;
+        if (operator) {
+          return `A human teammate (${operator.name ?? 'teammate'}) told the customer: "${m.content}"`;
+        }
+        return `Agent: ${m.content}`;
+      })
       .join('\n')
   )
     // Bound the prompt — a summary needs the gist, not every token of a long thread.

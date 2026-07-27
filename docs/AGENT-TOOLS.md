@@ -2,7 +2,8 @@
 
 A **managed** agent ships with a fixed built-in menu (`trigger_workflow`,
 `set_metadata`, `resolve_conversation`, `present_buttons`, `present_choices`,
-`request_input`, `remember` — see **Built-in memory tool** below), plus two
+`request_input`, `remember` — see **Built-in memory tool** below —
+and `handoff_to_human` — see **Built-in handoff tool** below), plus two
 **conditional** built-ins that appear only when there's something to search
 (`search_knowledge`, `search_history` — see **Built-in retrieval tools** below).
 **Custom tools** extend that menu with
@@ -154,6 +155,70 @@ those absent, neither tool is ever offered.
 > that enforcement layer is a roadmap item, not shipped. Knowledge sources are
 > **text, URL, or `.txt`/`.md`** today; **PDF is not yet supported**.
 
+## Built-in handoff tool (`handoff_to_human`)
+
+Always offered to a **managed** agent (no setup) — the escape hatch that hands
+the whole conversation to a human teammate. It is the sibling of the approval
+flow below, and the distinction is the whole point:
+
+| | **Approval** (a `required` tool) | **Handoff** (`handoff_to_human`) |
+|---|---|---|
+| **What the human does** | vetoes or approves **one action** | **takes the pen** — owns the conversation |
+| **Who holds the conversation** | the agent, still driving | the human, until they hand it back |
+| **After the human acts** | the agent resumes and composes the reply | the agent stays **silent** until *Return to agent* |
+| **Trigger** | the model calls a `required`-tier tool | the model calls `handoff_to_human` |
+
+Put plainly: **approval = a human vetoes one action; handoff = a human takes the
+pen.**
+
+- **When the model calls it:** the per-turn reminder tells the agent to call
+  `handoff_to_human` when the customer **explicitly asks for a person**, or when
+  it **cannot help after honest attempts** — and never to promise a human
+  without calling it.
+- **Input shape:** `{ reason?: string }` — an optional note for the team (≤300
+  chars, trimmed); no required fields.
+- **Tier:** **auto** — escalating to a human never needs human approval, so it
+  runs immediately (it is not gated behind the approval flow).
+- **Effects of a successful call:** the conversation flips to **`waiting_human`**
+  (visible live on the dashboard's Conversations queue), a breadcrumb is written,
+  and — if ops notifications are wired (below) — the team is paged. From that
+  moment the managed brain **will not reply** on this conversation until a human
+  returns it (the customer's later messages still post to the live transcript).
+- **Result texts (verbatim):**
+  - success → `a human teammate has been notified and will take over — let the
+    customer know` (the agent then writes one short reply telling the customer a
+    teammate is taking over);
+  - **idempotent** — called while the conversation is already `waiting_human` or
+    `human` → `a human teammate is already engaged on this conversation`, with
+    **no** second page and no state change.
+- **Ops notification:** a handoff dogfoods the same reserved-workflow pattern as
+  approvals — it fires the reserved workflow **`agent-handoffs`** for the reused
+  reserved **`approvals`** subscriber (see *Opt-in approval notifications* below;
+  the audience is the same ops humans, so a tenant that wired approval alerts
+  gets handoff alerts with **zero new setup beyond a second workflow**). Payload:
+
+  ```json
+  {
+    "agentIdentifier": "support-bot",
+    "agentName": "Acme Support",
+    "subscriberExternalId": "user_789",
+    "reason": "customer asked to speak to a person",
+    "conversationUrl": "/conversations/…"
+  }
+  ```
+
+  `conversationUrl` is a **relative** dashboard deep link the workflow template
+  prefixes with the team's dashboard origin. **Missing either the workflow or
+  the `approvals` subscriber = a silent no-op** — the handoff still happens and
+  the dashboard queue is the authoritative record; the email is only the
+  accelerator. A notification failure never fails the handoff.
+- **Reserved name:** `handoff_to_human` is on the reserved list — a custom tool
+  may not be named it (registration → 400), so the built-in can't be shadowed.
+
+The customer-facing walkthrough (Priya's one-time setup, Sam's reply surface,
+what Maya sees) is in [ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md),
+*"Human handoff"*.
+
 ## Registering a tool
 
 ### Dashboard
@@ -200,7 +265,7 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
 
 | Field | Rules |
 |---|---|
-| `name` | required; must match **`^[a-z][a-z0-9_]{0,63}$`** (lowercase, starts with a letter, ≤64 chars). May **not** be a reserved built-in name: `trigger_workflow`, `set_metadata`, `resolve_conversation`, `present_choices`, `present_buttons`, `request_input`, `search_knowledge`, `search_history`, `remember`. Immutable after create; a duplicate name on the same agent → **409**. |
+| `name` | required; must match **`^[a-z][a-z0-9_]{0,63}$`** (lowercase, starts with a letter, ≤64 chars). May **not** be a reserved built-in name: `trigger_workflow`, `set_metadata`, `resolve_conversation`, `present_choices`, `present_buttons`, `request_input`, `search_knowledge`, `search_history`, `remember`, `handoff_to_human`. Immutable after create; a duplicate name on the same agent → **409**. |
 | `description` | required; 1–1024 chars. |
 | `parameters` | required; a **JSON Schema object with `type: "object"`** (not an array, not `null`). Shallow-validated — this becomes the tool's `input_schema` verbatim. |
 | `endpointUrl` | required; a valid URL, ≤2048 chars. **SSRF-gated at write time** — it must not resolve to private/internal infrastructure, or you get a 400. |

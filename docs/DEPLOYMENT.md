@@ -134,3 +134,16 @@ Anthropic endpoints do (full discount), some Anthropic-compat layers ignore it
 (no discount, no error, no behavior change); and the **daily-budget suggestion**
 stays blank until an agent has **7+ days of production usage** — it appears on its
 own once the data exists, nothing to enable.
+
+**Human handoff (Phase 26) adds no infra either.** The `handoff_to_human` tool,
+the conversation state machine (`waiting_human`/`human`), the operator reply
+route, and the handback fold all ride the **existing** API, worker, ws gateway,
+Postgres, and Redis — no new service, port, queue, env var, or one-time console
+step, and the handoff surface lights up over the **same** Phase-25 admin
+WebSocket covered above. The only opt-in is a **per-tenant** action, not a deploy
+step: to receive the handoff email nudge, an Acme creates a reserved
+**`agent-handoffs`** workflow (the twin of `agent-approvals`) that reuses the
+same reserved **`approvals`** subscriber — done from their own Workflows page,
+exactly like the approval-alert setup. Mentioned here for completeness; with the
+workflow absent the handoff still works and the dashboard queue stays the
+authoritative record.

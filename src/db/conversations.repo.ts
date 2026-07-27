@@ -56,13 +56,26 @@ export interface Conversation {
   subscriber_id: string;
   channel: string;
   thread_key: string;
-  status: 'active' | 'resolved';
+  /**
+   * Phase 26 HITL handoff state machine:
+   *   active →(handoff_to_human tool)→ waiting_human →(first operator reply)→
+   *   human →(Return to agent)→ active   ·   waiting_human|human →(Resolve)→ resolved
+   * Nothing automatic: a handoff is a promise only a person un-makes (no timeout
+   * hand-back). Customer messages in the two human states never change state.
+   */
+  status: 'active' | 'resolved' | 'waiting_human' | 'human';
   metadata: Record<string, unknown>;
   summary: string | null;
   /** D5 rolling-summarization state: the folded-so-far summary (null = none). */
   rolling_summary: string | null;
   /** D5: the newest message id already folded into rolling_summary (null = none). */
   rolling_upto: string | null;
+  /**
+   * Phase 26 (D7): true once a human teammate has engaged (set when the first
+   * operator reply flips waiting_human → human). Durable across handback and the
+   * folding-away of operator turns, so the post-handback reminder stays honest.
+   */
+  had_human: boolean;
   message_count: number;
   last_message_at: string;
   created_at: string;
@@ -616,7 +629,11 @@ export async function openConversation(c: {
     `insert into conversations (tenant_id, agent_id, subscriber_id, channel, thread_key)
      values ($1, $2, $3, $4, $5)
      on conflict (agent_id, channel, thread_key) where connection_id is null do update set
-       status = 'active',
+       -- Reopen a RESOLVED thread (the user came back), but NEVER force a
+       -- waiting_human/human thread back to active (Phase 26 D1/D11): a customer
+       -- message while a human owns the pen must not steal it back — the D2 gate
+       -- relies on this find not flipping the status out from under it.
+       status = case when conversations.status = 'resolved' then 'active' else conversations.status end,
        last_message_at = now()
      returning *`,
     [c.tenantId, c.agentId, c.subscriberId, c.channel, c.threadKey],
@@ -645,7 +662,9 @@ export async function openChannelConversation(c: {
        (tenant_id, agent_id, connection_id, subscriber_id, channel, thread_key)
      values ($1, $2, $3, $4, $5, $6)
      on conflict (connection_id, thread_key) where connection_id is not null do update set
-       status = 'active',
+       -- Reopen a RESOLVED thread only; keep a waiting_human/human thread in its
+       -- human state so a customer message can't steal the pen back (Phase 26 D1/D11).
+       status = case when conversations.status = 'resolved' then 'active' else conversations.status end,
        last_message_at = now(),
        agent_id = excluded.agent_id
      returning *`,
@@ -749,9 +768,11 @@ export async function updateConversationMetadata(
 }
 
 /**
- * Flip an active conversation to resolved. Returns true only when THIS call
- * did the flip (status was 'active') — the caller uses that to fire the
- * resolved event exactly once, even under concurrent resolves / retries.
+ * Flip a non-resolved conversation to resolved. Returns true only when THIS call
+ * did the flip — the caller uses that to fire the resolved event exactly once,
+ * even under concurrent resolves / retries. Guard is `status <> 'resolved'` (not
+ * `= 'active'`) so the dashboard's Resolve also closes a waiting_human/human
+ * conversation directly (Phase 26 D1 state machine: waiting_human|human → resolved).
  */
 export async function resolveConversation(
   conversationId: string,
@@ -759,11 +780,76 @@ export async function resolveConversation(
 ): Promise<boolean> {
   const { rowCount } = await pool.query(
     `update conversations set status = 'resolved', summary = coalesce($2, summary)
-     where id = $1 and status = 'active'
+     where id = $1 and status <> 'resolved'
      returning id`,
     [conversationId, summary ?? null],
   );
   return (rowCount ?? 0) > 0;
+}
+
+// ---- Phase 26: HITL handoff state-machine helpers ----
+// Each is a guarded, once-only transition (mirrors resolveConversation): the
+// status guard makes it fire exactly when the legal source state holds, so the
+// boolean return doubles as "THIS call did the flip" for a single P25 emit. Each
+// emits conversation.changed AFTER the write (row-then-hint), only when it flipped.
+
+/** active → waiting_human (the handoff_to_human tool). Returns did-flip. */
+export async function setConversationWaitingHuman(conversationId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `update conversations set status = 'waiting_human'
+     where id = $1 and status = 'active'
+     returning tenant_id`,
+    [conversationId],
+  );
+  if (rows[0]) void emitTenantEvent(rows[0].tenant_id, 'conversation.changed', conversationId);
+  return rows.length > 0;
+}
+
+/**
+ * waiting_human → human (the FIRST operator reply). Also stamps had_human=true —
+ * the durable D7 flag that a person engaged, kept across handback and folding.
+ * Returns did-flip so only the first operator reply fires the emit + status flip.
+ */
+export async function setConversationHuman(conversationId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `update conversations set status = 'human', had_human = true
+     where id = $1 and status = 'waiting_human'
+     returning tenant_id`,
+    [conversationId],
+  );
+  if (rows[0]) void emitTenantEvent(rows[0].tenant_id, 'conversation.changed', conversationId);
+  return rows.length > 0;
+}
+
+/** waiting_human|human → active ("Return to agent"). Returns did-flip. */
+export async function handbackConversation(conversationId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `update conversations set status = 'active'
+     where id = $1 and status in ('waiting_human', 'human')
+     returning tenant_id`,
+    [conversationId],
+  );
+  if (rows[0]) void emitTenantEvent(rows[0].tenant_id, 'conversation.changed', conversationId);
+  return rows.length > 0;
+}
+
+/**
+ * The newest operator (raw.operator) reply row in a conversation — the fold
+ * boundary a handback folds through (inclusive). Null when no operator ever
+ * replied (a handoff returned to the agent with no human turn), in which case
+ * the handback skips the fold entirely.
+ */
+export async function lastOperatorMessage(
+  conversationId: string,
+): Promise<ConversationMessage | null> {
+  const { rows } = await pool.query(
+    `select * from conversation_messages
+     where conversation_id = $1 and role = 'agent'
+       and raw ? 'operator' and deleted_at is null
+     order by created_at desc limit 1`,
+    [conversationId],
+  );
+  return rows[0] ?? null;
 }
 
 /** A new turn on a resolved thread reopens it (the user came back). */

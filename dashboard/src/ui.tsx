@@ -68,6 +68,12 @@ const STATUS_STYLES: Record<string, { color: string; label?: string }> = {
   merged: { color: 'var(--t3)' },
   active: { color: 'var(--info)' },
   resolved: { color: 'var(--ok)' },
+  // Phase 26 (D8): handoff states. waiting_human = amber (attention-needing —
+  // a customer is waiting, no teammate has picked it up), the same warn idiom
+  // retry uses; human = info (a teammate is engaged, a live/in-progress state
+  // like active — the label carries the distinction, not a new colour).
+  waiting_human: { color: 'var(--warn)', label: 'waiting for human' },
+  human: { color: 'var(--info)', label: 'human' },
   disabled: { color: 'var(--t3)' },
 };
 
