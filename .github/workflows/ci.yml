@@ -69,6 +69,15 @@ jobs:
       - name: Install (root + workspaces)
         run: npm ci
 
+      # Before the test step: tests/unit/admin-events-table.test.ts imports
+      # dashboard/src/lib/adminEvents.ts (the drift guard on the live-events
+      # invalidation table), which resolves react/react-query from
+      # dashboard/node_modules. Green locally, red in CI until this moved
+      # ahead of vitest (P25 close-out lesson).
+      - name: Install dashboard deps
+        working-directory: dashboard
+        run: npm ci
+
       - name: Migrate schema
         run: npm run migrate
 
@@ -87,6 +96,5 @@ jobs:
       - name: Build dashboard
         working-directory: dashboard
         run: |
-          npm ci
           npx tsc --noEmit
           npx vite build
