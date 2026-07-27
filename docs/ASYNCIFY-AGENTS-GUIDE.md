@@ -39,6 +39,50 @@ One conversation follows the person, not the channel: if Maya starts in the
 widget and later links her Telegram, it is the same Maya to the agent, with
 the same history.
 
+### Production-ready, not demo-ready: the seven pillars
+
+A chatbot that answers questions is a demo. An agent your support team can
+actually put in front of customers needs all seven of these — and every one
+is built in and covered later in this guide:
+
+**Observability (§13)** — every turn records a full trace: each model call,
+each tool call, timing, tokens. When Maya says "the bot did something
+weird," Sam opens the Turn Inspector and sees exactly what happened and
+why. In production, an agent you can't audit is an agent you can't trust —
+or debug.
+
+**Evals (§10)** — saved conversations replay as tests that assert on what
+the agent *did* (which tools, which arguments), not what it said. Prompt
+edits are deploys: without evals, every prompt tweak is a blind release to
+your customers.
+
+**Guardrails (§6)** — daily token budgets (a circuit breaker, not a hope),
+repeat-action limits ("3rd refund for the same customer this month → needs
+a human"), and approval gates on dangerous tools. Enforced in the
+executor, outside the model — a prompt can be argued with; a gate cannot.
+
+**Knowledge with citations (§8)** — the agent answers from *your*
+documents and names its source, and says "I don't know" otherwise. In
+production, a confidently invented returns policy is worse than no answer:
+it creates obligations your company never made.
+
+**Memory (§8–9)** — three kinds: the conversation itself, episodic recall
+of past conversations, and a durable per-customer profile the agent
+maintains ("prefers email"). Customers judge support by whether they have
+to repeat themselves; memory is what makes an agent feel like service
+instead of a form.
+
+**Cost control (§9)** — long conversations fold into summaries instead of
+growing linearly, stable prompt prefixes are provider-cached at ~10% price,
+and budgets are suggested from your real usage. Per-conversation economics
+decide whether an agent is viable at scale, not the demo.
+
+**Human handoff (§7)** — the agent knows when to step aside, a real person
+takes over mid-conversation, and the agent returns knowing what was
+promised — without pretending it made the promises. No support team
+deploys a bot without an exit to a person; this is the pillar that makes
+the other six deployable.
+
 There are two kinds of brain, and you can switch between them at any time
 without losing conversations:
 
