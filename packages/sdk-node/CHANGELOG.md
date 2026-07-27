@@ -1,5 +1,11 @@
 # @asyncify-hq/node
 
+## 0.8.0
+
+### Minor Changes
+
+- 34479ca: `conversations` status types widen to include the `waiting_human` and `human` handoff states — on `ConversationSummary`, the `list` status filter, and the `get` response — so consumers can filter for and read conversations a human teammate is currently handling.
+
 ## 0.7.0
 
 ### Minor Changes
