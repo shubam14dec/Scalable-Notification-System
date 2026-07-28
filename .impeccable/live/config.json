@@ -1,0 +1,1 @@
+{"framework":"vite","devServer":{"command":"npx vite --port 5173","cwd":"dashboard","url":"http://localhost:5173"},"entry":"dashboard/index.html"}

@@ -17,6 +17,7 @@ import IntegrationsPage from './pages/Integrations';
 import ApiKeysPage from './pages/ApiKeys';
 import InboxPreviewPage from './pages/InboxPreview';
 import AgentsPage from './pages/Agents';
+import AgentDetailPage from './pages/AgentDetail';
 import ConnectionsPage from './pages/Connections';
 import ConversationsPage, { ConversationDetailPage } from './pages/Conversations';
 import ApprovalsPage from './pages/Approvals';
@@ -58,6 +59,7 @@ export default function App() {
           <Route path="/templates/new" element={<TemplateEditorPage />} />
           <Route path="/templates/:key" element={<TemplateEditorPage />} />
           <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/agents/:identifier" element={<AgentDetailPage />} />
           <Route path="/connections" element={<ConnectionsPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/conversations/:id" element={<ConversationDetailPage />} />
