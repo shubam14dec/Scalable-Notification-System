@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react';
@@ -522,11 +522,95 @@ export function ConversationDetailPage() {
     confirmTimer.current = setTimeout(() => setConfirmingId(null), 3_000);
   };
 
+  // ─── Transcript scroll anchoring (classic chat UX) ──────────────────────
+  // The transcript is its OWN scroll container (see the layout below); the page
+  // itself no longer scrolls for transcript length. We keep the view pinned to
+  // the latest message the way a chat app does:
+  //  • on open: jump to the bottom instantly, before paint (no visible jump);
+  //  • a new message while the reader is AT the bottom: follow it down;
+  //  • a new message while the reader has scrolled UP into history: don't yank —
+  //    raise a quiet "New messages" pill that scrolls to the bottom on click.
+  // Turn-details expanders grow the container's height but never change the
+  // message COUNT, and the follow logic keys on count alone — so expanding a
+  // trace can never trigger a scroll yank.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const scrolledForIdRef = useRef<string | null>(null);
+  const prevCountRef = useRef(0);
+  // Count of messages that arrived while the reader was up in history —
+  // shown on the pill ("3 new messages"); a ticking number earns attention
+  // as information, where louder chrome would violate the quiet register.
+  const [newPillCount, setNewPillCount] = useState(0);
+  const showNewPill = newPillCount > 0;
+  const setShowNewPill = (on: boolean) => {
+    if (!on) setNewPillCount(0);
+  };
+
+  const messageCount = data?.messages.length ?? 0;
+  const NEAR_BOTTOM_PX = 80;
+
+  const prefersReducedMotion = () =>
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const scrollToBottom = (smooth: boolean) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth && !prefersReducedMotion() ? 'smooth' : 'auto',
+    });
+  };
+
+  // Near-bottom detection: the reader is "at the bottom" within 80px of it.
+  const onTranscriptScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+    if (atBottomRef.current) setShowNewPill(false);
+  };
+
+  // Pin-to-bottom on open, follow-or-notify on new messages. useLayoutEffect so
+  // the on-open positioning lands before paint — no top-to-bottom flash.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || messageCount === 0) return;
+
+    // Fresh open (or navigation to a different conversation): jump to the
+    // bottom instantly and seed the counters. No pill, no animation.
+    if (scrolledForIdRef.current !== id) {
+      el.scrollTop = el.scrollHeight;
+      scrolledForIdRef.current = id ?? null;
+      prevCountRef.current = messageCount;
+      atBottomRef.current = true;
+      setShowNewPill(false);
+      return;
+    }
+
+    // A message arrived after we were already on this conversation.
+    if (messageCount > prevCountRef.current) {
+      if (atBottomRef.current) {
+        scrollToBottom(true);
+        setShowNewPill(false);
+      } else {
+        // Capture the delta NOW: the functional updater runs after the ref
+        // below is already bumped, which would make the delta zero.
+        const arrived = messageCount - prevCountRef.current;
+        setNewPillCount((n) => n + arrived);
+      }
+      prevCountRef.current = messageCount;
+    }
+  }, [messageCount, id]);
+
   const metadataEntries = Object.entries(data?.conversation.metadata ?? {});
 
   return (
-    <>
-      <Link to="/conversations" className="mb-4 inline-flex items-center gap-1.5 text-[12px] text-t3 hover:text-t1">
+    // Fixed-height detail layout on desktop: fill the viewport below the app
+    // header (main's px-8 py-8 = 4rem of vertical padding) so the transcript —
+    // not the page — carries the scroll. Below lg it falls back to today's
+    // natural page flow (sidebar stacks under the transcript).
+    <div className="flex flex-col lg:h-[calc(100vh-4rem)]">
+      <Link to="/conversations" className="mb-4 inline-flex shrink-0 items-center gap-1.5 text-[12px] text-t3 hover:text-t1">
         <ArrowLeft className="h-3.5 w-3.5" /> Conversations
       </Link>
       <PageHeader
@@ -567,8 +651,8 @@ export function ConversationDetailPage() {
       {isLoading || !data ? (
         <Skeleton className="h-64 w-full" />
       ) : (
-        <div className="flex flex-col gap-5 lg:flex-row">
-          <div className="flex min-w-0 flex-1 flex-col gap-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-5 lg:flex-row">
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col gap-4">
           {/* Handoff banner (D8) — a quiet monochrome strip that names the
               state and instructs; the sole coloured signal for this status is
               the Details-panel StatusBadge, so the strip stays chrome. */}
@@ -579,8 +663,15 @@ export function ConversationDetailPage() {
                 : 'A teammate is handling this conversation'}
             </div>
           )}
-          {/* Transcript — the story, oldest first */}
-          <Card className="min-w-0 flex-1 p-4">
+          {/* Transcript — its OWN scroll container (classic chat UX): the page
+              no longer scrolls for transcript length, this pane does. Same Card
+              surface (rounded-lg border bg-surface), now scroll-capable. */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <div
+              ref={scrollRef}
+              onScroll={onTranscriptScroll}
+              className="min-w-0 flex-1 overflow-y-auto rounded-lg border border-bd bg-surface p-4"
+            >
             {data.messages.map((m) =>
               m.role === 'system' ? (
                 <p key={m.id} className="my-2 text-center text-[11px] text-t3">
@@ -689,7 +780,24 @@ export function ConversationDetailPage() {
                 </div>
               ),
             )}
-          </Card>
+            </div>
+            {/* Quiet "new messages" pill — design-system monochrome (bordered,
+                bg-elevated, text-t2, no status colour). Shown only when a new
+                message arrived while the reader was scrolled up in history. */}
+            {showNewPill && (
+              <button
+                type="button"
+                onClick={() => {
+                  scrollToBottom(true);
+                  setShowNewPill(false);
+                }}
+                className="new-pill-enter absolute bottom-3 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-invert px-3.5 py-1.5 text-[11px] font-medium text-invert-t shadow-md hover:opacity-90"
+              >
+                {newPillCount === 1 ? '1 new message' : `${newPillCount} new messages`}
+                <ChevronDown className="h-3 w-3" aria-hidden />
+              </button>
+            )}
+          </div>
 
           {/* Reply box (D8) — the operator composer, present only while a human
               owns the pen. Send → the D5 push route; Cmd/Ctrl+Enter is a
@@ -719,8 +827,8 @@ export function ConversationDetailPage() {
           )}
           </div>
 
-          {/* Facts panel */}
-          <div className="w-full shrink-0 space-y-4 lg:w-[260px]">
+          {/* Facts panel — scrolls independently when taller than the viewport */}
+          <div className="w-full shrink-0 space-y-4 lg:w-[260px] lg:overflow-y-auto">
             <Card className="p-4">
               <p className="mb-3 text-[11px] font-medium uppercase tracking-wider text-t3">Details</p>
               <dl className="space-y-2 text-[12px]">
@@ -823,6 +931,6 @@ export function ConversationDetailPage() {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }
