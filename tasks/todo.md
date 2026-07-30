@@ -238,6 +238,27 @@ notes. Order within this cluster is rough — reorder freely.)
 
 ## In progress
 
+### asyncify.org landing page (backlog item, started 2026-07-30) — sibling
+repo asyncify-site/ (Vite+TS+GSAP all-free-plugins; own git, local only).
+Direction approved: 5-scene story (bell hero / engine / two-way turn /
+agents / proof+CTA), terminal-native dark, delivery-green single accent,
+BRAND.md+DESIGN.md+PRODUCT.md written (impeccable + emil + taste skills
+installed and used).
+- [x] HERO COMPLETE (user-approved "looking good"): physics bell (real
+      damped pendulum, documented constants), entrance draw, auto-ring,
+      six-channel delivery fan w/ mono receipts (widened spacing), bell
+      +30%, clapper = neutral ink w/ white strike flash (green vetoed by
+      user; maker's-stamp counter built then removed — restraint won),
+      ASYNCIFY/ENGINE foundry inscription cast on OUTER skirt curves
+      (silhouette-derived, ring makes it catch light), hanging-headline
+      word physics + 2D ring resonance (tuned up twice per user feel),
+      delivered state PERSISTS after ring + re-ring replays (user call).
+      47KB gz. Dev: npx vite --port 5180.
+- [ ] Scene 2 THE ENGINE (pinned scroll pipeline) — next, awaiting go
+- [ ] Scene 3 THE TURN · Scene 4 AGENTS · Scene 5 PROOF+CTA
+- [ ] Polish pass (impeccable audit/critique), mobile real-device check
+- [ ] Deploy (static host) + point asyncify.org DNS
+
 ### Phase 26: HITL Conversation Handoff — COMPLETE: built + user-E2E'd same day 2026-07-27 (handoff->amber queue live, gate proven, reply-as-human w/ widget label, handback fold attributed [DB-verified], agent honored the human's promise). PUSHED. Approval = human vetoes one action; handoff = human takes the
 pen. All 5 slices Opus first-try, suite 672->702 double-green, ZERO
 revision rounds (SIXTH consecutive). Shipped: states waiting_human/human
