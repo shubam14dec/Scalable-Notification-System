@@ -254,8 +254,108 @@ installed and used).
       word physics + 2D ring resonance (tuned up twice per user feel),
       delivered state PERSISTS after ring + re-ring replays (user call).
       47KB gz. Dev: npx vite --port 5180.
-- [ ] Scene 2 THE ENGINE (pinned scroll pipeline) — next, awaiting go
-- [ ] Scene 3 THE TURN · Scene 4 AGENTS · Scene 5 PROOF+CTA
+- [x] Scene 2 THE ENGINE COMPLETE (user-sealed 2026-07-31): pinned scrub
+      schematic, 124u timeline over 2.5 screens (2.0 tried, felt rushed;
+      2.5 settled). Three acts: A flood/429 convoy + network drop +
+      idempotency (evt already-seen) + metered FIFO queue w/ own gate-short
+      path (dasharray law); B/C outage waited out on backoff rail →
+      "provider back online" stamp swaps in as box recovers → retried →
+      delivered; two-lap exhausted ladder (1s·4s waits GROW, travel
+      accelerates) → DLQ; permanent-error goes straight to DLQ, never
+      retries; D/F priority lanes w/ traveling HIGH/LOW PRIORITY flags
+      (raw:true riders), digest, EDA junction label, skip-if-opened
+      ladder, receipts strip. Every mechanism labeled + verified against
+      platform code (sendWithFailover, chainFor per-channel). Many
+      user-caught fixes ledgered in DESIGN.md §3 laws.
+- [x] Scene 3 THE TURN COMPLETE (user-sealed 2026-08-04): bridge lines
+      ("Every message ends at delivered. / Ours listen for what comes
+      back."), pinned 1.8-screen scrub. Rail column (scene-2 anatomy):
+      title "03 · the turn / Delivered was just the beginning." on the
+      page margin + VERTICAL beat tracker (stations delivered/the reply/
+      inbound light at their beats, real event names 'ws ·' ledger form).
+      World: line-art phone w/ Gmail-dialect inbox ("your user's phone"),
+      camera push-ins (beat-1 fits whole phone z1.12; beat-2 thread
+      close-up fx 870 leaves caption column), buzz on arrival (damped
+      2.8°, bell vocabulary), receipt lifecycle delivered→opened→replied,
+      typed reply w/ block cursor (11u, cursor on em box), send-press
+      causes collapse, white dot (user's words ≠ our green) rides the
+      SAME wire back, docks in center cell of chip's mini-queue
+      (internals: inlet/api/5-cell queue/meter/fan-out, no labels).
+      In-world event lines at each moment ("websocket event: X" frame
+      form; queue · conversation-inbound at dock). Glass captions ×3
+      (typing line = user's own wording). Door to scene 4 DRAWN: wire
+      exits chip, bends down-scroll off-frame, arrowhead, "handing to
+      your agent →" at stamp size. Event names verified in platform src
+      (tenant-events, ws/gateway.ts, queues.ts). All laws held; reverse
+      scrub proven numerically throughout.
+- [x] Scene 4 AGENTS COMPLETE (user-sealed 2026-08-05): pinned 3.0-screen
+      scrub (tasting flight 2.0/2.6/2.7/2.8/3.0). Rail: masthead "04 ·
+      agents / It answers. You stay in control." + user-designed CAPABILITY
+      CHECKLIST (5 rows, ticks DRAWN only when demonstrated, evidence
+      strings verified in platform src: search_history, maxAutoCalls,
+      ws·message.changed, queue·conversation-inbound). World: guide-§1
+      chassis (3 capability rows, dim when traces take stage) + brain disc
+      the reply lands in, labels "AI agent / any model · your system
+      prompt". Beats: pickup → traced lookups (search_history then
+      orders_lookup) → guardrail-gated amber approval (2nd refund in 30d ·
+      auto→approval; ops yes) → cited answer delivered (green pop) with
+      transient receipts + persistent channel statement ("One agent. /
+      Every channel your user lives on." + 4 pinwheel-correct glyphs).
+      THREE camera asides (true whole-frame zoom, one shot fitting
+      masthead+checklist, pose measured-at-home+cached, gapless return):
+      memory fan (short-term·transcript / episodic·past conversations /
+      long-term·profile), grounded fan (your tools·signed calls /
+      knowledge·over your company's docs / honest·says I don't know),
+      guarded footnote (Fenced: maxCallsPerHour · daily token budget / ·
+      enforced outside the model). Door cue "and here's the proof →".
+      BRIDGE 3→4 is its own scene (115vh): era kicker "The *agentic* era
+      of notifications" — serif italic word TYPES letter-by-letter under a
+      proofreader's caret while the through-wire's dot inks the underline
+      and paints a real stepped ::selection (pre-composited green, text
+      whitens); wire runs scene-3 arrowhead → under the era → past the
+      sentences (line 2 swells as the reply passes) → onto scene 4's
+      inbound wire (draw synced to arrival); journey = dive + one
+      constant-speed cruise (zero-velocity seams eliminated); scene 3's
+      door grows through its held ending (arrowhead lands at last beat).
+      Docked-message-rides-door variant built then REVERTED (user call:
+      mark stays seated). Lesson ledgered: never auto-repair a diverged
+      tree — his revert is a decision, ask first.
+- [x] Bridge 3→4 FINAL (user "done" 2026-08-06): endTrigger-by-reference
+      seam fix (top -85% guess tore the hand-off when layout moved ~140px;
+      law added to DESIGN.md §3), two-speed rider (underline leg 2x,
+      descent 6x, early arrival + settled beat, typing floor 0.05), exit
+      curve = entry's mirror curl (170 back-off) landing just past
+      "queue." (clearance sampled on the cubic vs measured text box),
+      straight tail (60/90 controls, S removed).
+- [x] Scene 5 PROOF+CTA COMPLETE (user-sealed 2026-08-06): pinned
+      1.5-screen scrub, trigger = the pin itself (section-trigger froze the
+      table low — pinned-geometry law). Masthead "05 · proof / Don't take
+      my word. See the proof." compact INSIDE the pin at the page margin
+      (scene-4 head size clamp(25px,2.1vw,29px)); 28vh inter-scene breath.
+      World: receipt TABLE — four evidence slips PRINTED by scroll
+      (law-compliant cover-slide, no animated clips), each a real platform
+      artifact (eval gate PASS, turn-inspector trace, handoff→human,
+      cost/limits meter); after tear-off they're DRAGGABLE w/ Inertia
+      (pointer regime). NOTARY SEAL beside the TOTAL inside the table
+      (right:100% + 26px, no-overlap assert): two-arc lettering, drawn
+      stars, circumference-true ink-skip, pressed at HOLD+1.2 scrub lag.
+      TOTAL = "production-ready AI agents in your channels" + seven pillar
+      ticks. No-dead-air: trace+slots draw on approach (pin 82%→top),
+      release right after the stamp (TL_END 67); entry fade 80/55%.
+      SCENE-4 EXIT = "TAKE A NUMBER" deli ticket (Nº 05 / THE PROOF →),
+      seal-grade: dispenser mouth + jaws, perforation row w/ die-cut
+      half-punches, º from latin subset (№ is not), -2° hang, feeds out
+      through static aperture. Click TEARS it: 1.45s run from one end,
+      only-torn-share hangs from ONE fixed hinge at the right punch
+      (svgOrigin 1044 559, angle ladder -2/-6/-15/-78), whisper jitter
+      0.12/7 deterministic rough, conical flex springs flat, both halves
+      ragged (remnant sliver in jaws + topless torn body), dangle, then
+      viewport-fixed free-fall (clone escapes the clip) while the page
+      GLIDES to the proof pin (scrollTo autoKill:false — pinned scrubs
+      nudge scrollTop; own wheel/touch kill listeners); next ticket feeds
+      at 3.0s. Quiet "click here" annotation: 17px Instrument italic at
+      x1079 (the svg's clip limit), tangent-aligned doodle arrow, drawn
+      only after dispense settles. ALL FIVE SCENES SEALED.
 - [ ] Polish pass (impeccable audit/critique), mobile real-device check
 - [ ] Deploy (static host) + point asyncify.org DNS
 
