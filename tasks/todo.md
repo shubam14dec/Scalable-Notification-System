@@ -356,7 +356,44 @@ installed and used).
       at 3.0s. Quiet "click here" annotation: 17px Instrument italic at
       x1079 (the svg's clip limit), tangent-aligned doodle arrow, drawn
       only after dispense settles. ALL FIVE SCENES SEALED.
-- [ ] Polish pass (impeccable audit/critique), mobile real-device check
+- [x] Hero INSTALL UNIT (user-sealed 2026-08-18): typed `$ npm i
+      @asyncify-hq/<pkg>` line + 5 package tabs (terminal-real erase/retype,
+      anti-wobble ch reservation), copy = the page's first delivery (green
+      dot pop + full bell ring; `copy` word itself clickable), Install-now +
+      SDKs doodle annotations (tangent-set heads), actions row retired —
+      the line IS the hero CTA; headline punchline break ("Your product has
+      something / to say.") with 'say.' in Instrument italic; reprised in
+      the finale with its own doodles. Repo pushed to
+      github.com/shubam14dec/asyncify-site (public) + product-first README
+      + OG/Twitter meta card (og.png = hero after the ring).
+- [x] PERF OVERHAUL (2026-08-18, user-driven: "10s to load, why"):
+      profiled root causes — (1) motionPath `align` forced a full-document
+      reflow per tween init to compute identity matrices (packets are
+      origin-authored; align removed at all 4 sites, builds 3-4x faster,
+      DESIGN §6 law), (2) per-creation ScrollTrigger refresh cascades →
+      lower scenes now build AFTER the hero's full choreography (scene 2 in
+      the bell-landing beat; 3-5 clocked at +4.6s; scroll-flush builds
+      ahead of the viewport incrementally), (3) FOUC + raw-bell-markup
+      flash → critical inline frame + stylesheet owns all rest-hidden
+      states (DESIGN §3 law: "the stylesheet owns the first paint"),
+      (4) invalidateOnRefresh off (explicit-constant fromTos), (5) pin
+      height reserved at boot (scrollbar stable at 11293px). First paint
+      10.3s → 0.4s measured.
+- [x] MOBILE/TABLET HARDENING (user-sealed 2026-08-18): scene 5 was a
+      black hole (<768 AND reduced-motion — .prf-pin rest-hide was
+      unconditional); bridge wire gated >=900px (no corner room; typing
+      fallback), bridge hall 56vh narrow; all still crops recomposed via
+      Opus agent (13→20 figures, <=470u per crop, nothing sliced,
+      caption/mechanism mismatch fixed on 'the scale', scene-3 overlapping
+      event-line bug); seal = own row on phones; min(100%,78vh) svg trap
+      closed on scenes 2/3; CRITICAL: reduced-motion was a DEAD PAGE (TDZ
+      ReferenceError at module eval from the boot refactor) — fixed and
+      verified. Cross-browser checked by user.
+- [ ] Deploy the site (host TBD by user — NOT GitHub Pages) + asyncify.org
+      DNS; og card goes live with domain
+- [ ] Polish pass (impeccable audit/critique) — width sweep done
+      (1254x674/550, 1920x1080, 375, 768); real-device phone check after
+      deploy
 - [ ] Deploy (static host) + point asyncify.org DNS
 
 ### Phase 26: HITL Conversation Handoff — COMPLETE: built + user-E2E'd same day 2026-07-27 (handoff->amber queue live, gate proven, reply-as-human w/ widget label, handback fold attributed [DB-verified], agent honored the human's promise). PUSHED. Approval = human vetoes one action; handoff = human takes the
