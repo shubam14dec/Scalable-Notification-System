@@ -217,7 +217,7 @@ notes. Order within this cluster is rough — reorder freely.)
       (2026-07-12). Remaining nicety: QR handoff for desktop t.me →
       polish backlog
 
-- [ ] Landing page for asyncify.org (public face; domain currently unpointed)
+- [x] Landing page for asyncify.org — SHIPPED 2026-08-18, live at https://asyncify.org (Cloudflare Pages auto-deploy from github.com/shubam14dec/asyncify-site)
 - [x] Release automation: Changesets + GitHub Actions — shipped, and
       better than planned: OIDC trusted publishing, NO npm token
       anywhere (see RELEASING.md incl. the new-package bootstrap).
@@ -236,10 +236,56 @@ notes. Order within this cluster is rough — reorder freely.)
       Conversations/Agents build below; cheap add-on later since it
       wraps the existing trigger API
 
-## In progress
+## Platform snapshot — what's DONE vs REMAINING (audited 2026-08-18)
 
-### asyncify.org landing page (backlog item, started 2026-07-30) — sibling
-repo asyncify-site/ (Vite+TS+GSAP all-free-plugins; own git, local only).
+**Done and live:** the entire delivery platform (6 channels, workflows,
+digest/priority/retry/failover/DLQ, suppression, templates), agents
+end-to-end (managed brains + bridge, tools, approvals, guardrails,
+evals, observability/turn-inspector P21, knowledge/RAG + episodic P23,
+long-term memory + rolling summarization + prompt caching + budgets P24,
+dashboard live events P25, HITL handoff P26), 5 published npm packages,
+CI, release automation (OIDC), SSRF hardening, 702-test suite — and now
+the public landing page at asyncify.org.
+
+**Remaining, in rough value order:**
+- [ ] PRODUCTION DEPLOY of the platform itself — api.asyncify.org on
+      real infra (the 2026-07-18 deployment-day checklist: PUBLIC_URL
+      via ops endpoint, one-time webhook wiring per channel, MX for
+      email, twilio nothing; JWT_SECRET identical api+gateway [P25
+      deploy-critical note]; durable OTLP backend [P21 note]). THE next
+      big move — everything else on this list is feature work.
+- [ ] Phase 22 later bucket (evals/guardrails maturity): CI eval gate;
+      pre-save eval runs; LLM-judge dimensions; one-click prod-convo →
+      eval-case; tool-call rate caps; per-agent spend budgets; topic
+      allow/deny; output moderation hook
+- [ ] Security hardening bucket: PII redaction in logs/breadcrumbs,
+      per-tenant retention auto-purge, per-END-USER rate limits, RAG
+      docs treated as untrusted input
+- [ ] Prompt versioning + canary; scaling bucket (provider-aware LLM
+      concurrency + LLM failover chain mirroring channel failover)
+- [ ] Streaming managed replies — PLAN-READY, parked (plan file:
+      ~/.claude/plans/phase-streaming-replies-PARKED.md; ~1 day)
+- [ ] Novu-gap Tier A: Inbox v2 (actions/archive/snooze), Preferences
+      v2 (per-workflow + preference center), Workflow engine v2
+      (digestKey/throttle/delay-until/cancel-trigger), env promotion
+      dev→prod + outbound customer webhooks
+- [ ] Tier B / small: Idempotency-Key protocol (409/422/24h replay);
+      tool approval via workflow; rolling dual API keys; 415 JSON error
+      mapping; keyset pagination + projections + TTL jitter; Slack
+      OAuth one-click (13b) + welcome message; tg QR handoff
+- [ ] Email compliance set: List-Unsubscribe/RFC 8058, public
+      unsubscribe endpoint, consent fields, marketing footer
+- [ ] P21 leftovers: agent_tool_calls execution-duration column
+      (per-tool avgMs currently null); crash-mid-turn traces (D7)
+- [ ] @asyncify-hq/agent-toolkit add-on (wraps trigger API; cheap later)
+- [ ] Small polish leftovers in the Phase 17/18/19 lists below
+
+## Recently shipped (was: In progress)
+
+### asyncify.org landing page — COMPLETE + SHIPPED (started 2026-07-30,
+live 2026-08-18 at https://asyncify.org) — sibling repo asyncify-site/
+(Vite+TS+GSAP all-free-plugins; github.com/shubam14dec/asyncify-site,
+Cloudflare Pages auto-deploys every push to master).
 Direction approved: 5-scene story (bell hero / engine / two-way turn /
 agents / proof+CTA), terminal-native dark, delivery-green single accent,
 BRAND.md+DESIGN.md+PRODUCT.md written (impeccable + emil + taste skills
@@ -397,7 +443,7 @@ installed and used).
       finale, sealed, shipped.
 - [x] Polish pass: width sweep (1254x674/550, 1920x1080, 375, 768) +
       cross-browser (user) + real device (user) all done
-- [ ] Deploy (static host) + point asyncify.org DNS
+- [x] Deploy: Cloudflare Pages from GitHub repo, LIVE at asyncify.org + www (2026-08-18)
 
 ### Phase 26: HITL Conversation Handoff — COMPLETE: built + user-E2E'd same day 2026-07-27 (handoff->amber queue live, gate proven, reply-as-human w/ widget label, handback fold attributed [DB-verified], agent honored the human's promise). PUSHED. Approval = human vetoes one action; handoff = human takes the
 pen. All 5 slices Opus first-try, suite 672->702 double-green, ZERO
