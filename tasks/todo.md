@@ -389,11 +389,14 @@ installed and used).
       closed on scenes 2/3; CRITICAL: reduced-motion was a DEAD PAGE (TDZ
       ReferenceError at module eval from the boot refactor) — fixed and
       verified. Cross-browser checked by user.
-- [ ] Deploy the site (host TBD by user — NOT GitHub Pages) + asyncify.org
-      DNS; og card goes live with domain
-- [ ] Polish pass (impeccable audit/critique) — width sweep done
-      (1254x674/550, 1920x1080, 375, 768); real-device phone check after
-      deploy
+- [x] DEPLOYED (2026-08-18): Cloudflare Pages, connected to the GitHub
+      repo — every push to master auto-builds and publishes. LIVE at
+      https://asyncify.org + https://www.asyncify.org (www serves directly;
+      canonical tag points apex). HTTPS auto, og card live with the domain.
+      User verified on a real phone. LANDING PAGE COMPLETE — hero to
+      finale, sealed, shipped.
+- [x] Polish pass: width sweep (1254x674/550, 1920x1080, 375, 768) +
+      cross-browser (user) + real device (user) all done
 - [ ] Deploy (static host) + point asyncify.org DNS
 
 ### Phase 26: HITL Conversation Handoff — COMPLETE: built + user-E2E'd same day 2026-07-27 (handoff->amber queue live, gate proven, reply-as-human w/ widget label, handback fold attributed [DB-verified], agent honored the human's promise). PUSHED. Approval = human vetoes one action; handoff = human takes the
