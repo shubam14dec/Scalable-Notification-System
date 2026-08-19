@@ -124,7 +124,7 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
 | `POST /v1/connections/email` | connect/upsert an address `{address, agentIdentifier}` |
 | `POST /v1/connections/slack` | connect/upsert a workspace `{botToken, signingSecret, agentIdentifier}` |
 | `PATCH /v1/connections/:id` | re-point `{agentIdentifier}` |
-| `POST /v1/connections/:id/reconnect` | re-register the Telegram webhook (telegram only) |
+| `POST /v1/connections/:id/reconnect` | re-point the channel at the current public URL — telegram: re-register the webhook; slack (quick-setup): rotate the stored config token and push a fresh manifest to `apps.manifest.update`. A manual rewire that skips this leaves Slack's console on the OLD tunnel even though `/v1/connections` prints the new URLs (bit us 2026-08-19). |
 | `GET/PUT/DELETE /v1/connections/:id/routes` | per-channel routing rules (slack only) — see [Slack](#slack) |
 | `DELETE /v1/connections/:id` | disconnect (keeps transcripts) |
 | `POST /v1/connections/:id/link-tokens` | mint a link token `{subscriberId}` (telegram only) |
