@@ -4,6 +4,7 @@
  * created 'running' by the API route and finalized by the eval-run worker.
  */
 import { pool } from './pool';
+import type { JudgeVerdictRecord } from '../core/eval-runner';
 
 export interface AgentEval {
   id: string;
@@ -18,12 +19,21 @@ export interface AgentEval {
 
 export type EvalRunStatus = 'running' | 'passed' | 'failed' | 'error';
 
-/** Frozen per-scenario verdict persisted in agent_eval_runs.results. */
+/**
+ * Frozen per-scenario verdict persisted in agent_eval_runs.results.
+ *
+ * The four original keys are FROZEN — dashboard, SDK and CLI all read them by
+ * name. A2 adds `judged` ADDITIVELY: present only when the scenario used
+ * `expect.judge`, absent (not null, not []) otherwise, so every pre-A2 row and
+ * every non-judged scenario keeps its exact previous serialization. The record
+ * type is imported rather than redeclared — core/eval-runner.ts owns the shape.
+ */
 export interface EvalRunScenarioResult {
   name: string;
   passed: boolean;
   failures: string[];
   attempts: number;
+  judged?: JudgeVerdictRecord[];
 }
 
 export interface AgentEvalRun {

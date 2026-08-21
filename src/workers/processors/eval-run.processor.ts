@@ -29,6 +29,7 @@ import {
   openConversation,
   insertConversationMessage,
   getConversationMessageByDedupe,
+  type Agent,
 } from '../../db/conversations.repo';
 import {
   finishRun,
@@ -40,8 +41,11 @@ import {
   runScenarios,
   type EvalDriver,
   type EvalScenarioResult,
+  type JudgeRunOptions,
   type Scenario,
 } from '../../core/eval-runner';
+import type { JudgeClient } from '../../core/eval-judge';
+import { buildManagedClient } from '../../core/managed-brain';
 
 export interface EvalRunJobData {
   runId: string;
@@ -87,9 +91,98 @@ function inProcessDriver(tenantId: string, agentId: string): EvalDriver {
   };
 }
 
-/** Project the engine's rich verdict to the frozen persisted shape. */
+/**
+ * Project the engine's rich verdict to the frozen persisted shape. The four
+ * frozen keys stay required and FIRST; A2's `judged` is spread in only when the
+ * scenario actually used a judge, so a non-judged run serializes byte-identically
+ * to its pre-A2 form (the engine drops the key the same way — eval-runner.ts).
+ */
 function toStored(r: EvalScenarioResult): EvalRunScenarioResult {
-  return { name: r.name, passed: r.passed, failures: r.failures, attempts: r.attempts };
+  return {
+    name: r.name,
+    passed: r.passed,
+    failures: r.failures,
+    attempts: r.attempts,
+    ...(r.judged === undefined ? {} : { judged: r.judged }),
+  };
+}
+
+/* ---------------- A2: the judge wiring ---------------- */
+
+/**
+ * Modern Anthropic families REJECT `temperature` outright (HTTP 400) rather than
+ * ignoring it, so a judge running on one of them must omit the field. Everything
+ * else — glm-*, other Anthropic-compatible endpoints, older claude ids — keeps
+ * the repeatable default of 0. Returning null is eval-judge.ts's "omit it"
+ * signal (see JudgeReplyDeps.temperature).
+ */
+const NO_SAMPLING_PARAMS = /^claude-(opus-4\.[7-9]|opus-[5-9]|sonnet-[5-9]|fable)/;
+
+export function judgeTemperatureFor(model: string): number | null {
+  return NO_SAMPLING_PARAMS.test(model) ? null : 0;
+}
+
+/**
+ * Does this scenario actually ask for a judge? Read defensively: `scenario` is
+ * raw jsonb cast to Scenario, never re-validated on the read path, so a
+ * hand-edited row can be any shape. `skip` scenarios never run (runScenario
+ * returns before the judge), so they must not force a client build either.
+ */
+export function usesJudge(sc: Scenario): boolean {
+  const raw = sc as { turns?: unknown; skip?: unknown };
+  if (raw.skip === true || !Array.isArray(raw.turns)) return false;
+  return raw.turns.some((t) => {
+    const expect = (t as { expect?: { judge?: unknown } } | null)?.expect;
+    return !!expect && typeof expect === 'object' && expect.judge !== undefined;
+  });
+}
+
+/**
+ * Build the judge wiring for a run, or undefined to run assertions-only.
+ *
+ * NEVER THROWS. A judge that cannot be built is a degraded run, not a failed
+ * one: the scenarios still grade their deterministic assertions, and slice A's
+ * skip markers make the missing dimensions visible in `judged[]` rather than
+ * silently passing. Reasons it legitimately comes back undefined:
+ *   - the agent is a BRIDGE agent — its credentials are a signing secret for
+ *     customer code, not an LLM key (bridge agents do reach this processor;
+ *     see tests/integration/agent-evals.test.ts).
+ *   - no enabled scenario uses `expect.judge` — the client is built LAZILY so a
+ *     judge-less agent never pays the cost (nor an SSRF check, nor a key open).
+ *   - buildManagedClient threw (no creds, blocked base URL).
+ *
+ * `buildClient` is injected for tests (house DI style); production takes the
+ * default. It is NOT a second parameter on processEvalRun because BullMQ passes
+ * a token there (workers/index.ts registers the processor directly).
+ */
+export async function buildJudgeOptions(
+  agent: Agent,
+  scenarios: Array<{ name: string; sc: Scenario }>,
+  buildClient: (a: Agent) => Promise<JudgeClient> = buildManagedClient,
+): Promise<JudgeRunOptions | undefined> {
+  if (agent.runtime !== 'managed') return undefined;
+  if (!scenarios.some((s) => usesJudge(s.sc))) return undefined;
+  if (!agent.model) {
+    logger.warn({ agent: agent.identifier }, 'eval judge skipped: managed agent has no model');
+    return undefined;
+  }
+  let client: JudgeClient;
+  try {
+    client = await buildClient(agent);
+  } catch (err) {
+    // Degraded, not fatal — the run proceeds on its assertions alone.
+    logger.warn(
+      { err, agent: agent.identifier },
+      'eval judge unavailable — running assertions only, judged dimensions will be marked skipped',
+    );
+    return undefined;
+  }
+  return {
+    client,
+    model: agent.model,
+    systemPrompt: agent.system_prompt,
+    temperature: judgeTemperatureFor(agent.model),
+  };
 }
 
 /** Run status from the per-scenario verdicts (error = infra, failed = a scenario
@@ -131,12 +224,18 @@ export async function processEvalRun(job: Job<EvalRunJobData>): Promise<void> {
     detail: `eval run started: agent=${agent.identifier} scenarios=${scenarios.length}`,
   });
 
+  // A2: LLM-graded expects run on the agent's OWN client (self-judge bias is a
+  // documented tradeoff; a judgeModel override is future work). Absent =
+  // assertions-only, never a hard failure — see buildJudgeOptions.
+  const judge = await buildJudgeOptions(agent, scenarios);
+
   let status: 'passed' | 'failed' | 'error';
   let stored: EvalRunScenarioResult[];
   try {
     const results = await runScenarios(scenarios, {
       driver: inProcessDriver(run.tenant_id, run.agent_id),
       nonce: runId,
+      ...(judge === undefined ? {} : { judge }),
     });
     status = rollup(results);
     stored = results.map(toStored);

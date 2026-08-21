@@ -174,12 +174,30 @@ export interface AgentEval {
   updatedAt: string;
 }
 
+/**
+ * One dimension's LLM-judge outcome on one turn (A2). Mirrors
+ * `JudgeVerdictRecord` in src/core/eval-runner.ts — the dashboard is a separate
+ * app and cannot import server types, so this is a hand-kept copy.
+ * `verdict: 'skipped'` means the run had no judge client (a CLI run, or an agent
+ * whose LLM credentials could not be opened) — not a pass and not a failure.
+ */
+export interface JudgeVerdictRecord {
+  turn: number;
+  dim: 'groundedness' | 'tone' | 'refusal';
+  verdict: 'pass' | 'fail' | 'skipped';
+  /** 1-5, present for the scored dimensions (groundedness, tone) only. */
+  score?: number;
+  rationale: string;
+}
+
 /** One scenario's outcome inside a run (shape from scripts/eval.ts's core). */
 export interface ScenarioResult {
   name: string;
   passed: boolean;
   failures: string[];
   attempts: number;
+  /** A2, additive: present only when the scenario used `expect.judge`. */
+  judged?: JudgeVerdictRecord[];
 }
 
 /** An eval run — an enqueued job; poll until status leaves 'running'. */

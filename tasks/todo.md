@@ -16,16 +16,26 @@ judgeModel override = future). Groundedness evidence = the search_knowledge
 failures[]; scores+rationales additive `judged[]`. CLI runs (no creds) mark
 judged expects skipped-visibly. Ladder: A2 → A3 CI gate → A5 canary → A6
 routing.
-- [ ] Slice A — core: core/eval-judge.ts, ScenarioSchema extension, runner
+- [x] Slice A — core: core/eval-judge.ts, ScenarioSchema extension, runner
       integration + failure merge, stub-judge unit tests (incl. transcript-
-      injection resistance + min-boundary matrix)
-- [ ] Slice B — processor+persistence: judgeClient in eval-run.processor,
-      additive judged[] through finishRun, consumer byte-compat verified
+      injection resistance + min-boundary matrix) — DONE 2026-08-21, 27
+      tests. Binding discovery: modern claude models 400 on `temperature`;
+      judge defaults 0, `temperature: null` = omit.
+- [x] Slice B — processor+persistence: buildJudgeOptions (lazy, never-throws,
+      bridge-agent + no-model + skip guards), temperature predicate
+      (NO_SAMPLING_PARAMS regex), additive judged[] through toStored→
+      finishRun→jsonb, consumer sweep (no Fastify serializer strips keys),
+      +11 integration tests — DONE 2026-08-21, suite 740.
 - [ ] Slice C — dashboard: EvalsPanel dimension chips + rationale
-      expander + editor helper text
+      expander + editor helper text (types already landed in B:
+      dashboard/src/pages/agent/types.ts JudgeVerdictRecord)
 - [ ] Slice D — docs+integration: AGENTS-GUIDE §10 judged section (self-
       judge caveat, breadcrumb mechanism), example scenarios, pipeline
-      integration tests w/ scripted judge double
+      integration tests w/ scripted judge double; scripts/eval.ts skip-note
+      visibility (CLI currently prints only failures — judged 'skipped'
+      markers invisible); packages/sdk-node hand-copied ScenarioResult
+      (index.ts ~211) gains optional judged[] + patch changeset (deferred
+      from B to keep changeset out of mid-phase commit)
 
 ## BACKLOG — AGENTS TRACK (ranked; restructured to top 2026-08-21)
 

@@ -67,13 +67,24 @@ export interface JudgeContentBlock {
 export interface JudgeResponse {
   content: JudgeContentBlock[];
 }
+/**
+ * A tool definition in the shape the Messages API takes. Deliberately kept
+ * structural (an open `input_schema`) rather than `unknown[]`: slice B passes a
+ * REAL Anthropic client here, and `unknown[]` is not assignable to the SDK's
+ * `ToolUnion[]`, so the narrow stub would only have been satisfiable by a cast.
+ */
+export interface JudgeTool {
+  name: string;
+  description?: string;
+  input_schema: { type: 'object'; [key: string]: unknown };
+}
 export interface JudgeRequest {
   model: string;
   max_tokens: number;
   temperature?: number;
   system: string;
   messages: Array<{ role: 'user'; content: string }>;
-  tools: unknown[];
+  tools: JudgeTool[];
   tool_choice: { type: 'tool'; name: string };
 }
 export interface JudgeClient {
