@@ -113,13 +113,12 @@ plans get a short review section, then move to Done.
       GDPR delete; `remember` tool); rolling summarization (summary +
       recent turns replay — also the big cost lever); prompt caching
       (near-free); budgets+alerts; model routing later
-- [ ] Later bucket: HITL conversation handoff (handoff_to_human tool,
-      operator takeover in dashboard, hand-back, SLA timers on
-      approvals via sweep pattern); security hardening (PII redaction
-      in logs/breadcrumbs, per-tenant retention auto-purge, per-END-
-      USER rate limits, RAG docs = untrusted input); prompt versioning
-      + canary (template-versioning pattern); scaling (provider-aware
-      LLM concurrency + LLM failover chain mirroring channel failover)
+- [x] Later bucket, mostly emptied (audit 2026-08-21): HITL handoff
+      SHIPPED as Phase 26; approval SLA = sweep-piggybacked 24h expiry
+      shipped with the approvals work (expires_at live; richer
+      configurable-SLA-with-reminder would be new scope). Still open →
+      security hardening, prompt versioning+canary, LLM scaling — all
+      carried in the Platform snapshot section below.
 
 ## Backlog (next candidates, in rough value order)
 
