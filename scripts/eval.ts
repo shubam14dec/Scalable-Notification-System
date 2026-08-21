@@ -19,6 +19,11 @@
  *
  * The worker MUST be running (npm run worker) — the API only enqueues the turn;
  * the worker runs the brain. A turn that never gets a reply is reported as such.
+ *
+ * LLM-judged expects (`expect.judge`) need a server-side LLM client built from
+ * the agent's own credentials, which this CLI has none of — so their dimensions
+ * are reported SKIPPED (see reportJudged) while the deterministic assertions in
+ * the same scenario grade normally. They grade for real in dashboard/API runs.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -29,6 +34,7 @@ import {
   createHttpDriver,
   runScenario,
   type EvalScenarioResult,
+  type JudgeVerdictRecord,
   type Scenario,
 } from '../src/core/eval-runner';
 
@@ -69,6 +75,44 @@ function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length);
 }
 
+/**
+ * One judged dimension, compactly: `groundedness 4/5`, `refusal pass`,
+ * `tone skipped`. Scored dimensions print the score (the BAR lives in the
+ * scenario, not the record — a failing dimension's full `judge.<dim>: x/5 < min`
+ * line is already in the failure detail below).
+ */
+function fmtVerdict(j: JudgeVerdictRecord): string {
+  if (j.score === undefined) return `${j.dim} ${j.verdict}`;
+  return `${j.dim} ${j.score}/5${j.verdict === 'fail' ? ' (fail)' : ''}`;
+}
+
+/**
+ * Judged dimensions never reach the table (only pass/fail does) and a PASSING
+ * scenario never reaches the failure block — so without this, a run whose judge
+ * never ran would print exactly like a fully graded one. `npm run eval` has no
+ * server-side LLM client, so that is the normal case here, and it has to be
+ * visible: a dimension that was skipped must never read as a dimension that
+ * passed.
+ */
+function reportJudged(results: EvalScenarioResult[]): void {
+  const judgedRows = results.filter((r) => (r.judged?.length ?? 0) > 0);
+  if (judgedRows.length === 0) return;
+  console.log('');
+  for (const r of judgedRows) {
+    const judged = r.judged!;
+    console.log(`  [JUDGE] ${r.name}`);
+    const turns = [...new Set(judged.map((j) => j.turn))].sort((a, b) => a - b);
+    for (const turn of turns) {
+      const parts = judged.filter((j) => j.turn === turn).map(fmtVerdict);
+      console.log(`        turn ${turn} · ${parts.join(' · ')}`);
+    }
+    const skipped = judged.filter((j) => j.verdict === 'skipped').length;
+    if (skipped > 0) {
+      console.log(`        ⚠ ${skipped} judged dimension(s) skipped (no judge client on CLI runs)`);
+    }
+  }
+}
+
 function report(results: EvalScenarioResult[]): void {
   const icon: Record<EvalScenarioResult['status'], string> = { pass: 'PASS', fail: 'FAIL', skip: 'SKIP', error: 'ERR ' };
   const nameW = Math.max(8, ...results.map((r) => r.name.length));
@@ -88,6 +132,8 @@ function report(results: EvalScenarioResult[]): void {
       if (r.detail) console.log(`        ${r.detail}`);
     }
   }
+
+  reportJudged(results);
 
   const passed = results.filter((r) => r.status === 'pass').length;
   const failed = results.filter((r) => r.status === 'fail' || r.status === 'error').length;

@@ -682,6 +682,97 @@ the reply checks left blank for Priya to fill. It's saved **disabled** so Priya
 polishes it before it guards future deploys. A production surprise becomes a
 permanent regression test.
 
+### Judged dimensions: grading what a tool assertion can't see
+
+Some regressions never show up in the trace. The agent *did* call
+`search_knowledge` — and still invented a 30-day refund window Acme's policy page
+never mentions. Or it answered correctly, in a clipped voice Acme would never use.
+Those turns pass every tool assertion and still fail Maya. So an `expect` can also
+hand the reply to an **LLM judge**:
+
+```jsonc
+{ "expect": {
+    "tool": "search_knowledge",
+    "judge": {
+      "groundedness": { "min": 4 },
+      "tone": { "rubric": "warm, first person, never blames the customer", "min": 4 }
+    }
+} }
+```
+
+Three dimensions, all optional, any of them mixable with the ordinary matchers:
+
+| dimension | shape | fails when |
+|---|---|---|
+| `groundedness` | `true`, or `{ "min": 1–5 }` | the reply states facts the retrieved sources never said |
+| `tone` | `{ "rubric": "…", "min": 1–5 }` | the voice misses the persona (the `rubric` outranks the system prompt where they differ) |
+| `refusal` | `"must_refuse"` or `"must_answer"` | it complied when it had to decline, or declined when it had to answer |
+
+`groundedness` and `tone` are scored **1–5**; `min` is the bar and **defaults to
+4** (`"groundedness": true` is just shorthand for that default). `refusal` is a
+requirement, not a score.
+
+**How a judged turn runs.** The deterministic matchers grade first — a judged
+`expect` that also asserts `tool` must pass the tool assertion before a single
+token is spent. Then every dimension that `expect` asked for rides **one** model
+call, forced through a `report_verdicts` tool so the verdicts come back as
+structured JSON with a score and a rationale each (temperature 0 for
+repeatability — omitted entirely on the newer Claude models, which reject the
+parameter). Unparseable output buys exactly one re-ask, then the scenario is
+reported as an **infra error**, never a silent pass. And the *model* only supplies
+the number: the runner decides pass/fail, by comparing that score to the `min`
+Priya wrote.
+
+**Where groundedness gets its evidence.** Nothing new is recorded for the judge.
+Every tool call a managed turn makes is already written to the transcript as a
+breadcrumb holding `{tool, input, result}` — for `search_knowledge` that `result`
+is the numbered `[source: …]` excerpt text the agent actually retrieved. The judge
+reads those rows, rendered as `[evidence: <tool>]` lines, and only the rows up to
+**and including** the reply under judgment: a claim cannot be grounded in a source
+that arrived after it was written. Greetings, apologies and offers to help are
+exempt — a reply that makes no factual claims scores 5.
+
+**The judge is the agent's own model.** It runs on the same model and the same
+credentials Acme configured for the agent. That is a deliberate tradeoff — a model
+grading its own output is a known bias, and it buys zero extra setup, zero extra
+vendor and no second key to rotate. A `judgeModel` override that points the judge
+at a different model is future work; the same engine is what a **live judge
+supervisor** (scoring real conversations after the fact, not just evals) will run
+on.
+
+**A dimension that couldn't be graded says so.** Judging needs a server-side LLM
+client, and the CLI has none — so `npm run eval` (and any agent whose credentials
+can't be opened) records each judged dimension as **`skipped`**, never as a pass:
+
+```
+  [JUDGE] refund-window
+        turn 2 · groundedness skipped · tone skipped
+        ⚠ 2 judged dimension(s) skipped (no judge client on CLI runs)
+```
+
+The deterministic assertions in that same scenario still grade normally, and a
+skip never fails a run. Judged dimensions grade for real in the **dashboard** and
+API runs, which build the agent's client.
+
+**What a judged failure looks like.** Judge failures are ordinary scenario
+failures — same retry budget, same `failures[]` — with the dimension, the score,
+the bar and the judge's own reasoning on the failing line:
+
+```
+  [FAIL] refund-window
+        turn 2 · judge groundedness+tone
+        judge.groundedness: 2/5 < 4 — "we refund within 30 days" appears in no source; the policy excerpt says 14
+        tools: search_knowledge({"query":"refund window"})
+        reply: "no problem at all — you can return it within 30 days…"
+```
+
+A refused-wrongly turn reads `judge.refusal: expected must_refuse — …`, and
+several failing dimensions on one turn are joined with `; `. Alongside that, every
+judged scenario carries an additive **`judged[]`** on its result — every dimension
+it graded, passing ones included, with score and rationale — which is what the
+dashboard renders and what the Node SDK exposes on `EvalScenarioResult`. A
+scenario that uses no judge serializes exactly as it did before.
+
 **Prompt edits are deploys — treat a red suite like a failing build.** (Priya can
 also run the same scenarios from the command line — `npm run eval` on self-hosted
 installs — see [evals/README.md](../evals/README.md).)

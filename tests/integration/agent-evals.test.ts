@@ -26,8 +26,10 @@ import {
 } from '../../src/workers/processors/eval-run.processor';
 import { createRun, finishRun, getRun } from '../../src/db/agent-evals.repo';
 import type { Agent } from '../../src/db/conversations.repo';
-import type { JudgeClient } from '../../src/core/eval-judge';
-import type { Scenario } from '../../src/core/eval-runner';
+import { REPLY_BEGIN, TRANSCRIPT_BEGIN } from '../../src/core/eval-judge';
+import type { JudgeClient, JudgeRequest, JudgeVerdict } from '../../src/core/eval-judge';
+import { runScenarios } from '../../src/core/eval-runner';
+import type { EvalDriver, Scenario } from '../../src/core/eval-runner';
 
 let app: FastifyInstance;
 let apiKey = '';
@@ -420,6 +422,142 @@ describe('A2 persistence round-trip', () => {
     expect('judged' in read!.results[0]).toBe(false);
     expect(read!.results).toEqual([preA2]);
   });
+});
+
+/**
+ * Phase A2 slice D — the JUDGED PIPELINE end to end: a real driven turn (API
+ * route → queue → conversation worker → brain) whose reply is then graded by a
+ * SCRIPTED judge.
+ *
+ * The judge is a canned JudgeClient rather than a live model — a model that
+ * decides pass/fail on its own would make these assertions non-deterministic,
+ * and what is under test here is the plumbing around it: evidence assembly, the
+ * one-call-per-judged-expect contract, the exact failure line, and judged[].
+ * The failure strings are asserted BYTE-EXACTLY because they are published in
+ * docs/ASYNCIFY-AGENTS-GUIDE.md §10 — a format change must break a test, not a
+ * customer's expectations.
+ */
+describe('A2 pipeline: a scripted judge over a real driven turn', () => {
+  /**
+   * A turn driver over app.inject: the same route createHttpDriver posts to,
+   * minus the TCP hop. The turn itself still travels queue → convWorker → brain,
+   * so the transcript the judge reads is the one production writes.
+   */
+  const injectDriver = (): EvalDriver => ({
+    async sendTurn({ agent, subscriberId, text, turnIndex }) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/v1/agents/${agent}/messages`,
+        headers: { 'x-api-key': apiKey },
+        payload: { subscriberId, text, messageId: `${subscriberId}-t${turnIndex}` },
+      });
+      if (res.statusCode !== 202) {
+        throw new Error(`send failed (${res.statusCode}): ${res.body}`);
+      }
+      const body = json(res);
+      return { conversationId: body.conversationId, inboundRowId: body.messageId };
+    },
+  });
+
+  /** A judge that always answers with the same verdicts, and keeps every request. */
+  function scriptedJudge(verdicts: JudgeVerdict[]) {
+    const seen: JudgeRequest[] = [];
+    const client: JudgeClient = {
+      messages: {
+        create: async (body: JudgeRequest) => {
+          seen.push(body);
+          return {
+            content: [{ type: 'tool_use', name: 'report_verdicts', input: { verdicts } }],
+          };
+        },
+      },
+    };
+    return { client, seen };
+  }
+
+  const judgedScenario = (expectJudge: Scenario['turns'][number]): Scenario =>
+    ({
+      agent: 'evals-agent',
+      attempts: 1,
+      turns: [{ user: 'what is your refund window?' }, expectJudge],
+    }) as Scenario;
+
+  const run = async (name: string, sc: Scenario, client: JudgeClient) =>
+    (
+      await runScenarios([{ name, sc }], {
+        driver: injectDriver(),
+        nonce: `d-${name}-${Date.now()}`,
+        judge: { client, model: 'glm-4.6', systemPrompt: 'You are warm and concise.', temperature: 0 },
+      })
+    )[0];
+
+  test('groundedness under the bar fails the scenario, with the documented line', async () => {
+    const rationale = 'the reply states a 30-day window; no evidence line mentions one';
+    const { client, seen } = scriptedJudge([
+      { dim: 'groundedness', score: 2, verdict: 'fail', rationale },
+    ]);
+    const sc = judgedScenario({ expect: { judge: { groundedness: { min: 4 } } } });
+
+    const result = await run('grounded-under-bar', sc, client);
+
+    expect(result.passed).toBe(false);
+    expect(result.status).toBe('fail');
+    // The published format: `judge.<dim>: <score>/5 < <min> — <rationale>`.
+    expect(result.failures).toHaveLength(1);
+    const lines = result.failures[0].split('\n').map((l) => l.trim());
+    expect(lines[0]).toBe('turn 1 · judge groundedness');
+    expect(lines[1]).toBe(`judge.groundedness: 2/5 < 4 — ${rationale}`);
+    // …and the additive record carries the score the line quotes.
+    expect(result.judged).toEqual([
+      { turn: 1, dim: 'groundedness', verdict: 'fail', score: 2, rationale },
+    ]);
+    // The judge saw the REAL turn: the fenced transcript and the actual reply.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].messages[0].content).toContain(TRANSCRIPT_BEGIN);
+    expect(seen[0].messages[0].content).toContain('what is your refund window?');
+    expect(seen[0].messages[0].content).toContain(REPLY_BEGIN);
+    expect(seen[0].messages[0].content).toContain('hello there, how can I help?');
+  }, 90_000);
+
+  test('every dimension at or above its bar passes, and judged[] keeps the scores', async () => {
+    const { client, seen } = scriptedJudge([
+      { dim: 'groundedness', score: 5, verdict: 'pass', rationale: 'makes no factual claims' },
+      { dim: 'tone', score: 4, verdict: 'pass', rationale: 'warm opener, offers help' },
+    ]);
+    const sc = judgedScenario({
+      expect: { judge: { groundedness: { min: 4 }, tone: { rubric: 'warm and brief', min: 3 } } },
+    });
+
+    const result = await run('judged-pass', sc, client);
+
+    expect(result.passed).toBe(true);
+    expect(result.failures).toEqual([]);
+    expect(result.judged).toEqual([
+      { turn: 1, dim: 'groundedness', verdict: 'pass', score: 5, rationale: 'makes no factual claims' },
+      { turn: 1, dim: 'tone', verdict: 'pass', score: 4, rationale: 'warm opener, offers help' },
+    ]);
+    // Both dimensions rode ONE forced-tool call at temperature 0 — the contract
+    // section 10 documents, and the thing that keeps judged evals affordable.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].tool_choice).toEqual({ type: 'tool', name: 'report_verdicts' });
+    expect(seen[0].temperature).toBe(0);
+    expect(seen[0].model).toBe('glm-4.6');
+  }, 90_000);
+
+  test('must_refuse against a complying reply fails, with the refusal line', async () => {
+    const rationale = 'the reply answers the request instead of declining it';
+    const { client } = scriptedJudge([{ dim: 'refusal', verdict: 'fail', rationale }]);
+    const sc = judgedScenario({ expect: { judge: { refusal: 'must_refuse' } } });
+
+    const result = await run('refusal-complied', sc, client);
+
+    expect(result.passed).toBe(false);
+    const lines = result.failures[0].split('\n').map((l) => l.trim());
+    expect(lines[0]).toBe('turn 1 · judge refusal');
+    // Refusal is a requirement, not a score — no `x/5` in its line.
+    expect(lines[1]).toBe(`judge.refusal: expected must_refuse — ${rationale}`);
+    expect(result.judged).toEqual([{ turn: 1, dim: 'refusal', verdict: 'fail', rationale }]);
+  }, 90_000);
 });
 
 describe('A2 end-to-end: a judged scenario with no judge available', () => {

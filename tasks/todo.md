@@ -6,36 +6,28 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A2 — LLM-judge dimensions (plan approved 2026-08-21)
-Judged expectations on evals: `expect.judge = {groundedness?{min}, tone?
-{rubric,min}, refusal? must_refuse|must_answer}`. ONE combined structured
-judge call per judged expect (temp 0, forced tool schema), client =
-buildManagedClient(agent) (agent's own LLM; self-judge bias documented,
-judgeModel override = future). Groundedness evidence = the search_knowledge
-/tool result text ALREADY in breadcrumbs. Failures merge into frozen
-failures[]; scores+rationales additive `judged[]`. CLI runs (no creds) mark
-judged expects skipped-visibly. Ladder: A2 → A3 CI gate → A5 canary → A6
-routing.
-- [x] Slice A — core: core/eval-judge.ts, ScenarioSchema extension, runner
-      integration + failure merge, stub-judge unit tests (incl. transcript-
-      injection resistance + min-boundary matrix) — DONE 2026-08-21, 27
-      tests. Binding discovery: modern claude models 400 on `temperature`;
-      judge defaults 0, `temperature: null` = omit.
-- [x] Slice B — processor+persistence: buildJudgeOptions (lazy, never-throws,
-      bridge-agent + no-model + skip guards), temperature predicate
-      (NO_SAMPLING_PARAMS regex), additive judged[] through toStored→
-      finishRun→jsonb, consumer sweep (no Fastify serializer strips keys),
-      +11 integration tests — DONE 2026-08-21, suite 740.
-- [ ] Slice C — dashboard: EvalsPanel dimension chips + rationale
-      expander + editor helper text (types already landed in B:
-      dashboard/src/pages/agent/types.ts JudgeVerdictRecord)
-- [ ] Slice D — docs+integration: AGENTS-GUIDE §10 judged section (self-
-      judge caveat, breadcrumb mechanism), example scenarios, pipeline
-      integration tests w/ scripted judge double; scripts/eval.ts skip-note
-      visibility (CLI currently prints only failures — judged 'skipped'
-      markers invisible); packages/sdk-node hand-copied ScenarioResult
-      (index.ts ~211) gains optional judged[] + patch changeset (deferred
-      from B to keep changeset out of mid-phase commit)
+(nothing — next up from the agents backlog; A1 streaming deliberately LAST
+per user 2026-08-21)
+
+### Phase A2 — SHIPPED 2026-08-21 (review)
+All four slices done, 4 local commits, suite 702 → 743 (+41), tsc clean
+root+dashboard+sdk. What shipped: `expect.judge` {groundedness true|{min},
+tone {rubric?,min}, refusal must_refuse|must_answer} → one forced-tool
+judge call per judged expect on the agent's OWN client (self-judge bias
+documented; judgeModel override = future); failures merge into frozen
+failures[] as `judge.<dim>: x/5 < min — rationale` (joined '; '); additive
+judged[] flows engine→jsonb→API→dashboard chips→SDK type (+patch
+changeset); CLI marks dims skipped-visibly ([JUDGE] block in scripts/
+eval.ts); seed scenario evals/refund-window-judged.json (skip until
+knowledge ready). Review notes: (1) BINDING GOTCHA — modern claude models
+(opus 4.7+/5+, sonnet 5+, fable) HTTP-400 on `temperature`; predicate
+NO_SAMPLING_PARAMS in eval-run.processor.ts, judge default temp 0
+elsewhere. (2) Slice A's `tools: unknown[]` stub didn't satisfy the real
+SDK — widened to structural JudgeTool[] (no casts). (3) jsonb normalizes
+key order — "byte-identical" invariant is key-set+deep-equal. (4) Judge
+runs only AFTER deterministic matchers pass; runner (not model) owns
+pass/fail vs min. (5) Prod delta: NONE (judge rides agent's existing
+creds; no new env/webhooks — DEPLOYMENT.md unchanged on purpose).
 
 ## BACKLOG — AGENTS TRACK (ranked; restructured to top 2026-08-21)
 
@@ -47,7 +39,7 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       .updated pathway, auto-fallback for non-SSE LLM endpoints.
       Pickup = read ~/.claude/plans/phase-streaming-replies-PARKED.md,
       launch the 4 slices.
-- (IN PROGRESS above) A2. LLM-judge dimensions — see In progress.
+- [x] A2. LLM-judge dimensions — SHIPPED 2026-08-21, review above.
 - [ ] A2b. LIVE judge supervisor (user's idea 2026-08-21): async judging
       of PRODUCTION turns reusing A2's engine verbatim — per-agent
       toggle (off / sampled % / knowledge-turns-only / all), reply sends

@@ -207,6 +207,25 @@ export interface CreateAgentEvalOptions {
   enabled?: boolean;
 }
 
+/**
+ * One LLM-judged dimension's outcome inside a scenario result — the grade for an
+ * `expect.judge` block (groundedness / tone / refusal).
+ *
+ * HAND-KEPT COPY of the server's `JudgeVerdictRecord` (src/core/eval-runner.ts),
+ * which is the source of truth for this wire shape; this package ships
+ * standalone and cannot import server types. `verdict: 'skipped'` means the run
+ * had no judge client (a CLI run, or an agent whose LLM credentials could not be
+ * opened) — not a pass and not a failure.
+ */
+export interface JudgeVerdictRecord {
+  turn: number;
+  dim: 'groundedness' | 'tone' | 'refusal';
+  verdict: 'pass' | 'fail' | 'skipped';
+  /** 1-5, present for the scored dimensions (groundedness, tone) only. */
+  score?: number;
+  rationale: string;
+}
+
 /** One scenario's verdict inside a run's results. */
 export interface EvalScenarioResult {
   name: string;
@@ -215,6 +234,12 @@ export interface EvalScenarioResult {
   failures: string[];
   /** Attempts USED (a passing scenario may pass before exhausting its budget). */
   attempts: number;
+  /**
+   * Every dimension the judge graded, passing ones included. Additive: present
+   * only when the scenario used `expect.judge`, so pre-judge results are
+   * unchanged. Failing dimensions ALSO appear in `failures`.
+   */
+  judged?: JudgeVerdictRecord[];
 }
 
 /** An eval run — created 'running', finalized by the worker. */

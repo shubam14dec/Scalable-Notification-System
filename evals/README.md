@@ -95,6 +95,7 @@ any non-skipped scenario failed all its attempts.
 | `replyContainsAny: ["a","b"]` | the reply includes at least one |
 | `replyNotContains: "s"` | the reply does **not** include `s` |
 | `pendingApproval: X` | a gated tool `X` paused for human approval this turn |
+| `judge: {…}` | an LLM judge scores the reply on the requested dimensions (below) |
 
 `X` is any tool name the agent can call — a custom tool, a built-in
 (`resolve_conversation`, `trigger_workflow`…), or a **built-in retrieval tool**.
@@ -102,6 +103,44 @@ So for a grounded agent, `{ "expect": { "tool": "search_knowledge" } }` asserts
 it actually looked a policy question up before answering (that tool is offered
 only once the agent has a `ready` knowledge source — see
 [docs/AGENT-TOOLS.md](../docs/AGENT-TOOLS.md), *Built-in retrieval tools*).
+
+### Judged expectations (`expect.judge`)
+
+The matchers above assert the **trace**. `judge` asserts the **reply**, on the
+three dimensions a trace cannot express:
+
+```jsonc
+{ "expect": {
+    "tool": "search_knowledge",              // graded FIRST — the judge only runs if it passes
+    "judge": {
+      "groundedness": { "min": 4 },          // or `true` for the default bar
+      "tone": { "rubric": "warm, first person", "min": 4 },
+      "refusal": "must_refuse"               // or "must_answer"
+    }
+} }
+```
+
+- `groundedness` / `tone` score **1–5**; `min` defaults to **4**. `refusal` is a
+  requirement, not a score. At least one dimension is required, and unknown
+  dimension keys are **rejected** at validation — a typo can't look like a pass.
+- Every dimension in one `expect` rides **one** model call, forced through a
+  `report_verdicts` tool (temperature 0; omitted on the newer Claude models that
+  reject it). The model returns a score + rationale; the runner — not the model —
+  compares that score to `min`.
+- Groundedness evidence is the tool-result text **already** in the transcript
+  (`raw.action.result`, rendered as `[evidence: <tool>]` lines), limited to rows
+  through the reply under judgment. The transcript is fenced as untrusted data.
+- The judge runs on the **agent's own model and credentials** (self-judge bias is
+  a documented tradeoff; a `judgeModel` override is future work).
+- **`npm run eval` has no server-side LLM client**, so it records judged
+  dimensions as `skipped` — visibly, never as a pass — and keeps grading the
+  deterministic assertions in the same scenario. Judged dimensions grade for real
+  in dashboard/API runs.
+- A failing dimension reads `judge.groundedness: 2/5 < 4 — <rationale>` (or
+  `judge.refusal: expected must_refuse — <rationale>`) inside the scenario's
+  normal failure block, and every graded dimension — passes included — rides an
+  additive `judged[]` on the result. Full walkthrough:
+  [ASYNCIFY-AGENTS-GUIDE.md](../docs/ASYNCIFY-AGENTS-GUIDE.md) §10.
 
 ## How tool calls are observed (and why the read path is the DB)
 
@@ -150,3 +189,4 @@ cover the thing vitest can't: whether the **real configured LLM**, given the
 | `adversarial-ignore-instructions` | prompt injection can't make it fire a workflow |
 | `adversarial-fabrication` | never claims an un-run refund; fires no workflow |
 | `approval-pause` (skip) | gated `refund_customer` pauses for approval — activates once that tool is registered |
+| `refund-window-judged` (skip) | LLM-judged: the refund answer is grounded + on-voice, and a cross-customer request is refused — needs knowledge indexed and a server-side judge |
