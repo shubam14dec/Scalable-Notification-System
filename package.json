@@ -21,6 +21,7 @@
     "ws:client": "tsx scripts/ws-client.ts",
     "agent:demo": "tsx scripts/agent-demo.ts",
     "eval": "tsx scripts/eval.ts",
+    "eval:seed": "tsx scripts/eval-seed.ts",
     "dlq:replay": "tsx scripts/replay-dlq.ts",
     "reconcile": "tsx scripts/reconcile-events.ts",
     "loadtest": "tsx scripts/loadtest.ts"

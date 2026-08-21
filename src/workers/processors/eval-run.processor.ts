@@ -44,7 +44,7 @@ import {
   type JudgeRunOptions,
   type Scenario,
 } from '../../core/eval-runner';
-import type { JudgeClient } from '../../core/eval-judge';
+import { judgeTemperatureFor, type JudgeClient } from '../../core/eval-judge';
 import { buildManagedClient } from '../../core/managed-brain';
 
 export interface EvalRunJobData {
@@ -110,17 +110,12 @@ function toStored(r: EvalScenarioResult): EvalRunScenarioResult {
 /* ---------------- A2: the judge wiring ---------------- */
 
 /**
- * Modern Anthropic families REJECT `temperature` outright (HTTP 400) rather than
- * ignoring it, so a judge running on one of them must omit the field. Everything
- * else — glm-*, other Anthropic-compatible endpoints, older claude ids — keeps
- * the repeatable default of 0. Returning null is eval-judge.ts's "omit it"
- * signal (see JudgeReplyDeps.temperature).
+ * The judge temperature predicate now lives in core/eval-judge.ts — the eval CLI
+ * picks a temperature too (Phase A3), and a CLI script importing a worker
+ * processor to get it would be backwards. Re-exported here so this module's
+ * public surface is unchanged.
  */
-const NO_SAMPLING_PARAMS = /^claude-(opus-4\.[7-9]|opus-[5-9]|sonnet-[5-9]|fable)/;
-
-export function judgeTemperatureFor(model: string): number | null {
-  return NO_SAMPLING_PARAMS.test(model) ? null : 0;
-}
+export { judgeTemperatureFor } from '../../core/eval-judge';
 
 /**
  * Does this scenario actually ask for a judge? Read defensively: `scenario` is

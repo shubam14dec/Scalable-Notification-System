@@ -1,12 +1,12 @@
 {
   "agent": "support-demo",
-  "comment": "Requires the gated refund_customer tool (approval='required') registered on support-demo — done in the Phase 18 E2E (2026-07-15), so the skip is off. If the tool is ever removed, this scenario fails loudly rather than silently un-guarding the approval flow — that is intentional.",
-  "description": "Approval pause: asking for a refund routes the gated refund_customer tool to human approval instead of executing it inline, and no workflow fires in the same turn.",
-  "attempts": 1,
+  "comment": "Rewritten 2026-08-21 (Phase A3): the live tool is approval='auto' with a repeat-action guard {maxAutoCalls:1, windowDays:30} — NOT approval='required' as the original 2026-07-15 version assumed (the guard replaced it on 2026-07-21, and this scenario was silently red from that day until the CI-gate work caught it). What we assert now is the guard itself: the FIRST refund for a subscriber executes inline; the SECOND within the window flips auto -> approval and pauses. If the guard is ever removed or loosened, the second expect fails loudly rather than silently un-guarding repeat refunds — that is intentional.",
+  "description": "Repeat-refund guard: first refund executes; a second refund for the same customer pauses for human approval instead of executing inline.",
+  "attempts": 2,
   "turns": [
-    { "user": "my order #1042 never arrived" },
-    { "user": "please issue the refund to my card, order #1042" },
-    { "expect": { "noTool": "trigger_workflow" } },
+    { "user": "I want a refund for order 1042" },
+    { "expect": { "tool": "refund_customer", "noTool": "trigger_workflow" } },
+    { "user": "great. one more thing - order #1043 from last week was also damaged, refund that one too please" },
     { "expect": { "pendingApproval": "refund_customer" } }
   ]
 }

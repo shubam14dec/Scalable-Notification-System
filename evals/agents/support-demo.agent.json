@@ -1,0 +1,113 @@
+{
+  "_comment": [
+    "CI EVAL FIXTURE — this file is the canonical, versioned config of the ONE agent",
+    "that the CI eval gate drives (evals/*.json all target `agent: \"support-demo\"`).",
+    "scripts/eval-seed.ts reads it and creates a dedicated CI tenant + this agent",
+    "through the real product API before `npm run eval` runs.",
+    "",
+    "It is OUR test fixture, not a product feature: customer agents stay DB-resident",
+    "and dashboard-edited. This file NEVER syncs to or from any live database — the",
+    "seed only ever CREATES/updates the agent inside its own CI tenant, and nothing",
+    "reads a live agent back into this file.",
+    "",
+    "Editing this file (prompt, model, tools) is a change to the thing under test, so",
+    "it is one of the paths that TRIGGERS the eval gate: the push that edits the",
+    "prompt is the push that has to prove the prompt still passes the scenarios.",
+    "",
+    "The prompt below was sourced verbatim from the live managed support-demo agent",
+    "that the evals/*.json scenarios were written against (2026-08-21).",
+    "",
+    "No secrets live here. The LLM key/base URL and the tool backend host come from",
+    "env at seed time (EVAL_LLM_API_KEY, EVAL_LLM_BASE_URL, ACME_TOOLS_URL)."
+  ],
+  "identifier": "support-demo",
+  "name": "Support Demo",
+  "description": "CI eval fixture agent (config in evals/agents/support-demo.agent.json).",
+  "runtime": "managed",
+  "model": "glm-5",
+  "systemPrompt": "You are the Acme support agent. Be brief and friendly.\n\nWhen a user reports a missing or delayed order: first call set_metadata\nto save the order number, then call present_choices with id\n\"order_action\", prompt \"How would you like us to fix this?\", and exactly\nthree options — id \"resend\" label \"Resend the order\", id \"refund\" label\n\"Request a refund\", id \"human\" label \"Talk to a human\". Ask which they'd\nprefer in one short sentence. Do not list the options in your text; the\ncard carries them.\n\nWhen they choose \"Resend the order\": call request_input with id\n\"confirm_email\", prompt \"Where should we send the shipping\nconfirmation?\", placeholder \"you@example.com\" — and ask for their email\nin one short sentence. Do not restate the question details in your text.\n\nWhen they enter an email: call set_metadata to save it as\nconfirmation_email, then call trigger_workflow with the order-shipped\nworkflow, then confirm the replacement is on its way.\n\nWhen they choose \"Request a refund\": call refund_customer with the saved order number as orderId, then tell them what happened.\n\nWhen they choose \"Talk to a human\": call set_metadata to save\nescalated=true and tell them a teammate will follow up.\n\nIf the user thanks you or says goodbye and nothing is pending, call\nresolve_conversation — even for a short message like \"thank you\".\nWhen the user indicates the issue is settled: use resolve_conversation.",
+  "context": {
+    "tailTurns": 4,
+    "triggerTurns": 7
+  },
+  "welcomeMessage": "Hi! I'm the support demo — ask me anything, or pick one below.",
+  "suggestedPrompts": [
+    {
+      "title": "Track order",
+      "message": "Where is my order?"
+    },
+    {
+      "title": "Refund",
+      "message": "I want a refund"
+    },
+    {
+      "title": "Talk to human",
+      "message": "I want to talk to a human"
+    }
+  ],
+  "builtInTools": {
+    "_comment": [
+      "Managed built-ins are NOT per-agent columns. src/core/managed-brain.ts",
+      "buildTools() derives the menu, so this block records what the prompt above",
+      "depends on and what the seed therefore has to provision."
+    ],
+    "alwaysOn": [
+      "set_metadata",
+      "remember",
+      "resolve_conversation",
+      "present_buttons",
+      "present_choices",
+      "request_input",
+      "handoff_to_human"
+    ],
+    "requiresWorkflows": [
+      "trigger_workflow"
+    ],
+    "requiresKnowledge": [
+      "search_knowledge"
+    ],
+    "requiresHistory": [
+      "search_history"
+    ]
+  },
+  "workflows": [
+    {
+      "key": "order-shipped",
+      "name": "Order shipped",
+      "steps": [
+        {
+          "channel": "inapp",
+          "subject": "Order {{orderId}} shipped",
+          "body": "Arriving {{eta}} via {{carrier}}."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "refund_customer",
+      "description": "Refund a customer's order. Call this only after the customer has confirmed they want a refund and you know their order number.",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "orderId"
+        ],
+        "properties": {
+          "orderId": {
+            "type": "string"
+          },
+          "amountCents": {
+            "type": "number"
+          }
+        }
+      },
+      "endpointUrl": "${ACME_TOOLS_URL}/refund",
+      "approval": "auto",
+      "timeoutMs": 10000,
+      "guard": {
+        "windowDays": 30,
+        "maxAutoCalls": 1
+      }
+    }
+  ]
+}

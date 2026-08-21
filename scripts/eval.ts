@@ -20,10 +20,22 @@
  * The worker MUST be running (npm run worker) — the API only enqueues the turn;
  * the worker runs the brain. A turn that never gets a reply is reported as such.
  *
- * LLM-judged expects (`expect.judge`) need a server-side LLM client built from
- * the agent's own credentials, which this CLI has none of — so their dimensions
- * are reported SKIPPED (see reportJudged) while the deterministic assertions in
- * the same scenario grade normally. They grade for real in dashboard/API runs.
+ * LLM-judged expects (`expect.judge`) grade for real HERE too (Phase A3) when
+ * judge credentials are in env — the harness builds its own judge client rather
+ * than borrowing the agent's:
+ *
+ *   EVAL_LLM_API_KEY   the judge's key; setting it is what turns judging on
+ *   EVAL_LLM_MODEL     required alongside the key — there is NO default model
+ *   EVAL_LLM_BASE_URL  optional Anthropic-compatible endpoint
+ *                      (ASYNCIFY_JUDGE_API_KEY / _MODEL / _BASE_URL also work
+ *                       and take precedence — see core/eval-judge-env.ts)
+ *
+ * With no key, behavior is unchanged: judged dimensions report SKIPPED (see
+ * reportJudged) while the deterministic assertions in the same scenario grade
+ * normally. ONE difference from a dashboard/API run even with a key: the CLI
+ * holds a tenant api key, not the agent row, so it passes NO persona — `tone`
+ * is graded against ordinary professional support tone plus whatever
+ * `judge.tone.rubric` the scenario itself carries.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -37,6 +49,7 @@ import {
   type JudgeVerdictRecord,
   type Scenario,
 } from '../src/core/eval-runner';
+import { buildEnvJudgeOptions } from '../src/core/eval-judge-env';
 
 const API_URL = (process.env.ASYNCIFY_API_URL ?? 'http://localhost:3000').replace(/\/$/, '');
 const API_KEY = process.env.ASYNCIFY_API_KEY ?? '';
@@ -89,10 +102,10 @@ function fmtVerdict(j: JudgeVerdictRecord): string {
 /**
  * Judged dimensions never reach the table (only pass/fail does) and a PASSING
  * scenario never reaches the failure block — so without this, a run whose judge
- * never ran would print exactly like a fully graded one. `npm run eval` has no
- * server-side LLM client, so that is the normal case here, and it has to be
- * visible: a dimension that was skipped must never read as a dimension that
- * passed.
+ * never ran would print exactly like a fully graded one. A run with no judge
+ * credentials in env is exactly that case, and it has to be visible: a
+ * dimension that was skipped must never read as a dimension that passed — so
+ * the warning also says how to turn judging on.
  */
 function reportJudged(results: EvalScenarioResult[]): void {
   const judgedRows = results.filter((r) => (r.judged?.length ?? 0) > 0);
@@ -108,7 +121,10 @@ function reportJudged(results: EvalScenarioResult[]): void {
     }
     const skipped = judged.filter((j) => j.verdict === 'skipped').length;
     if (skipped > 0) {
-      console.log(`        ⚠ ${skipped} judged dimension(s) skipped (no judge client on CLI runs)`);
+      console.log(
+        `        ⚠ ${skipped} judged dimension(s) skipped — set EVAL_LLM_API_KEY + ` +
+          'EVAL_LLM_MODEL (and EVAL_LLM_BASE_URL for a compatible endpoint) to grade them',
+      );
     }
   }
 }
@@ -150,11 +166,17 @@ async function main() {
   const scenarios = loadScenarios(filter);
   console.log(`Running ${scenarios.length} scenario(s) against ${API_URL} (run ${RUN_NONCE})`);
 
+  // Absent judge creds this is undefined and every judged dimension reports
+  // SKIPPED, exactly as before A3; a key without a model throws EvalError here
+  // rather than quietly running assertions-only.
+  const judge = buildEnvJudgeOptions(process.env);
+  if (judge) console.log(`Judging with ${judge.model} (no persona — tone graded generically)`);
+
   const driver = createHttpDriver({ apiUrl: API_URL, apiKey: API_KEY });
   const results: EvalScenarioResult[] = [];
   for (const { name, sc } of scenarios) {
     process.stdout.write(`  · ${name} … `);
-    const result = await runScenario(name, sc, { driver, nonce: RUN_NONCE });
+    const result = await runScenario(name, sc, { driver, nonce: RUN_NONCE, judge });
     console.log(result.status.toUpperCase());
     results.push(result);
   }

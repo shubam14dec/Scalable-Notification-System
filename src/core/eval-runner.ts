@@ -444,10 +444,15 @@ export interface RunnerDeps {
 
 /**
  * Wiring for LLM-graded expects (A2). ABSENT is a first-class state, not an
- * error: the CLI has no server-side LLM credentials, so a `npm run eval` run
- * marks judged dimensions SKIPPED (visibly, in `judged[]`) and keeps grading the
- * deterministic assertions. Only the worker, which can build the agent's own
- * client, passes this.
+ * error: a run without it marks judged dimensions SKIPPED (visibly, in
+ * `judged[]`) and keeps grading the deterministic assertions.
+ *
+ * Two callers supply it, from different credentials:
+ *   - the eval-run worker, from the AGENT's own sealed key + persona
+ *     (buildJudgeOptions, workers/processors/eval-run.processor.ts);
+ *   - the eval CLI, from the OPERATOR's env creds and with no persona
+ *     (buildEnvJudgeOptions, core/eval-judge-env.ts — A3). Absent env creds it
+ *     stays undefined, which is the CLI's pre-A3 behavior.
  */
 export interface JudgeRunOptions {
   client: JudgeClient;

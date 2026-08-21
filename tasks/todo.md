@@ -6,8 +6,31 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-(nothing — next up from the agents backlog; A1 streaming deliberately LAST
-per user 2026-08-21)
+### Phase A3 — CI eval gate (plan approved 2026-08-21, BLOCKING per user)
+A push that breaks the agent (prompt/tools/brain code) fails the build on
+REAL LLM turns incl. A2 judged dims. Config-as-code is for OUR CI fixture
+agent ONLY — customer prompts stay DB-resident forever (dashboard-edited;
+their safety ladder = A2 manual → A4 pre-save → A5 canary, all git-free).
+Gate paths: evals/**, src/core/managed-brain*, src/core/eval-*, the
+fixture file; plus workflow_dispatch. Secrets guard: EVAL_LLM_API_KEY
+absent (forks) → job skips VISIBLY, never silent green. Knowledge
+scenarios stay skipped in CI (embeddings/Pinecone secrets = later).
+User action pending at slice C: paste z.ai key as EVAL_LLM_API_KEY in
+repo Settings → Secrets → Actions.
+- [ ] Slice A — fixture + seed: evals/agents/support-demo.agent.json
+      (prompt sourced from his live managed support-demo, glm-5, DB) +
+      scripts/eval-seed.ts creating CI tenant + agent through the REAL
+      API from env creds; re-runnable locally.
+- [ ] Slice B — CLI judge: scripts/eval.ts builds JudgeClient from env
+      (ASYNCIFY_JUDGE_* falling back to the seed's LLM env); judged dims
+      grade for real from CLI when creds present, visible-skip otherwise;
+      tests against a local fake Anthropic-compatible server.
+- [ ] Slice C — workflow: blocking agent-evals job in ci.yml (services,
+      migrate, seed, api+worker background boot, npm run eval, failure
+      artifacts w/ judge rationales, paths filter + dispatch, secrets
+      guard). Local plumbing rehearsal via fake-LLM server.
+- [ ] Slice D — docs+close-out: guide §10 CI subsection, evals/README env
+      vars, gap-doc A3 delta closed, todo review, INTERVIEW-PREP.
 
 ### Phase A2 — SHIPPED 2026-08-21 (review)
 All four slices done, 4 local commits, suite 702 → 743 (+41), tsc clean
@@ -40,6 +63,10 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       Pickup = read ~/.claude/plans/phase-streaming-replies-PARKED.md,
       launch the 4 slices.
 - [x] A2. LLM-judge dimensions — SHIPPED 2026-08-21, review above.
+- [ ] A2c. Landing page: judged-evals selling line in the agents scene
+      ("test your prompt like code — with a judge for what traces can't
+      see"); asyncify-site repo, fit into existing scene copy, user-
+      approved 2026-08-21 as "afterwards".
 - [ ] A2b. LIVE judge supervisor (user's idea 2026-08-21): async judging
       of PRODUCTION turns reusing A2's engine verbatim — per-agent
       toggle (off / sampled % / knowledge-turns-only / all), reply sends

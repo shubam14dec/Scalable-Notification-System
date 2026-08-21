@@ -29,10 +29,11 @@
  * nothing can close the fence early, and the system prompt states that text
  * inside the fence is EVIDENCE TO GRADE, never instructions to follow.
  *
- * WHAT THIS MODULE DOES NOT DO: it never builds a client. `client` is injected
- * (slice B wires buildManagedClient(agent) — the agent's own SSRF-gated LLM
- * creds), which is what keeps this file unit-testable against a stub and keeps
- * the self-judge-bias decision in the caller's hands.
+ * WHAT THIS MODULE DOES NOT DO: it never builds a client. `client` is injected —
+ * by the eval-run worker from the agent's own SSRF-gated LLM creds
+ * (buildManagedClient), or by the eval CLI from the operator's env creds
+ * (core/eval-judge-env.ts, A3). That is what keeps this file unit-testable
+ * against a stub and keeps the self-judge-bias decision in the caller's hands.
  */
 import type { ConversationMessage } from '../db/conversations.repo';
 import type { Expect } from './eval-runner';
@@ -153,6 +154,28 @@ export function minScoreFor(spec: JudgeSpec, dim: JudgeDimension): number {
 /** True for the dimensions graded 1-5; refusal is a plain requirement match. */
 export function isScored(dim: JudgeDimension): boolean {
   return dim === 'groundedness' || dim === 'tone';
+}
+
+/**
+ * Modern Anthropic families REJECT `temperature` outright (HTTP 400) rather than
+ * ignoring it, so a judge running on one of them must omit the field. Everything
+ * else — glm-*, other Anthropic-compatible endpoints, older claude ids — keeps
+ * the repeatable default of 0. Returning null is this module's "omit it" signal
+ * (see JudgeReplyDeps.temperature).
+ *
+ * Lives HERE, next to the field it decides, because two callers pick a judge
+ * temperature: the eval-run worker (from the agent's model) and the eval CLI
+ * (from EVAL_LLM_MODEL) — one source of truth, no CLI->worker import.
+ *
+ * Real Anthropic ids are HYPHENATED (claude-opus-4-8 — managed-brain's own
+ * DEFAULT_MODEL), so the version match accepts `4-8` as well as the dotted
+ * `4.8` some compat endpoints use. The A2-era dotted-only regex sent
+ * temperature:0 to claude-opus-4-8 — a guaranteed 400 (caught 2026-08-21).
+ */
+const NO_SAMPLING_PARAMS = /^claude-(opus-4[.-][7-9]|opus-[5-9]|sonnet-[5-9]|fable)/;
+
+export function judgeTemperatureFor(model: string): number | null {
+  return NO_SAMPLING_PARAMS.test(model) ? null : 0;
 }
 
 // ---- transcript rendering ---------------------------------------------------
