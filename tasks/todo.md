@@ -6,7 +6,13 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A3 — SHIPPED 2026-08-22 (review)
+### Phase A3 — SHIPPED 2026-08-22 (review) — LIVE-PROVEN same day
+Pushed 2026-08-22 (b566c74 + d72b62c). THE DEBUT: the gate's FIRST CI
+run caught refund-path silently red (same July approval-required rot as
+approval-pause — my sweep miss, the gate's catch); fix verified locally,
+pushed, second run GREEN end-to-end (preflight detected exactly the one
+changed file). Both directions proven on day one: blocks real rot, passes
+real fixes. Secret set by user; changesets release PR updated.
 All four slices done, 3 local commits (0d3aa61, bfb6f64, docs), suite
 743 → 752, YAML+Actions-schema validated, every claim live-rehearsed
 against the running stack. What shipped: config-as-code CI fixture
