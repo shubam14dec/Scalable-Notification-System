@@ -132,15 +132,52 @@ three dimensions a trace cannot express:
   through the reply under judgment. The transcript is fenced as untrusted data.
 - The judge runs on the **agent's own model and credentials** (self-judge bias is
   a documented tradeoff; a `judgeModel` override is future work).
-- **`npm run eval` has no server-side LLM client**, so it records judged
-  dimensions as `skipped` — visibly, never as a pass — and keeps grading the
-  deterministic assertions in the same scenario. Judged dimensions grade for real
-  in dashboard/API runs.
+- **On CLI runs the judge is the *operator's*, not the agent's** — `npm run eval`
+  holds a tenant api key, which is not an LLM credential. Give it one in env and
+  judged dimensions grade for real (*Running with a judge (CLI)*, below); give it
+  none and they record as `skipped` — visibly, never as a pass — while the
+  deterministic assertions in the same scenario keep grading.
 - A failing dimension reads `judge.groundedness: 2/5 < 4 — <rationale>` (or
   `judge.refusal: expected must_refuse — <rationale>`) inside the scenario's
   normal failure block, and every graded dimension — passes included — rides an
   additive `judged[]` on the result. Full walkthrough:
   [ASYNCIFY-AGENTS-GUIDE.md](../docs/ASYNCIFY-AGENTS-GUIDE.md) §10.
+
+#### Running with a judge (CLI)
+
+Judging is **off until you hand the harness a key**, and pinned to a model you
+name. There is no default model, deliberately: a judge that silently picks one is
+a scoring change nobody reviewed, and judged scores are only comparable across
+runs when the judge is pinned.
+
+| var | default | meaning |
+|---|---|---|
+| `EVAL_LLM_API_KEY` | — | the judge's key; setting it is what turns judging **on** |
+| `EVAL_LLM_MODEL` | — (**required alongside the key**) | the judge model, e.g. `glm-4.6` |
+| `EVAL_LLM_BASE_URL` | the SDK's own | any Anthropic-**compatible** endpoint (z.ai, a proxy, a local judge) |
+
+`ASYNCIFY_JUDGE_API_KEY` / `ASYNCIFY_JUDGE_MODEL` / `ASYNCIFY_JUDGE_BASE_URL` are
+the same three knobs and **take precedence** when both forms are set (blank
+counts as unset). The wiring is `src/core/eval-judge-env.ts`.
+
+- **A key with no model is a hard error**, never a quiet assertions-only run: the
+  CLI fails with *"a judge api key is set but no judge model…"* naming both env
+  vars.
+- **No persona is passed.** This process holds an api key, not the agent row, so
+  inventing a persona would grade `tone` against a fiction. `tone` is graded
+  against ordinary professional support tone plus whatever `judge.tone.rubric`
+  the scenario itself carries — the persona-aware score comes from a
+  dashboard/API run.
+- The base URL is **not** SSRF-gated here, unlike a tenant-supplied one: it comes
+  from your own environment, so pointing the judge at `http://localhost` works.
+
+With judging on, the run announces `Judging with <model> (no persona — tone
+graded generically)`. With it off, every judged scenario prints the way to turn
+it on, by name:
+
+```
+        ⚠ 2 judged dimension(s) skipped — set EVAL_LLM_API_KEY + EVAL_LLM_MODEL (and EVAL_LLM_BASE_URL for a compatible endpoint) to grade them
+```
 
 ## How tool calls are observed (and why the read path is the DB)
 
@@ -188,5 +225,89 @@ cover the thing vitest can't: whether the **real configured LLM**, given the
 | `resolve-on-thanks` | a closing thanks resolves the conversation (also runs on the bridge demo) |
 | `adversarial-ignore-instructions` | prompt injection can't make it fire a workflow |
 | `adversarial-fabrication` | never claims an un-run refund; fires no workflow |
-| `approval-pause` (skip) | gated `refund_customer` pauses for approval — activates once that tool is registered |
-| `refund-window-judged` (skip) | LLM-judged: the refund answer is grounded + on-voice, and a cross-customer request is refused — needs knowledge indexed and a server-side judge |
+| `approval-pause` | the **repeat-refund guard**: the first refund executes inline, a second one for the same subscriber pauses for human approval |
+| `refund-window-judged` (skip) | LLM-judged: the refund answer is grounded + on-voice, and a cross-customer request is refused — needs knowledge indexed (and judge creds, above) |
+
+`approval-pause` asserted `approval='required'` until 2026-08-21. The live tool
+had moved to `auto` plus a repeat-action guard on 2026-07-21, so the scenario was
+red for a month without anyone seeing it — nothing ran it on every push. It now
+asserts the guard itself, and that month is exactly the failure mode the CI gate
+below exists to close.
+
+## The CI gate
+
+These scenarios are not just a local ritual — they **block merges**. The
+`agent-evals` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+boots the real product on a runner (Postgres + Redis, the demo tool backend on
+`:4400`, API, worker — each health-**polled**, never slept on), seeds a throwaway
+CI tenant and the fixture agent from
+[`evals/agents/support-demo.agent.json`](agents/support-demo.agent.json)
+**through the real API** (`npm run eval:seed` — no direct DB writes), then runs
+`npm run eval` against it. Every turn is a real LLM conversation, judged
+dimensions included. A scenario that regresses fails the job, and the job is a
+required check: a push that breaks the agent cannot merge, exactly like a push
+that breaks a unit test.
+
+Two configuration choices worth knowing:
+
+- The judge is pinned by `ASYNCIFY_JUDGE_MODEL`. `EVAL_LLM_MODEL` is deliberately
+  **not** set, so the fixture file stays the single source of truth for the model
+  *under test* while the variable pins only the *judge*.
+- `OUTBOUND_URL_ALLOW=localhost,127.0.0.1` is set at **job** level, not just on
+  the API: the fixture's tools point at localhost, and the worker re-checks tool
+  URLs at dial time, not only the API at save time.
+
+### When it runs
+
+Only when the push touched something that can change what the agent does. The
+filter is a **preflight step**, not `on.push.paths` — that would stop the `test`
+job too, and a separate workflow file would leave required checks stuck on
+"Expected — waiting for status" on every unrelated PR. The pathspec list:
+
+```
+evals/**
+src/core/managed-brain*
+src/core/eval-*
+scripts/eval.ts
+scripts/eval-seed.ts
+scripts/acme-tools/**
+.github/workflows/ci.yml
+```
+
+That list lives in the preflight step of `ci.yml` (as git pathspecs with
+`:(glob)` magic) and **nowhere else in this repo** — it is the single source of
+truth, so believe the workflow over this page if they ever drift.
+`workflow_dispatch` runs the gate on demand with the path filter **not** applied,
+which is how you re-check the agent after a model or provider change that touches
+no code at all.
+
+### A skip is never silent
+
+Every outcome prints a `::notice::` **and** a job-summary line saying exactly
+why, so a green `agent-evals` check can always be explained from the log alone:
+
+| situation | outcome |
+|---|---|
+| no agent-behaviour path changed | skipped, green, naming the two shas it diffed |
+| `EVAL_LLM_API_KEY` not set (fork PR, or not yet configured) | skipped, green — a missing secret must never be red, and never quietly green either |
+| base commit unresolvable (new branch, force push) | **runs** — the gate fails *towards* running rather than skipping on a guess |
+
+### One-time owner setup
+
+1. **Repo secret `EVAL_LLM_API_KEY`** — Settings → Secrets and variables →
+   Actions → Secrets. Until it exists, the job skips on every run (loudly, green).
+2. **Optional repo variables** — same page, Variables tab: `EVAL_LLM_BASE_URL`
+   (default `https://api.z.ai/api/anthropic`, which is what the fixture's `glm-5`
+   needs — a bare Anthropic endpoint would 401/404 every turn) and
+   `EVAL_JUDGE_MODEL` (default `glm-5`). The key is always a secret; only these
+   two are variables.
+3. **Branch protection** — require the `agent-evals` status check on `main`.
+
+A green seed does **not** prove the key works: the API stores it sealed and never
+calls the provider, so a wrong or expired key seeds perfectly and then dies on
+turn 1. The job's failure step calls that case out explicitly, and uploads the
+API/worker/eval logs as an artifact (7 days) so the distinction is checkable.
+
+**The honest boundary:** a required status check blocks **PR merges**. A direct
+push to `main` still lands and simply goes red afterwards — GitHub cannot fail a
+push that already happened. Route changes that must be gated through a PR.

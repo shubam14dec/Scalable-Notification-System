@@ -137,8 +137,12 @@ architecture — we started where they're heading.
   2026-08-21 (P22 + A2)**: tool-trace assertions + judged dimensions
   (groundedness/tone/refusal, runner-owned pass/fail), driving REAL
   turns through the production pipeline where theirs replays mock
-  tapes. Still worth copying from them: the CI wiring (our A3) and
-  mock-tape speed for pure-prompt iteration.
+  tapes. ~~Still worth copying from them: the CI wiring (our A3)~~ — CI
+  wiring **shipped 2026-08-22 (A3)**: a paths-gated, required
+  `agent-evals` check that boots the real stack and drives the fixture
+  agent through real turns, so an agent regression blocks the merge. The
+  one thing left worth copying: **mock-tape speed** for pure-prompt
+  iteration.
 
 ## 6. Honest scorecard
 

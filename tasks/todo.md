@@ -6,7 +6,30 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A3 — CI eval gate (plan approved 2026-08-21, BLOCKING per user)
+### Phase A3 — SHIPPED 2026-08-22 (review)
+All four slices done, 3 local commits (0d3aa61, bfb6f64, docs), suite
+743 → 752, YAML+Actions-schema validated, every claim live-rehearsed
+against the running stack. What shipped: config-as-code CI fixture
+(prompt byte-identical to live; NEVER syncs with any DB — customer
+prompts stay DB-resident, guarded by A2→A4→A5), API-only idempotent
+eval-seed, env-judge CLI (EVAL_LLM_*/ASYNCIFY_JUDGE_*, no default
+model), blocking agent-evals job (preflight path filter as a STEP —
+single source of truth, never-silent skips, fails-towards-running),
+docs across evals/README + guide §10 + both novu docs. Review notes:
+(1) approval-pause.json was SILENTLY RED for a month (asserted
+approval='required'; live went auto+guard 2026-07-21) — rewritten to
+assert the repeat-refund guard; the gate's own justification. (2)
+NO_SAMPLING_PARAMS only matched dotted ids; claude-opus-4-8 (the
+DEFAULT_MODEL) got temp 0 → 400 — regex now 4[.-][7-9]. (3) Worker
+needs OUTBOUND_URL_ALLOW too (dial-time re-check), not just the API.
+(4) Green seed ≠ valid key (sealed, unchecked until turn 1) — failure
+step distinguishes credentials from agent. (5) Prod delta: NONE (CI-
+only). PENDING USER (gate skips green+loud until then): repo secret
+EVAL_LLM_API_KEY; optional vars EVAL_LLM_BASE_URL / EVAL_JUDGE_MODEL;
+branch protection requiring agent-evals. Boundary: required checks
+block PR merges; direct pushes to main land but go red.
+
+### (original plan, kept for the record)
 A push that breaks the agent (prompt/tools/brain code) fails the build on
 REAL LLM turns incl. A2 judged dims. Config-as-code is for OUR CI fixture
 agent ONLY — customer prompts stay DB-resident forever (dashboard-edited;
@@ -17,20 +40,29 @@ absent (forks) → job skips VISIBLY, never silent green. Knowledge
 scenarios stay skipped in CI (embeddings/Pinecone secrets = later).
 User action pending at slice C: paste z.ai key as EVAL_LLM_API_KEY in
 repo Settings → Secrets → Actions.
-- [ ] Slice A — fixture + seed: evals/agents/support-demo.agent.json
-      (prompt sourced from his live managed support-demo, glm-5, DB) +
-      scripts/eval-seed.ts creating CI tenant + agent through the REAL
-      API from env creds; re-runnable locally.
-- [ ] Slice B — CLI judge: scripts/eval.ts builds JudgeClient from env
-      (ASYNCIFY_JUDGE_* falling back to the seed's LLM env); judged dims
-      grade for real from CLI when creds present, visible-skip otherwise;
-      tests against a local fake Anthropic-compatible server.
-- [ ] Slice C — workflow: blocking agent-evals job in ci.yml (services,
-      migrate, seed, api+worker background boot, npm run eval, failure
-      artifacts w/ judge rationales, paths filter + dispatch, secrets
-      guard). Local plumbing rehearsal via fake-LLM server.
-- [ ] Slice D — docs+close-out: guide §10 CI subsection, evals/README env
-      vars, gap-doc A3 delta closed, todo review, INTERVIEW-PREP.
+- [x] Slice A — fixture + seed — DONE 2026-08-21 (commit 0d3aa61):
+      fixture prompt byte-identical to live; API-only idempotent seed
+      verified live twice; found approval-pause.json silently red since
+      the 2026-07-21 guard change → rewritten to assert the repeat-
+      refund guard itself. CI reqs discovered: OUTBOUND_URL_ALLOW=
+      localhost,127.0.0.1 on the API; EVAL_LLM_BASE_URL required for
+      glm-5 (z.ai); green seed ≠ valid key (key unchecked until turn 1).
+- [x] Slice B — CLI judge — DONE 2026-08-21 (same commit): core/
+      eval-judge-env.ts buildEnvJudgeOptions; predicate single-sourced
+      into eval-judge.ts; +9 tests (752 total). Manager fix: regex now
+      matches HYPHENATED ids (claude-opus-4-8 was getting temp 0 → 400).
+- [x] Slice C — workflow — DONE 2026-08-22 (commit bfb6f64): agent-evals
+      job, preflight-step path filter (single source of truth, never-
+      silent skips, fails-towards-running on unresolvable base), secrets
+      guard via env-indirection, health-polled boot, live-rehearsed seed
+      key capture w/ masking, credentials-vs-agent failure explainer,
+      failure artifacts, 25min reasoned budget. Worker needs
+      OUTBOUND_URL_ALLOW too (dial-time re-check) — job-level env.
+- [x] Slice D — docs — DONE 2026-08-22: evals/README (CLI judge env
+      table, CI gate section w/ owner setup + never-silent skip rules +
+      required-check boundary), guide §10 "The gate", both novu docs
+      flipped to shipped; also corrected the two now-false "CLI can't
+      judge" claims adjacent to its sections.
 
 ### Phase A2 — SHIPPED 2026-08-21 (review)
 All four slices done, 4 local commits, suite 702 → 743 (+41), tsc clean
@@ -74,8 +106,7 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       conversation + ops alert + optional auto-handoff (composes P26
       handoff + P22 alerts + A10 alerting). Blocking-mode rejected
       (2x cost, +2-4s every reply).
-- [ ] A3. CI eval gate — fail the build on eval regressions (needs A2
-      for judged dimensions; tool-assertion gate can land first).
+- [x] A3. CI eval gate — SHIPPED 2026-08-22, review above.
 - [ ] A4. Customer-facing pre-save eval runs — "3/12 scenarios
       regressed" before a prompt edit saves; one-click
       prod-conversation → eval-case.

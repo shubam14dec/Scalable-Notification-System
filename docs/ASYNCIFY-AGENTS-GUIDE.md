@@ -740,19 +740,24 @@ at a different model is future work; the same engine is what a **live judge
 supervisor** (scoring real conversations after the fact, not just evals) will run
 on.
 
-**A dimension that couldn't be graded says so.** Judging needs a server-side LLM
-client, and the CLI has none — so `npm run eval` (and any agent whose credentials
-can't be opened) records each judged dimension as **`skipped`**, never as a pass:
+**A dimension that couldn't be graded says so.** Judging needs an LLM client. The
+dashboard and API runs build the agent's own; `npm run eval` holds a tenant api
+key, which isn't one, so Priya hands it judge credentials in env
+(`EVAL_LLM_API_KEY` + `EVAL_LLM_MODEL` — see
+[evals/README.md](../evals/README.md)). Without them — or when an agent's
+credentials can't be opened — each judged dimension records as **`skipped`**,
+never as a pass:
 
 ```
   [JUDGE] refund-window
         turn 2 · groundedness skipped · tone skipped
-        ⚠ 2 judged dimension(s) skipped (no judge client on CLI runs)
+        ⚠ 2 judged dimension(s) skipped — set EVAL_LLM_API_KEY + EVAL_LLM_MODEL … to grade them
 ```
 
 The deterministic assertions in that same scenario still grade normally, and a
-skip never fails a run. Judged dimensions grade for real in the **dashboard** and
-API runs, which build the agent's client.
+skip never fails a run. One difference even with a key: the CLI never reads the
+agent row, so `tone` is graded against ordinary professional support tone rather
+than Acme's persona — the persona-aware score comes from a dashboard run.
 
 **What a judged failure looks like.** Judge failures are ordinary scenario
 failures — same retry budget, same `failures[]` — with the dimension, the score,
@@ -776,6 +781,17 @@ scenario that uses no judge serializes exactly as it did before.
 **Prompt edits are deploys — treat a red suite like a failing build.** (Priya can
 also run the same scenarios from the command line — `npm run eval` on self-hosted
 installs — see [evals/README.md](../evals/README.md).)
+
+**The gate.** Asyncify takes its own advice. The platform's demo agent — the one
+Maya talks to in this guide — is config-as-code in `evals/agents/`, and every
+push that touches a prompt, the brain, or the eval harness makes CI boot the real
+stack, seed that agent through the real API, and drive the scenarios as **real
+conversations**, judged dimensions included. A regression doesn't get a warning;
+it fails the build and the change cannot merge. The boundary is worth being
+straight about: that gate protects *our* fixture agent, which lives in git.
+Acme's agents live in the database, where Priya edits them — their safety net is
+the in-product ladder: manual eval runs today, pre-save runs and a prompt canary
+on the roadmap.
 
 ---
 

@@ -83,6 +83,12 @@ now have, and how to sell it honestly:
   canary comparison (A5) → model routing (A6). Each rung needs the one
   before it — a router without a judge is a quality regression disguised
   as a cost win. Novu has none of the ladder above the harness.
+- **2026-08-22 — rung two shipped (A3).** The `agent-evals` job boots
+  the real stack, seeds our fixture agent through the real API and
+  drives evals/*.json as REAL LLM conversations (judged dimensions
+  included) as a **required status check**: a push that breaks the agent
+  cannot merge. Novu's harness aspiration — "run in CI" — is our shipped
+  reality, and ours gates on driven turns rather than replayed tapes.
 
 Sales framing: "prompt edits are deploys — and we're the platform that
 treats them that way."
@@ -108,7 +114,7 @@ treats them that way."
 | **AI-SDK / LangChain adapters** | Plug a Vercel-AI-SDK or LangChain app in as the bridge brain | plain SDK handler | **B** — cheap DX win for OUR agent SDK (adapter = ~1 file) |
 | **Open vs restricted subscriber access** | `restricted` rejects unknown senders; `open` auto-provisions | we are always-open | **B** — one enum + gate; enterprise checkbox |
 | **Conversation billing (activation episodes)** | Active-conversation counting per billing window, limits + overage | usage tokens per turn only | **C** — needs a billing system first |
-| **Agent evals harness** | Suite-based behavioral evals in CI | **we have it, deeper** (P22 harness + A2 LLM-judge): tool-trace assertions AND judged dimensions (groundedness/tone/refusal, 1–5 vs an author-set bar), driven through the REAL pipeline, not mock shells | Closed 2026-08-21; remaining delta = CI wiring (**A3**) |
+| **Agent evals harness** | Suite-based behavioral evals in CI | **we have it, deeper** (P22 harness + A2 LLM-judge): tool-trace assertions AND judged dimensions (groundedness/tone/refusal, 1–5 vs an author-set bar), driven through the REAL pipeline, not mock shells | Closed 2026-08-21; CI wiring (**A3**) shipped 2026-08-22 as a required, paths-gated check |
 | **Agent env sync / runtime migration** | Promote agent defs between environments; bridge↔managed migration API | manual re-create | **C** (fold into env promotion, §4) |
 | **AI-generated agent config** | LLM synthesizes name/prompt/tools from a description | none | **C** (demo sugar) |
 | **Inbound-turn queueing** | Turns arriving mid-run are parked and replayed in order | BullMQ serializes per-conversation job; broadly equivalent | Not a gap (verify ordering under concurrency someday) |
@@ -210,7 +216,7 @@ New findings beyond round 1:
 | **`asyncify dev` tunnel command** | their `novu dev`: managed tunnel + watchdog (sleep-drift detect) + half-open probe + auto devBridgeUrl registration — would erase our cloudflared rotation drill | **B** — our recurring pain, their solved problem |
 | **Payload schema validation on trigger** | per-workflow JSON Schema, AJV compiled + LRU-cached by schema hash, opt-in `validatePayload` | B |
 | **Provider catalog machinery** | catalog-as-data (IProviderConfig[] drives UI + typed credentials), Nx generator scaffolding new providers, canonical status enums, generic `*-webhook` escape-hatch provider per channel | B — the enabler for cheap provider breadth |
-| **Agent evals harness** | LLM-judge + deterministic graders + scripted mock-shell tapes, run in CI | **CLOSED 2026-08-21** (P22 harness + A2 judge; see §1 and the addendum) — ours grades REAL driven turns where theirs replays mock tapes; CI gate is the last delta (A3) |
+| **Agent evals harness** | LLM-judge + deterministic graders + scripted mock-shell tapes, run in CI | **CLOSED 2026-08-21** (P22 harness + A2 judge; see §1 and the addendum) — ours grades REAL driven turns where theirs replays mock tapes; the CI gate (A3) shipped 2026-08-22 — blocking required check on real driven turns |
 | **Streaming adaptation** | post-then-edit-on-interval where editable; buffer-and-post-once on email/WhatsApp | folds into streaming backlog item |
 | **Notification container concept** | trigger×subscriber = one "notification" row holding jobs/messages/status — cleaner billing + activity grouping than per-message | note for engine v2 |
 
