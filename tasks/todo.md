@@ -269,6 +269,10 @@ the public landing page at asyncify.org.
       v2 (per-workflow + preference center), Workflow engine v2
       (digestKey/throttle/delay-until/cancel-trigger), env promotion
       dev→prod + outbound customer webhooks
+- [ ] CLI resilience: `asyncify dev` exits if the quick tunnel isn't
+      publicly reachable in 60s — slow Cloudflare-DNS days (hit 2026-08-14
+      and twice 2026-08-19; clean pass 2026-08-21) strand users before any
+      rewire. Add --wait/-w (default ~5min) or keep-waiting-then-rewire.
 - [ ] Tier B / small: Idempotency-Key protocol (409/422/24h replay);
       tool approval via workflow; rolling dual API keys; 415 JSON error
       mapping; keyset pagination + projections + TTL jitter; Slack
