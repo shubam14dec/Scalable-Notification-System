@@ -1,12 +1,20 @@
 # CI: every push and PR proves — on a clean machine — that the platform
 # typechecks, all integration tests pass against real Postgres/Redis, and
 # every artifact (dashboard + published SDKs) still builds.
+#
+# The second job (agent-evals) is the Phase A3 QUALITY gate: it drives the
+# fixture agent through evals/*.json with REAL LLM turns. It only does that
+# work when the push actually touched something that can change what the
+# agent does — see the long comment above the job for how, and why not `on:`.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  # On-demand full run of the eval gate (paths filter not applied), e.g. to
+  # re-check the agent after a model/provider change with no code diff.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -98,3 +106,284 @@ jobs:
         run: |
           npx tsc --noEmit
           npx vite build
+
+  # ---------------------------------------------------------------------------
+  # agent-evals — the Phase A3 eval gate. It boots the real product (API +
+  # worker + the demo tool backend), seeds the CI tenant and the fixture agent
+  # from evals/agents/support-demo.agent.json through the real API, then runs
+  # evals/*.json as REAL LLM conversations. A scenario that regresses fails the
+  # job, and this job is a REQUIRED check — a push that breaks the agent cannot
+  # merge, exactly like a push that breaks a unit test.
+  #
+  # WHY THE PATH FILTER IS A STEP AND NOT `on.push.paths`
+  # `on.*.paths` filters the WHOLE workflow, so putting the agent paths there
+  # would also stop the `test` job from running on unrelated pushes. Splitting
+  # the gate into its own workflow file with its own paths filter has a worse
+  # failure mode: a required check that never STARTS leaves every unrelated PR
+  # stuck forever on "Expected — waiting for status".
+  # So this job always starts (its preflight is one `git diff`) and decides for
+  # itself whether to do the expensive part. Skipping is never silent: every
+  # outcome prints a ::notice:: and a job-summary line saying exactly why. The
+  # path list in the preflight step is the single source of truth — it exists
+  # nowhere else in this repo.
+  agent-evals:
+    runs-on: ubuntu-latest
+    # Budget, reasoned rather than measured: 6 active scenarios carry 8 scripted
+    # user turns, each scenario retries once (`attempts: 2` in every file), and
+    # the runner caps a single turn at 60s (TURN_TIMEOUT_MS in eval-runner.ts).
+    # Worst case is therefore 8 x 2 x 60s = 16 min of turns, plus ~5 min for
+    # npm ci + migrate + boot. 25 leaves headroom for a slow-model day while
+    # still killing a wedged run instead of burning an hour of Actions time.
+    timeout-minutes: 25
+
+    services:
+      # Same images and healthchecks as the test job above. NO mailpit: the
+      # fixture's only workflow (order-shipped) is an in-app step, so nothing
+      # in this job opens an SMTP connection.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: notifications
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5433/notifications
+      REDIS_HOST: localhost
+      REDIS_PORT: '6379'
+      OTEL_ENABLED: 'false'
+      CLICKHOUSE_ENABLED: 'false'
+      # The fixture's tools point at the repo's demo backend on localhost, and
+      # localhost is SSRF-blocked by default (src/core/safe-url.ts). BOTH
+      # processes need the exemption: the API validates the URL when the seed
+      # registers the tool (400 "points at internal infrastructure" without
+      # it), and the WORKER re-checks at connect time on every tool call via
+      # safeDispatcher(). Job-level env covers both.
+      OUTBOUND_URL_ALLOW: localhost,127.0.0.1
+      ACME_TOOLS_URL: http://localhost:4400
+      # `secrets.*` is not readable from a job-level `if:`, so the secret is
+      # mapped to env ONCE here and the preflight step tests the env var
+      # (env-indirection). Empty on forks and before the secret is configured.
+      EVAL_LLM_API_KEY: ${{ secrets.EVAL_LLM_API_KEY }}
+      # The fixture model (glm-5) is a z.ai model: a bare Anthropic endpoint
+      # would 404/401 on every turn. Overridable with a repo VARIABLE for a
+      # different provider; the key itself always stays a secret.
+      EVAL_LLM_BASE_URL: ${{ vars.EVAL_LLM_BASE_URL || 'https://api.z.ai/api/anthropic' }}
+      # EVAL_LLM_MODEL is deliberately NOT set: the seed falls back to the
+      # fixture's own `model`, so the file stays the single source of truth for
+      # what is under test. This var pins only the JUDGE (eval-judge-env.ts
+      # requires a model alongside a key, and refuses to invent one). Same
+      # model as the fixture = the A2 self-judge posture, and it is the one
+      # model id the CI key is already proven to be able to call.
+      ASYNCIFY_JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL || 'glm-5' }}
+      # Unique per run, so eval subscriber ids never collide with a rerun.
+      ASYNCIFY_EVAL_NONCE: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      LOG_DIR: ci-logs
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The preflight diff needs the base commit, not just the tip.
+          fetch-depth: 0
+
+      # Decides ONE thing — does the expensive part run? — and says why out
+      # loud. `run=false` is always accompanied by a ::notice::, so a green
+      # agent-evals check can always be explained from the log alone.
+      - name: Preflight — relevant paths, and is the LLM secret configured?
+        id: preflight
+        env:
+          # SINGLE SOURCE OF TRUTH for the gate's trigger paths. These are git
+          # pathspecs with :(glob) magic, so `*` behaves like a shell glob and
+          # never crosses a `/`, and `**` does.
+          EVAL_GATE_PATHS: |
+            :(glob)evals/**
+            :(glob)src/core/managed-brain*
+            :(glob)src/core/eval-*
+            :(glob)scripts/eval.ts
+            :(glob)scripts/eval-seed.ts
+            :(glob)scripts/acme-tools/**
+            :(glob).github/workflows/ci.yml
+          EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          run=true
+          why=""
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            why="manual run (workflow_dispatch) — path filter not applied"
+          else
+            if [ "$EVENT" = "pull_request" ]; then
+              base="${PR_BASE_SHA:-}"; head="${PR_HEAD_SHA:-}"
+            else
+              base="${PUSH_BEFORE:-}"; head="${PUSH_AFTER:-}"
+            fi
+
+            if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              # New branch, force push, or a squashed base we cannot resolve.
+              # Fail TOWARDS running: never skip the gate on a guess.
+              why="base commit '${base}' is not resolvable (new branch or force push) — running the gate rather than guessing"
+            else
+              # Patterns are git pathspecs; stop bash from globbing them first.
+              set -f
+              changed="$(git diff --name-only "$base" "$head" -- $EVAL_GATE_PATHS)"
+              set +f
+              if [ -n "$changed" ]; then
+                why="agent-behaviour paths changed: $(echo "$changed" | tr '\n' ' ')"
+              else
+                run=false
+                why="no agent-behaviour paths changed between ${base:0:12} and ${head:0:12}"
+              fi
+            fi
+          fi
+
+          # Env-indirection: this is `secrets.EVAL_LLM_API_KEY` mapped to job
+          # env above. Missing secret must never be red (forks cannot have it)
+          # and must never be quietly green either.
+          if [ "$run" = true ] && [ -z "${EVAL_LLM_API_KEY:-}" ]; then
+            run=false
+            echo "::notice::agent-evals skipped: EVAL_LLM_API_KEY secret not set"
+            why="EVAL_LLM_API_KEY secret not set (fork PR, or not yet configured in Settings → Secrets → Actions)"
+          elif [ "$run" = true ]; then
+            echo "::notice::agent-evals running: $why"
+          else
+            echo "::notice::agent-evals skipped: $why"
+          fi
+
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "### agent-evals: $([ "$run" = true ] && echo RUNNING || echo SKIPPED)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$why" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        if: steps.preflight.outputs.run == 'true'
+        with:
+          # Same floor as the test job (firebase-admin needs node >= 22).
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install (root + workspaces)
+        if: steps.preflight.outputs.run == 'true'
+        run: npm ci
+
+      - name: Migrate schema
+        if: steps.preflight.outputs.run == 'true'
+        run: npm run migrate
+
+      # Every background process writes to a file so its output survives into
+      # the failure artifact — a step's own console output does not.
+      - name: Start the demo tool backend, API and worker
+        if: steps.preflight.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$LOG_DIR"
+          nohup node scripts/acme-tools/serve.mjs > "$LOG_DIR/acme-tools.log" 2>&1 &
+          nohup npm run api > "$LOG_DIR/api.log" 2>&1 &
+          nohup npm run worker > "$LOG_DIR/worker.log" 2>&1 &
+          echo "started acme-tools (:4400), api (:3000), worker (:3002 health)"
+
+      # Readiness is POLLED, never slept on: tsx boot time varies with runner
+      # load, and a fixed sleep is either wasted time or a flaky gate. Each
+      # endpoint proves something different — the API's /health touches
+      # Postgres AND Redis, the worker's says its queue fleet is registered.
+      # (The demo tool backend answers every path with the same canned refund
+      # payload, so /health there is a liveness probe, nothing more.)
+      - name: Wait for the stack to be ready
+        if: steps.preflight.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          wait_for() {
+            name="$1"; url="$2"; tries="$3"
+            for i in $(seq 1 "$tries"); do
+              if curl -fsS --max-time 5 "$url" > /dev/null 2>&1; then
+                echo "$name ready after ${i}s"
+                return 0
+              fi
+              sleep 1
+            done
+            echo "::error::$name never came up at $url after ${tries}s"
+            return 1
+          }
+          if ! wait_for "acme-tools" "http://localhost:4400/health" 30 \
+            || ! wait_for "api" "http://localhost:3000/health" 120 \
+            || ! wait_for "worker" "http://localhost:3002/health" 120; then
+            echo '--- acme-tools.log ---'; tail -n 50 "$LOG_DIR/acme-tools.log" || true
+            echo '--- api.log ---';        tail -n 80 "$LOG_DIR/api.log"        || true
+            echo '--- worker.log ---';     tail -n 80 "$LOG_DIR/worker.log"     || true
+            exit 1
+          fi
+          curl -fsS http://localhost:3000/health; echo
+
+      # Creates the CI tenant + fixture agent + its tools through the real API
+      # (no direct DB writes). Its human progress goes to stderr and is visible
+      # right here; stdout carries only `KEY=value` lines, one of which is the
+      # tenant api key the eval step drives with.
+      - name: Seed the CI tenant and fixture agent
+        if: steps.preflight.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          npm run --silent eval:seed > "$LOG_DIR/seed.env"
+          key="$(sed -n 's/^ASYNCIFY_API_KEY=//p' "$LOG_DIR/seed.env")"
+          agent="$(sed -n 's/^ASYNCIFY_EVAL_AGENT=//p' "$LOG_DIR/seed.env")"
+          if [ -z "$key" ]; then
+            echo "::error::eval:seed printed no ASYNCIFY_API_KEY line — its stdout was:"
+            cat "$LOG_DIR/seed.env"
+            exit 1
+          fi
+          # Throwaway key on a throwaway tenant, but there is no reason for it
+          # to be readable in a public log.
+          echo "::add-mask::$key"
+          echo "ASYNCIFY_API_KEY=$key" >> "$GITHUB_ENV"
+          # The file goes into the failure artifact; the key does not need to.
+          sed -i 's/^ASYNCIFY_API_KEY=.*/ASYNCIFY_API_KEY=<redacted>/' "$LOG_DIR/seed.env"
+          echo "seeded agent '$agent'; api key captured"
+
+      # THE GATE. Note (slice A): a green seed does NOT prove the LLM key is
+      # valid — the API stores it sealed and never calls the provider, so an
+      # expired or wrong-provider key seeds perfectly and dies on turn 1. This
+      # is the step where that surfaces, so its whole output is captured and
+      # echoed; `pipefail` keeps `tee` from swallowing the failure exit code.
+      - name: Run the eval gate
+        id: gate
+        if: steps.preflight.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          npm run eval 2>&1 | tee "$LOG_DIR/eval.log"
+
+      # Scoped to the gate step itself, so a failed `npm ci` never gets
+      # explained as a credentials problem.
+      - name: Explain a failed gate
+        if: failure() && steps.gate.conclusion == 'failure'
+        run: |
+          echo "::error::agent-evals failed — scenario detail (and judge rationales) are in the eval output above and in the agent-evals-logs artifact."
+          echo "If EVERY turn failed with an auth/404 error, suspect the credentials rather than the agent:"
+          echo "  * EVAL_LLM_API_KEY (repo secret) expired or belongs to another provider"
+          echo "  * EVAL_LLM_BASE_URL currently '${EVAL_LLM_BASE_URL}' — must match the provider that serves the fixture's model"
+
+      - name: Upload logs and eval output
+        if: failure() && steps.preflight.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-evals-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.LOG_DIR }}/
+          if-no-files-found: warn
+          retention-days: 7
