@@ -4,12 +4,17 @@
 // and paths as the former EvalsModal.
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../../lib/api';
 import { Button, Field, Input, Modal, Mono, Skeleton } from '../../ui';
 import { timeAgo } from '../Activity';
 import { Toggle, useEvalRuns } from './shared';
 import {
   DEFAULT_SCENARIO,
+  judgeChipLabel,
+  judgeChipTitle,
+  judgeDot,
+  judgedSpansTurns,
   parseScenario,
   runDot,
   runSummary,
@@ -17,7 +22,79 @@ import {
   type Agent,
   type AgentEval,
   type EvalRun,
+  type JudgeVerdictRecord,
 } from './types';
+
+/**
+ * A2: the LLM-judged dimensions of one scenario result. One chip per record —
+ * dot carries the verdict (the panel's existing pass/fail idiom), and the
+ * rationales stay folded away behind the same chevron the conversation trace
+ * uses, because a scenario can carry several ~160-char rationales.
+ * Renders nothing for pre-A2 results, which have no `judged`.
+ */
+function JudgedBlock({ judged }: { judged: JudgeVerdictRecord[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const showTurn = judgedSpansTurns(judged);
+
+  return (
+    <div className="mt-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {judged.map((rec) => (
+          <span
+            key={`${rec.turn}-${rec.dim}`}
+            title={judgeChipTitle(rec)}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] ${
+              rec.verdict === 'skipped'
+                ? 'border-dashed border-bd text-t3'
+                : rec.verdict === 'fail'
+                  ? 'border-bd text-err'
+                  : 'border-bd text-t2'
+            }`}
+          >
+            <span
+              aria-hidden
+              className="inline-block h-[6px] w-[6px] shrink-0 rounded-full"
+              style={{ background: judgeDot(rec.verdict) }}
+            />
+            {judgeChipLabel(rec, showTurn)}
+          </span>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        className="mt-1 inline-flex items-center gap-1 text-t3 transition-colors hover:text-t1"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0" aria-hidden />
+        )}
+        <Mono className="text-[11px] text-t3">
+          {expanded ? 'hide why' : `why — ${judged.length} judged`}
+        </Mono>
+      </button>
+
+      {expanded && (
+        <div className="mt-1.5 space-y-1 border-l border-bd pl-2.5">
+          {judged.map((rec) => (
+            <div key={`${rec.turn}-${rec.dim}`} className="text-[11px]">
+              <Mono className="text-t3">
+                turn {rec.turn} · {rec.dim} · {rec.verdict}
+                {rec.score != null && ` · ${rec.score}/5`}
+              </Mono>
+              <Mono className="mt-0.5 block whitespace-pre-wrap break-words text-t3">
+                {rec.rationale}
+              </Mono>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Create or edit one eval scenario. Name + JSON scenario + enabled. */
 function EvalFormModal({
@@ -90,6 +167,15 @@ function EvalFormModal({
           <span className="mt-1 block text-[11px] text-t3">
             A JSON object with a <Mono>turns</Mono> array — user turns and tool/reply expectations,
             same format as the eval files.
+          </span>
+          <span className="mt-1 block text-[11px] text-t3">
+            An <Mono>expect</Mono> may also carry a <Mono>judge</Mono> block, graded by this agent's
+            own model after its plain assertions pass:{' '}
+            <Mono>{'groundedness: true | { min }'}</Mono>, <Mono>{'tone: { rubric, min }'}</Mono>{' '}
+            (the rubric is the voice to grade against), and{' '}
+            <Mono>refusal: "must_refuse" | "must_answer"</Mono>. Scores run 1–5 and{' '}
+            <Mono>min</Mono> defaults to 4. Judged dimensions only run here — a CLI run marks them
+            skipped.
           </span>
         </div>
 
@@ -281,6 +367,7 @@ export function EvalsPanel({ agent }: { agent: Agent }) {
                         {r.failures.join('\n')}
                       </Mono>
                     )}
+                    {r.judged && r.judged.length > 0 && <JudgedBlock judged={r.judged} />}
                   </div>
                 </li>
               ))}

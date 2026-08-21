@@ -321,6 +321,44 @@ export function runDot(run: EvalRun): string {
   return 'var(--err)';
 }
 
+/**
+ * Judge verdict dot colour — the only place judge colour is minted, same
+ * doctrine as runDot. `skipped` deliberately borrows the muted t3 used by the
+ * `skipped` status badge: it is neither a pass nor a failure.
+ */
+export function judgeDot(verdict: JudgeVerdictRecord['verdict']): string {
+  if (verdict === 'pass') return 'var(--ok)';
+  if (verdict === 'fail') return 'var(--err)';
+  return 'var(--t3)';
+}
+
+/** Why a dimension can come back unjudged — shown on every skipped chip. */
+export const JUDGE_SKIP_HINT =
+  'Not judged: this run had no judge available (a CLI run, or an agent whose LLM credentials could not be opened). Neither a pass nor a failure.';
+
+/** True when a scenario's judged records span more than one turn. */
+export function judgedSpansTurns(judged: JudgeVerdictRecord[]): boolean {
+  return judged.some((r) => r.turn !== judged[0].turn);
+}
+
+/**
+ * Chip text: the dimension, its score when the dimension is a scored one, and
+ * the turn only when the scenario judged more than one (keeps the common
+ * single-turn case short — the turn is always in the tooltip regardless).
+ */
+export function judgeChipLabel(rec: JudgeVerdictRecord, showTurn: boolean): string {
+  const head = showTurn ? `turn ${rec.turn} · ${rec.dim}` : rec.dim;
+  if (rec.verdict === 'skipped') return `${head} skipped`;
+  return rec.score != null ? `${head} ${rec.score}/5` : head;
+}
+
+/** Tooltip: turn + verdict + score always, then the rationale (or the skip hint). */
+export function judgeChipTitle(rec: JudgeVerdictRecord): string {
+  const head =
+    `turn ${rec.turn} · ${rec.dim} · ${rec.verdict}` + (rec.score != null ? ` · ${rec.score}/5` : '');
+  return `${head}\n${rec.verdict === 'skipped' ? JUDGE_SKIP_HINT : rec.rationale}`;
+}
+
 /** The one-line advisory shown next to Save; `ok:false` means show a warn dot. */
 export function runAdvisory(
   run: EvalRun,
