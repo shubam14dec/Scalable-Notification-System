@@ -26,6 +26,16 @@
 import { z } from 'zod';
 import { pool } from '../db/pool';
 import { conversationTranscript, type ConversationMessage } from '../db/conversations.repo';
+import {
+  isScored,
+  judgeReply,
+  JudgeError,
+  minScoreFor,
+  requestedDimensions,
+  type JudgeClient,
+  type JudgeDimension,
+  type JudgeVerdict,
+} from './eval-judge';
 
 const TURN_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 1_500;
@@ -45,6 +55,20 @@ export interface Expect {
   replyContainsAny?: string[];
   replyNotContains?: string;
   pendingApproval?: string;
+  /**
+   * LLM-GRADED expectations (Phase A2) — the dimensions a tool assertion cannot
+   * express. Additive and optional: an expect without `judge` behaves exactly as
+   * it did before, and a judged expect still has to pass its other matchers
+   * first (the judge only runs once the deterministic assertions hold).
+   *
+   * `groundedness: true` is shorthand for the default bar; scores are 1-5 and
+   * default to a minimum of 4. See core/eval-judge.ts.
+   */
+  judge?: {
+    groundedness?: true | { min?: number };
+    tone?: { rubric?: string; min?: number };
+    refusal?: 'must_refuse' | 'must_answer';
+  };
 }
 export type Turn = { user: string } | { expect: Expect };
 export interface Scenario {
@@ -63,6 +87,32 @@ export interface Scenario {
  * /v1/agents/:id/evals) and the runner share one source of truth: a scenario is
  * an object with a non-empty `turns` array of `{user}` | `{expect}` steps.
  */
+/** Judge scores are 1-5; anything outside that is an author mistake, not a bar. */
+const MinScoreSchema = z.number().int().min(1).max(5);
+
+/**
+ * The `expect.judge` block is validated STRICTLY — unknown dimension keys are
+ * rejected rather than silently ignored, because a typo'd dimension ("grounded"
+ * for "groundedness") would otherwise look like a passing eval that never ran a
+ * judge. Everything ELSE inside `expect` stays permissive (`catchall`), which is
+ * what keeps every pre-A2 scenario validating byte-for-byte as before.
+ */
+const JudgeSpecSchema = z
+  .object({
+    groundedness: z
+      .union([z.literal(true), z.object({ min: MinScoreSchema.optional() }).strict()])
+      .optional(),
+    tone: z
+      .object({ rubric: z.string().min(1).max(2048).optional(), min: MinScoreSchema.optional() })
+      .strict()
+      .optional(),
+    refusal: z.enum(['must_refuse', 'must_answer']).optional(),
+  })
+  .strict()
+  .refine((j) => j.groundedness !== undefined || j.tone !== undefined || j.refusal !== undefined, {
+    message: 'judge needs at least one dimension (groundedness, tone, refusal)',
+  });
+
 export const ScenarioSchema = z.object({
   agent: z.string().min(1).max(255).optional(),
   description: z.string().max(4096).optional(),
@@ -73,7 +123,9 @@ export const ScenarioSchema = z.object({
     .array(
       z.union([
         z.object({ user: z.string().min(1).max(8192) }),
-        z.object({ expect: z.record(z.string(), z.unknown()) }),
+        z.object({
+          expect: z.object({ judge: JudgeSpecSchema.optional() }).catchall(z.unknown()),
+        }),
       ]),
     )
     .min(1)
@@ -97,6 +149,12 @@ interface ToolCall {
 interface TurnSnapshot {
   calls: ToolCall[];
   lastReply: string | null;
+  /**
+   * Conversation rows up to AND INCLUDING the reply under judgment — the judge's
+   * evidence window (A2). Empty when the turn produced no reply. Assertions never
+   * read it, so a non-judged run pays only the slice.
+   */
+  transcript: ConversationMessage[];
 }
 
 function rawOf(m: ConversationMessage): Record<string, unknown> {
@@ -169,6 +227,7 @@ function presentationCalls(m: ConversationMessage): ToolCall[] {
 function traceForTurn(
   turnRows: ConversationMessage[],
   metaDelta: Record<string, unknown>,
+  transcript: ConversationMessage[],
 ): TurnSnapshot {
   const calls: ToolCall[] = [];
   let lastReply: string | null = null;
@@ -185,7 +244,26 @@ function traceForTurn(
   for (const [key, value] of Object.entries(metaDelta)) {
     calls.push({ tool: 'set_metadata', input: { key, value }, result: `saved ${key}` });
   }
-  return { calls, lastReply };
+  return { calls, lastReply, transcript };
+}
+
+/**
+ * The judge's evidence window: every row from the start of the conversation
+ * through the reply this turn produced. Anything AFTER the reply (trailing
+ * bridge breadcrumbs) is excluded — a claim cannot be grounded in evidence that
+ * did not exist when the reply was written.
+ */
+function transcriptThroughReply(
+  rows: ConversationMessage[],
+  inboundIdx: number,
+): ConversationMessage[] {
+  for (let i = rows.length - 1; i > inboundIdx; i -= 1) {
+    const m = rows[i];
+    if (m && m.role === 'agent' && !m.deleted_at && !PROGRESS_PREFIX.test(m.content)) {
+      return rows.slice(0, i + 1);
+    }
+  }
+  return [];
 }
 
 // ---- expect matchers --------------------------------------------------------
@@ -239,7 +317,39 @@ function evalExpect(e: Expect, snap: TurnSnapshot): string | null {
       ? `expected reply NOT to contain "${e.replyNotContains}"`
       : null;
   }
+  // A judge-only expect is not empty — the judge IS its assertion. It is
+  // evaluated separately (runAttempt), because it needs a model call.
+  if (e.judge !== undefined) return null;
   return 'empty expect (no matcher set)';
+}
+
+/** How much of a judge's rationale rides in the (human-read) failure line. */
+const RATIONALE_MAX = 160;
+
+function clipRationale(s: string): string {
+  return s.length > RATIONALE_MAX ? `${s.slice(0, RATIONALE_MAX)}…` : s;
+}
+
+/**
+ * The DETERMINISTIC half of judging: the model returns a score and a rationale,
+ * and this function — not the model — decides pass/fail. Scored dimensions fail
+ * iff `score < min` (the judge's own verdict field is advisory there, so the bar
+ * is always the number the scenario author wrote); refusal fails iff the judge
+ * says the reply did not meet the stated requirement.
+ *
+ * Returns the failure line, or null when the dimension passed.
+ */
+function judgeFailureLine(spec: NonNullable<Expect['judge']>, v: JudgeVerdict): string | null {
+  if (isScored(v.dim)) {
+    const min = minScoreFor(spec, v.dim);
+    const score = v.score ?? 0;
+    if (score >= min) return null;
+    return `judge.${v.dim}: ${score}/5 < ${min} — ${clipRationale(v.rationale)}`;
+  }
+  if (v.verdict === 'fail') {
+    return `judge.refusal: expected ${spec.refusal} — ${clipRationale(v.rationale)}`;
+  }
+  return null;
 }
 
 function describeExpect(e: Expect): string {
@@ -250,6 +360,7 @@ function describeExpect(e: Expect): string {
   if (e.replyContains !== undefined) return `replyContains "${e.replyContains}"`;
   if (e.replyContainsAny !== undefined) return `replyContainsAny ${JSON.stringify(e.replyContainsAny)}`;
   if (e.replyNotContains !== undefined) return `replyNotContains "${e.replyNotContains}"`;
+  if (e.judge !== undefined) return `judge ${requestedDimensions(e.judge).join('+')}`;
   return 'expect';
 }
 
@@ -331,10 +442,27 @@ export interface RunnerDeps {
   metadata?: (conversationId: string) => Promise<Record<string, unknown>>;
 }
 
+/**
+ * Wiring for LLM-graded expects (A2). ABSENT is a first-class state, not an
+ * error: the CLI has no server-side LLM credentials, so a `npm run eval` run
+ * marks judged dimensions SKIPPED (visibly, in `judged[]`) and keeps grading the
+ * deterministic assertions. Only the worker, which can build the agent's own
+ * client, passes this.
+ */
+export interface JudgeRunOptions {
+  client: JudgeClient;
+  model: string;
+  /** The agent's persona, graded against for the tone dimension. */
+  systemPrompt: string | null;
+  /** Forwarded to the judge; pass null on models that reject sampling params. */
+  temperature?: number | null;
+}
+
 export interface RunScenariosOptions extends RunnerDeps {
   driver: EvalDriver;
   /** Unique per run — keeps subscriber ids distinct so history never bleeds. */
   nonce: string;
+  judge?: JudgeRunOptions;
 }
 
 async function defaultMetadata(conversationId: string): Promise<Record<string, unknown>> {
@@ -402,7 +530,7 @@ async function runTurn(
     const rows = await read.transcript(convId);
     const inboundIdx = rows.findIndex((m) => m.id === inboundRowId);
     const turnRows = inboundIdx >= 0 ? rows.slice(inboundIdx + 1) : [];
-    const snap = traceForTurn(turnRows, metadataDelta(metaBefore, await read.metadata(convId)));
+    const snap = traceForTurn(turnRows, metadataDelta(metaBefore, await read.metadata(convId)), []);
     throw new EvalError(
       `no agent reply within ${TURN_TIMEOUT_MS / 1000}s — is \`npm run worker\` running?\n        ${describeTrace(snap)}`,
     );
@@ -414,15 +542,34 @@ async function runTurn(
   const inboundIdx = rows.findIndex((m) => m.id === inboundRowId);
   const turnRows = inboundIdx >= 0 ? rows.slice(inboundIdx + 1) : [];
   const metaAfter = await read.metadata(convId);
-  const snap = traceForTurn(turnRows, metadataDelta(metaBefore, metaAfter));
+  const snap = traceForTurn(
+    turnRows,
+    metadataDelta(metaBefore, metaAfter),
+    transcriptThroughReply(rows, inboundIdx),
+  );
   return { conversationId: convId, snap };
 }
 
 // ---- attempt / scenario runners ---------------------------------------------
 
+/**
+ * One dimension's outcome on one turn — ADDITIVE detail (scores + rationales)
+ * that rides alongside the frozen `failures[]`, never inside it.
+ */
+export interface JudgeVerdictRecord {
+  turn: number;
+  dim: JudgeDimension;
+  verdict: 'pass' | 'fail' | 'skipped';
+  score?: number;
+  rationale: string;
+}
+
+const SKIP_RATIONALE = 'judge requires server-side run';
+
 interface AttemptResult {
   passed: boolean;
   failure?: { turn: number; expect: string; reason: string; trace: string };
+  judged: JudgeVerdictRecord[];
 }
 
 async function runAttempt(
@@ -430,10 +577,12 @@ async function runAttempt(
   subscriberId: string,
   driver: EvalDriver,
   read: Required<RunnerDeps>,
+  judge?: JudgeRunOptions,
 ): Promise<AttemptResult> {
   let conversationId: string | null = null;
   let lastSnap: TurnSnapshot | null = null;
   let turnIndex = 0;
+  const judged: JudgeVerdictRecord[] = [];
   for (const turn of sc.turns) {
     if ('user' in turn) {
       turnIndex += 1;
@@ -444,6 +593,7 @@ async function runAttempt(
       if (!lastSnap) {
         return {
           passed: false,
+          judged,
           failure: { turn: turnIndex, expect: describeExpect(turn.expect), reason: 'expect before any user turn', trace: '(none)' },
         };
       }
@@ -451,12 +601,64 @@ async function runAttempt(
       if (reason) {
         return {
           passed: false,
+          judged,
           failure: { turn: turnIndex, expect: describeExpect(turn.expect), reason, trace: describeTrace(lastSnap) },
+        };
+      }
+      const spec = turn.expect.judge;
+      if (!spec) continue;
+
+      // No judge client (the CLI): record a visible skip and keep going. A
+      // dimension that could not be graded must never read as a silent pass,
+      // and must never block the assertions that DID run.
+      if (!judge) {
+        for (const dim of requestedDimensions(spec)) {
+          judged.push({ turn: turnIndex, dim, verdict: 'skipped', rationale: SKIP_RATIONALE });
+        }
+        continue;
+      }
+      if (lastSnap.lastReply === null) {
+        return {
+          passed: false,
+          judged,
+          failure: { turn: turnIndex, expect: describeExpect(turn.expect), reason: 'judged expect but the turn produced no reply', trace: describeTrace(lastSnap) },
+        };
+      }
+
+      const verdicts = await judgeReply({
+        client: judge.client,
+        model: judge.model,
+        transcript: lastSnap.transcript,
+        reply: lastSnap.lastReply,
+        systemPrompt: judge.systemPrompt,
+        spec,
+        ...(judge.temperature === undefined ? {} : { temperature: judge.temperature }),
+      });
+
+      const judgeFailures: string[] = [];
+      for (const v of verdicts) {
+        const line = judgeFailureLine(spec, v);
+        judged.push({
+          turn: turnIndex,
+          dim: v.dim,
+          verdict: line ? 'fail' : 'pass',
+          ...(v.score === undefined ? {} : { score: v.score }),
+          rationale: v.rationale,
+        });
+        if (line) judgeFailures.push(line);
+      }
+      if (judgeFailures.length > 0) {
+        // Judge failures are ordinary scenario failures: same failure shape, so
+        // they consume the same attempts/retry budget as an assertion miss.
+        return {
+          passed: false,
+          judged,
+          failure: { turn: turnIndex, expect: describeExpect(turn.expect), reason: judgeFailures.join('; '), trace: describeTrace(lastSnap) },
         };
       }
     }
   }
-  return { passed: true };
+  return { passed: true, judged };
 }
 
 /**
@@ -474,6 +676,27 @@ export interface EvalScenarioResult {
   status: 'pass' | 'fail' | 'skip' | 'error';
   attemptsTotal: number;
   detail?: string;
+  /**
+   * A2, ADDITIVE: per-dimension judge scores and rationales for the attempt that
+   * decided the verdict. Present ONLY when the scenario used `expect.judge` — a
+   * scenario without it serializes exactly as it did before A2.
+   */
+  judged?: JudgeVerdictRecord[];
+}
+
+/**
+ * The additive keys a judged scenario carries. Returns `{}` when the scenario
+ * never used a judge, which is what keeps the frozen shape byte-identical.
+ */
+function judgeExtras(judged: JudgeVerdictRecord[]): { detail?: string; judged?: JudgeVerdictRecord[] } {
+  if (judged.length === 0) return {};
+  const skipped = judged.filter((j) => j.verdict === 'skipped');
+  return {
+    ...(skipped.length > 0
+      ? { detail: `judge skipped (${skipped.map((s) => s.dim).join(', ')}) — ${SKIP_RATIONALE}` }
+      : {}),
+    judged,
+  };
 }
 
 /** Run ONE scenario (with its retry budget). Never throws — infra failures come
@@ -492,31 +715,44 @@ export async function runScenario(
     return { name, passed: true, failures: [], attempts: 0, status: 'skip', attemptsTotal, detail: sc.comment ?? 'skipped' };
   }
   let lastFailure: AttemptResult['failure'];
+  let lastJudged: JudgeVerdictRecord[] = [];
   for (let attempt = 1; attempt <= attemptsTotal; attempt += 1) {
     const subscriberId = `eval-${name}-${options.nonce}-a${attempt}`;
     let result: AttemptResult;
     try {
-      result = await runAttempt(sc, subscriberId, options.driver, read);
+      result = await runAttempt(sc, subscriberId, options.driver, read, options.judge);
     } catch (err) {
-      if (err instanceof EvalError) {
+      // A judge that cannot be parsed (after its one re-ask) is infra, exactly
+      // like an unreachable worker — never a scenario "failure".
+      if (err instanceof EvalError || err instanceof JudgeError) {
+        const message = err instanceof JudgeError ? `judge unavailable — ${err.message}` : err.message;
         // A drive/infra error aborts the whole scenario — retrying attempts
         // against a down worker just wastes 60s each.
         return {
           name,
           passed: false,
-          failures: [err.message],
+          failures: [message],
           attempts: attempt,
           status: 'error',
           attemptsTotal,
-          detail: err.message,
+          detail: message,
         };
       }
       throw err;
     }
     if (result.passed) {
-      return { name, passed: true, failures: [], attempts: attempt, status: 'pass', attemptsTotal };
+      return {
+        name,
+        passed: true,
+        failures: [],
+        attempts: attempt,
+        status: 'pass',
+        attemptsTotal,
+        ...judgeExtras(result.judged),
+      };
     }
     lastFailure = result.failure;
+    lastJudged = result.judged;
   }
   const f = lastFailure!;
   const detail = `turn ${f.turn} · ${f.expect}\n        ${f.reason}\n        ${f.trace}`;
@@ -528,6 +764,7 @@ export async function runScenario(
     status: 'fail',
     attemptsTotal,
     detail,
+    ...(lastJudged.length > 0 ? { judged: lastJudged } : {}),
   };
 }
 
