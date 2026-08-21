@@ -6,8 +6,26 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-(nothing in flight — next pick pending user; last completed: landing page
-shipped to asyncify.org 2026-08-18, stack-day fixes 2026-08-19/21)
+### Phase A2 — LLM-judge dimensions (plan approved 2026-08-21)
+Judged expectations on evals: `expect.judge = {groundedness?{min}, tone?
+{rubric,min}, refusal? must_refuse|must_answer}`. ONE combined structured
+judge call per judged expect (temp 0, forced tool schema), client =
+buildManagedClient(agent) (agent's own LLM; self-judge bias documented,
+judgeModel override = future). Groundedness evidence = the search_knowledge
+/tool result text ALREADY in breadcrumbs. Failures merge into frozen
+failures[]; scores+rationales additive `judged[]`. CLI runs (no creds) mark
+judged expects skipped-visibly. Ladder: A2 → A3 CI gate → A5 canary → A6
+routing.
+- [ ] Slice A — core: core/eval-judge.ts, ScenarioSchema extension, runner
+      integration + failure merge, stub-judge unit tests (incl. transcript-
+      injection resistance + min-boundary matrix)
+- [ ] Slice B — processor+persistence: judgeClient in eval-run.processor,
+      additive judged[] through finishRun, consumer byte-compat verified
+- [ ] Slice C — dashboard: EvalsPanel dimension chips + rationale
+      expander + editor helper text
+- [ ] Slice D — docs+integration: AGENTS-GUIDE §10 judged section (self-
+      judge caveat, breadcrumb mechanism), example scenarios, pipeline
+      integration tests w/ scripted judge double
 
 ## BACKLOG — AGENTS TRACK (ranked; restructured to top 2026-08-21)
 
@@ -19,9 +37,14 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       .updated pathway, auto-fallback for non-SSE LLM endpoints.
       Pickup = read ~/.claude/plans/phase-streaming-replies-PARKED.md,
       launch the 4 slices.
-- [ ] A2. LLM-judge dimensions (groundedness / tone / refusals) — the
-      enforcement layer P23's honest-ceiling note points at; judged
-      evals alongside the existing tool-call assertions.
+- (IN PROGRESS above) A2. LLM-judge dimensions — see In progress.
+- [ ] A2b. LIVE judge supervisor (user's idea 2026-08-21): async judging
+      of PRODUCTION turns reusing A2's engine verbatim — per-agent
+      toggle (off / sampled % / knowledge-turns-only / all), reply sends
+      immediately, judge scores in background; bad verdict → flag
+      conversation + ops alert + optional auto-handoff (composes P26
+      handoff + P22 alerts + A10 alerting). Blocking-mode rejected
+      (2x cost, +2-4s every reply).
 - [ ] A3. CI eval gate — fail the build on eval regressions (needs A2
       for judged dimensions; tool-assertion gate can land first).
 - [ ] A4. Customer-facing pre-save eval runs — "3/12 scenarios
