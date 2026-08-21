@@ -133,7 +133,12 @@ architecture — we started where they're heading.
   Save button, navigation guard) and the **escape-key priority stack** —
   UX machinery worth copying wholesale.
 - **Eval harness for agent behavior** (LLM-judge + scripted mock shells)
-  — the mature version of our fabrication battle-tests; CI-able.
+  — ~~the mature version of our fabrication battle-tests~~ **built,
+  2026-08-21 (P22 + A2)**: tool-trace assertions + judged dimensions
+  (groundedness/tone/refusal, runner-owned pass/fail), driving REAL
+  turns through the production pipeline where theirs replays mock
+  tapes. Still worth copying from them: the CI wiring (our A3) and
+  mock-tape speed for pure-prompt iteration.
 
 ## 6. Honest scorecard
 
@@ -143,6 +148,9 @@ lanes; provider failover chains with circuit breakers (they have
 priority/primary + conditions, no breakers); one codebase a person can
 hold in their head. Our agent bridge protocol (sync reply batching, no
 reply URL) is simpler and has a smaller attack surface than theirs.
+Agent evals grade REAL driven turns — queue, worker, brain, tools —
+with an LLM judge whose score the runner (not the model) converts to
+pass/fail; their harness grades mock-shell replays.
 
 **Where they're structurally ahead:** step-chain execution (unlocks the
 whole deferred-action family), per-tenant fairness groups, cursor

@@ -52,6 +52,41 @@ cards = Phase 14, tool approvals, welcome messages, connect-button
 components = Phase 15). Platform-side tiers (inbox v2, preferences v2,
 workflow engine v2, env promotion) unchanged.
 
+## Addendum 2026-08-21 — judged evals shipped (Phase A2): the quality story is now a selling point
+
+The "agent evals harness" rows below flip from gap to strength. What we
+now have, and how to sell it honestly:
+
+- **Two grading layers, one harness.** Deterministic tool-trace
+  assertions ("refund_customer was called with amount=X" — because prose
+  lies) PLUS LLM-judged dimensions for what a trace can't see:
+  **groundedness** (did the reply invent facts the retrieved sources
+  never said), **tone** (does it hold the configured voice), **refusal**
+  (did it decline when it must / answer when it must). This is the
+  production question every agents buyer asks — "how do I know it won't
+  make things up after I edit the prompt?" — answered with a test suite,
+  not a demo.
+- **Real pipeline, not mock tapes.** Novu's harness replays scripted
+  mock-shell tapes; ours drives every scenario through the actual
+  product path — API → queue → worker → the agent's real brain and
+  tools — so a passing eval certifies the system a customer will hit,
+  not a simulation of it.
+- **The model grades; the code judges.** The judge returns a 1–5 score
+  + rationale via one forced structured call; the RUNNER compares it to
+  the bar the scenario author wrote. No "the LLM said it's fine."
+- **A dimension that couldn't be graded says so** — `skipped`, rendered
+  distinctly in dashboard and CLI, never a silent pass.
+- **Honest caveat we volunteer:** the judge runs on the agent's own
+  model/creds (zero extra setup, no second key to rotate); self-judge
+  bias is documented, a `judgeModel` override is planned.
+- **Where it leads (the ladder):** judge → CI eval gate (A3) → prompt
+  canary comparison (A5) → model routing (A6). Each rung needs the one
+  before it — a router without a judge is a quality regression disguised
+  as a cost win. Novu has none of the ladder above the harness.
+
+Sales framing: "prompt edits are deploys — and we're the platform that
+treats them that way."
+
 ---
 
 ## 1. Agents (our flagship — novu calls theirs "Novu Connect", private beta)
@@ -73,7 +108,7 @@ workflow engine v2, env promotion) unchanged.
 | **AI-SDK / LangChain adapters** | Plug a Vercel-AI-SDK or LangChain app in as the bridge brain | plain SDK handler | **B** — cheap DX win for OUR agent SDK (adapter = ~1 file) |
 | **Open vs restricted subscriber access** | `restricted` rejects unknown senders; `open` auto-provisions | we are always-open | **B** — one enum + gate; enterprise checkbox |
 | **Conversation billing (activation episodes)** | Active-conversation counting per billing window, limits + overage | usage tokens per turn only | **C** — needs a billing system first |
-| **Agent evals harness** | Suite-based behavioral evals in CI | manual battle-tests | **B** — we could eval the fabrication defenses in CI |
+| **Agent evals harness** | Suite-based behavioral evals in CI | **we have it, deeper** (P22 harness + A2 LLM-judge): tool-trace assertions AND judged dimensions (groundedness/tone/refusal, 1–5 vs an author-set bar), driven through the REAL pipeline, not mock shells | Closed 2026-08-21; remaining delta = CI wiring (**A3**) |
 | **Agent env sync / runtime migration** | Promote agent defs between environments; bridge↔managed migration API | manual re-create | **C** (fold into env promotion, §4) |
 | **AI-generated agent config** | LLM synthesizes name/prompt/tools from a description | none | **C** (demo sugar) |
 | **Inbound-turn queueing** | Turns arriving mid-run are parked and replayed in order | BullMQ serializes per-conversation job; broadly equivalent | Not a gap (verify ordering under concurrency someday) |
@@ -175,7 +210,7 @@ New findings beyond round 1:
 | **`asyncify dev` tunnel command** | their `novu dev`: managed tunnel + watchdog (sleep-drift detect) + half-open probe + auto devBridgeUrl registration — would erase our cloudflared rotation drill | **B** — our recurring pain, their solved problem |
 | **Payload schema validation on trigger** | per-workflow JSON Schema, AJV compiled + LRU-cached by schema hash, opt-in `validatePayload` | B |
 | **Provider catalog machinery** | catalog-as-data (IProviderConfig[] drives UI + typed credentials), Nx generator scaffolding new providers, canonical status enums, generic `*-webhook` escape-hatch provider per channel | B — the enabler for cheap provider breadth |
-| **Agent evals harness** | LLM-judge + deterministic graders + scripted mock-shell tapes, run in CI | B (we battle-test manually; this CI-fies it) |
+| **Agent evals harness** | LLM-judge + deterministic graders + scripted mock-shell tapes, run in CI | **CLOSED 2026-08-21** (P22 harness + A2 judge; see §1 and the addendum) — ours grades REAL driven turns where theirs replays mock tapes; CI gate is the last delta (A3) |
 | **Streaming adaptation** | post-then-edit-on-interval where editable; buffer-and-post-once on email/WhatsApp | folds into streaming backlog item |
 | **Notification container concept** | trigger×subscriber = one "notification" row holding jobs/messages/status — cleaner billing + activity grouping than per-message | note for engine v2 |
 

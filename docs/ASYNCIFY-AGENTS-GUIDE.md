@@ -895,7 +895,7 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 | Handoff | `handoff_to_human` built-in; live "waiting for human" queue + operator reply box; teammate label to the customer; attributed summary on handback; reused `approvals` ops audience |
 | Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker |
 | Notifications | workflows/digests/delays from agent tools, proactive pushes, resolve webhooks, approval pings |
-| Quality | eval harness with tool-trace assertions; anti-fabrication transcripts |
+| Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); anti-fabrication transcripts |
 | Ops | connections re-pointable with history; `asyncify dev` local loop |
 
 *Deep dives: `docs/AGENT-TOOLS.md` (tools, endpoint contract, approvals,

@@ -213,7 +213,15 @@ Managed agents can also call **custom tools** — your own HTTPS endpoints,
 registered per agent (signed calls, optional **human approval** that pauses on
 the dashboard before a tool runs) — and you can test the whole thing with a
 prompt **eval harness** (`npm run eval`) that asserts tool-call traces, not
-prose. See [docs/AGENT-TOOLS.md](docs/AGENT-TOOLS.md).
+prose. For what a trace can't see, an expect can add **LLM-judged
+dimensions** — groundedness (no facts the retrieved sources never said),
+tone (holds your configured voice), refusal (declines when it must) —
+scored 1–5 against a bar *you* set: the model grades, the runner decides
+pass/fail. Every scenario drives the real pipeline (queue → worker →
+brain → tools), so a green suite certifies the system your customers
+actually hit. Prompt edits are deploys; this is their CI. See
+[docs/AGENT-TOOLS.md](docs/AGENT-TOOLS.md) and
+[docs/ASYNCIFY-AGENTS-GUIDE.md](docs/ASYNCIFY-AGENTS-GUIDE.md) §10.
 
 **The house rule for managed-agent prompts — explicit instruction beats
 implied judgment.** Especially on smaller/compat models, a behavior you
