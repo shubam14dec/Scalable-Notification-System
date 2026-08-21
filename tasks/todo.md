@@ -4,8 +4,123 @@ Per the asyncify-engineering skill: plans land here as checkable items
 before implementation; items get checked off as they complete; finished
 plans get a short review section, then move to Done.
 
-## Production-grade agents roadmap (agreed 2026-07-21, ranked; plans
-## need user approval per phase)
+## In progress
+
+(nothing in flight — next pick pending user; last completed: landing page
+shipped to asyncify.org 2026-08-18, stack-day fixes 2026-08-19/21)
+
+## BACKLOG — AGENTS TRACK (ranked; restructured to top 2026-08-21)
+
+The quality ladder below is a DEPENDENCY CHAIN (documented in
+docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
+
+- [ ] A1. Streaming managed replies — PLAN-READY, ~1 day, cheapest big
+      win. Widget-only SSE, snapshot-publishing over the existing
+      .updated pathway, auto-fallback for non-SSE LLM endpoints.
+      Pickup = read ~/.claude/plans/phase-streaming-replies-PARKED.md,
+      launch the 4 slices.
+- [ ] A2. LLM-judge dimensions (groundedness / tone / refusals) — the
+      enforcement layer P23's honest-ceiling note points at; judged
+      evals alongside the existing tool-call assertions.
+- [ ] A3. CI eval gate — fail the build on eval regressions (needs A2
+      for judged dimensions; tool-assertion gate can land first).
+- [ ] A4. Customer-facing pre-save eval runs — "3/12 scenarios
+      regressed" before a prompt edit saves; one-click
+      prod-conversation → eval-case.
+- [ ] A5. Prompt versioning + canary — template-versioning pattern on
+      agent prompts; canary = % of turns on the new prompt with judged
+      comparison (needs A2/A3 to judge the canary).
+- [ ] A6. Model routing — cheap turns to a small model, escalate on
+      reasoning/tools. DELIBERATELY BLOCKED on A3 (guide §9: a router
+      that quietly sends hard turns to a weak model is a quality
+      regression disguised as a cost win; the gate must prove the small
+      model holds the bar first).
+- [ ] A7. Guardrails completion (P22 later bucket rest): tool-call rate
+      caps; per-agent token/spend budgets (pause, not surprise-bill);
+      topic allow/deny; output moderation hook.
+- [ ] A8. Security hardening: PII redaction in logs/breadcrumbs;
+      per-tenant retention auto-purge; per-END-USER rate limits; RAG
+      docs AND tool results AND inbound channel content treated as
+      untrusted input (+ injection eval pack) [tool-results scope added
+      2026-08-21].
+- [ ] A9. LLM scaling: provider-aware LLM concurrency + LLM failover
+      chain mirroring the channel failover.
+- [ ] A10. NEW (2026-08-21) production-readiness set:
+      [ ] kill-switch — one-click per-agent pause; stops answering
+          instantly, inbound routes to handoff/hold
+      [ ] handoff-queue SLA — waiting_human older than X fires an ops
+          notification (sweep pattern + own trigger machinery)
+      [ ] active health alerting — tool-failure/error-rate spikes PUSH
+          to the ops channel (Health modal today is passive)
+      [ ] agent config as-code — export/import agent (prompt, tools,
+          guardrails, knowledge refs) as JSON/YAML; enabler for A5 and
+          env promotion
+- [ ] A11. Tool approval via workflow — deferred tool call fires a real
+      notification; approve from ANY channel; webhook resumes (Tier B,
+      composes buttons + trigger machinery; very demo-worthy).
+- [ ] A12. @asyncify-hq/agent-toolkit — workflows-as-LLM-tools + MCP
+      server + HITL wrapper (wraps the trigger API; cheap).
+- [ ] A13. P21 leftovers: agent_tool_calls execution-duration column
+      (per-tool avgMs currently null); crash-mid-turn traces (D7).
+- [ ] A14. Channel polish cluster: Slack OAuth one-click install (13b) +
+      welcome message (+ empty-string sentinel); quickSetup flag on GET
+      /v1/connections; Slack CMD+A paste parser; setup_handoffs purge →
+      inactivity sweep; Telegram QR handoff.
+- [ ] A15. CLI resilience: asyncify dev 60s reachability gate strands
+      users on slow quick-tunnel-DNS days (2026-08-14, 2x 2026-08-19;
+      clean 2026-08-21) — add --wait (default ~5min) or
+      keep-waiting-then-rewire.
+- NOTE (standing caveat, not work): the approval-pause eval scenario
+  fails loudly if refund_customer is unregistered from support-demo —
+  by design.
+
+## BACKLOG — PLATFORM TRACK (novu-gap + engine)
+
+- [ ] B1. Inbox v2: action buttons (complete/revert), redirect URLs,
+      archive + snooze (sweep pattern resurfaces snoozes).
+- [ ] B2. Preferences v2: per-workflow subscriber preferences (layered
+      resolution) + end-user preference center in the widget.
+- [ ] B3. Workflow engine v2: digestKey, throttle step,
+      delay-until-date/dynamic, cancel-trigger API.
+- [ ] B4. Environment promotion dev→prod with dry-run diff; outbound
+      customer webhooks (message.sent/failed/delivered/read,
+      workflow.*, preference.updated).
+- [ ] B5. Idempotency-Key header protocol: 409 in-flight / 422
+      body-hash mismatch / 24h cached replay (small, rides Redis).
+- [ ] B6. Rolling dual API keys per environment (small).
+- [ ] B7. API polish: FST_ERR_CTP_* → clean 4xx JSON (found P11 E2E).
+- [ ] B8. Engine hygiene: keyset pagination + capped counts; column
+      projection on hot queries; cache-set TTL jitter.
+- [ ] B9. Email compliance set: List-Unsubscribe / RFC 8058, public
+      unsubscribe endpoint, consent fields, marketing footer block.
+- [ ] B10. Small polish leftovers in the Phase 17/18/19 lists (see the
+      shipped-history sections below).
+
+## PARKED — PRODUCTION DEPLOY (user call 2026-08-21: after features)
+
+- [ ] api.asyncify.org on real infra — full checklist lives in the
+      production-deployment-plan memory + docs/DEPLOYMENT.md: PUBLIC_URL
+      once via ops endpoint, one-time webhook wiring (Postmark paste =
+      NEW account's connection 10aa969a...), MX + Resend SPF/DKIM,
+      JWT_SECRET identical api+gateway, durable OTLP, SMTP_HOST empty,
+      localhost tool URLs (acme-tools) must move public, real tenant
+      key everywhere.
+
+## SHIPPED — summary
+
+**Done and live:** the entire delivery platform (6 channels, workflows,
+digest/priority/retry/failover/DLQ, suppression, templates), agents
+end-to-end (managed brains + bridge, tools, approvals, guardrails,
+evals, observability/turn-inspector P21, knowledge/RAG + episodic P23,
+long-term memory + rolling summarization + prompt caching + budgets P24,
+dashboard live events P25, HITL handoff P26), 5 published npm packages,
+CI, release automation (OIDC), SSRF hardening, 702-test suite — and now
+the public landing page at asyncify.org.
+
+
+### Shipped phases — agents production arc (P21–P26 details)
+
+#### Production-grade agents roadmap (agreed 2026-07-21; P21–P26 all shipped — see checked entries)
 
 - [x] Phase 21 — Agent observability — COMPLETE 2026-07-21: user-E2E'd
       (turn inspector, health, Jaeger walkthrough), pushed same day (plan: ~/.claude/plans/phase21-agent-observability.md;
@@ -120,18 +235,21 @@ plans get a short review section, then move to Done.
       security hardening, prompt versioning+canary, LLM scaling — all
       carried in the Platform snapshot section below.
 
-## Backlog (next candidates, in rough value order)
+
+### Shipped-from-backlog history (original mixed list, checked items preserved)
+
+#### Original backlog list (open items MOVED to the top sections; kept here for the shipped [x] history and detail wording)
 
 **From the novu gap analysis (2026-07-11, docs/NOVU-GAP-ANALYSIS.md —
 full tiered comparison lives there; these are the Tier-A picks):**
 
-- [ ] Inbox v2: action buttons (complete/revert semantics) + redirect
+- (moved to top backlog) Inbox v2: action buttons (complete/revert semantics) + redirect
       URLs + archive + snooze on NotificationInbox items (reuses the
       Phase-4 buttons pipeline + the sweep pattern for snooze resurfacing)
-- [ ] Preferences v2: per-workflow subscriber preferences (layered
+- (moved to top backlog) Preferences v2: per-workflow subscriber preferences (layered
       resolution: subscriber-workflow → subscriber-global → workflow
       default) + end-user preference center component in the widget
-- [ ] Workflow engine v2: digestKey (group digests by payload field),
+- (moved to top backlog) Workflow engine v2: digestKey (group digests by payload field),
       throttle step, delay-until-date/dynamic, cancel-trigger API
 - [x] Slack agent channel: threads → conversations, Block Kit buttons,
       per-scope routing — Phase 13 (2026-07-12). Still open from the
@@ -140,7 +258,7 @@ full tiered comparison lives there; these are the Tier-A picks):**
 - [x] Agent replies: edit/delete tombstones (user+operator,
       cross-channel propagation) + typing indicators — Phase 10
       (2026-07-12)
-- [ ] Environment promotion dev→prod with dry-run diff; outbound
+- (moved to top backlog) Environment promotion dev→prod with dry-run diff; outbound
       webhooks to customers (message.sent/failed/delivered/read,
       workflow.*, preference.updated)
 
@@ -150,23 +268,23 @@ docs/ARCHITECTURE-COMPARISON.md):**
 
 - [x] SSRF hardening on all user-supplied outbound URLs — Phase 9,
       commit 77a4400 (2026-07-12)
-- [ ] Idempotency-Key header protocol: 409 in-flight / 422 body-hash
+- (moved to top backlog) Idempotency-Key header protocol: 409 in-flight / 422 body-hash
       mismatch / 24h cached replay (Tier A — small, rides Redis)
 - [x] Agent cards v2: Select dropdowns + TextInput on top of the
       buttons pipeline — Phase 14, incl. plan-card streaming
       (2026-07-12)
-- [ ] Tool approval via workflow: deferred tool call fires a real
+- (moved to top backlog) Tool approval via workflow: deferred tool call fires a real
       notification; human approves from any channel; webhook resumes
       (Tier B — composes our buttons + trigger machinery)
 - [x] `asyncify dev` CLI command: managed tunnel + sleep-drift
       watchdog + auto PUBLIC_URL/webhook re-registration — Phase 16,
       released as @asyncify-hq/cli@0.1.0 (2026-07-13); + create-agent
       scaffolder
-- [ ] Rolling dual API keys per environment (Tier B — small)
-- [ ] API polish: map Fastify FST_ERR_CTP_* (415 unsupported media
+- (moved to top backlog) Rolling dual API keys per environment (Tier B — small)
+- (moved to top backlog) API polish: map Fastify FST_ERR_CTP_* (415 unsupported media
       type) to a clean 4xx JSON error instead of 500 'internal error'
       (found in Phase 11 E2E via PS5.1 bodyless POST)
-- [ ] Engine hygiene from their DAL: keyset pagination + capped
+- (moved to top backlog) Engine hygiene from their DAL: keyset pagination + capped
       counts on list endpoints; mandatory column projection on hot
       queries; cache-set TTL jitter (Tier B — adopt incrementally)
 
@@ -180,28 +298,28 @@ docs/ARCHITECTURE-COMPARISON.md):**
       display-resolved; missing user → raw sub; api-key unchanged) —
       shipped + user-verified 2026-07-16 ("dashboard:
       shubam@xmobility.ai" in History)
-- [ ] approval-pause eval scenario assumes the gated refund_customer
+- (moved to top backlog) approval-pause eval scenario assumes the gated refund_customer
       stays registered on support-demo (fails loudly if removed — by
       design, but worth remembering)
 
 **Phase 17 polish leftovers (small, non-blocking):**
-- [ ] GET /v1/connections: expose quickSetup flag on slack rows so the
+- (moved to top backlog) GET /v1/connections: expose quickSetup flag on slack rows so the
       dashboard hides re-arm on manual connections (today it 409s
       politely)
-- [ ] Fold setup_handoffs purge into the inactivity sweep (today:
+- (moved to top backlog) Fold setup_handoffs purge into the inactivity sweep (today:
       opportunistic delete on mint)
-- [ ] Welcome-message empty-string == clear sentinel (API can't store
+- (moved to top backlog) Welcome-message empty-string == clear sentinel (API can't store
       an explicitly empty greeting; fine unless someone asks)
-- [ ] tests tsconfig: lib ES2023 needed (agents.test.ts findLast) if
+- (moved to top backlog) tests tsconfig: lib ES2023 needed (agents.test.ts findLast) if
       tests ever enter the typecheck
-- [ ] Slack CMD+A credentials paste parser for the manual tab (novu
+- (moved to top backlog) Slack CMD+A credentials paste parser for the manual tab (novu
       parity; Quick Setup made it near-moot)
 
 **Agents / conversations — future phases** (continuation of the shipped
 inapp/telegram/email platform; promoted here from the Phase-1/2 parked
 notes. Order within this cluster is rough — reorder freely.)
 
-- [ ] Streaming managed replies — PLAN-READY, parked 2026-07-16 by user
+- (moved to top backlog) Streaming managed replies — PLAN-READY, parked 2026-07-16 by user
       ("we will pick this later"). Full scouted design + locked
       decisions in `~/.claude/plans/phase-streaming-replies-PARKED.md`:
       managed brains → widget only; snapshot-publishing over the
@@ -225,63 +343,15 @@ notes. Order within this cluster is rough — reorder freely.)
 - [x] CI workflow (.github/workflows/ci.yml): postgres/redis/mailpit
       services, migrate → typecheck → 152 tests → SDK + dashboard
       builds on every push/PR; README badge. (2026-07-10)
-- [ ] Compliance gap set from email-delivery skill §5: List-Unsubscribe /
+- (moved to top backlog) Compliance gap set from email-delivery skill §5: List-Unsubscribe /
       RFC 8058 headers on P2 email, public unsubscribe endpoint, consent
       fields on subscribers, marketing footer block
 - [x] npm workspaces wiring for packages/ — shipped (root
       `workspaces: ["packages/*"]`, four packages linked)
-- [ ] Agent toolkit `@asyncify-hq/agent-toolkit` (workflows-as-LLM-tools
+- (moved to top backlog) Agent toolkit `@asyncify-hq/agent-toolkit` (workflows-as-LLM-tools
       + MCP server + human-in-the-loop wrapper) — superseded by the
       Conversations/Agents build below; cheap add-on later since it
       wraps the existing trigger API
-
-## Platform snapshot — what's DONE vs REMAINING (audited 2026-08-18)
-
-**Done and live:** the entire delivery platform (6 channels, workflows,
-digest/priority/retry/failover/DLQ, suppression, templates), agents
-end-to-end (managed brains + bridge, tools, approvals, guardrails,
-evals, observability/turn-inspector P21, knowledge/RAG + episodic P23,
-long-term memory + rolling summarization + prompt caching + budgets P24,
-dashboard live events P25, HITL handoff P26), 5 published npm packages,
-CI, release automation (OIDC), SSRF hardening, 702-test suite — and now
-the public landing page at asyncify.org.
-
-**Remaining, in rough value order:**
-- [ ] PRODUCTION DEPLOY of the platform itself — api.asyncify.org on
-      real infra (the 2026-07-18 deployment-day checklist: PUBLIC_URL
-      via ops endpoint, one-time webhook wiring per channel, MX for
-      email, twilio nothing; JWT_SECRET identical api+gateway [P25
-      deploy-critical note]; durable OTLP backend [P21 note]). THE next
-      big move — everything else on this list is feature work.
-- [ ] Phase 22 later bucket (evals/guardrails maturity): CI eval gate;
-      pre-save eval runs; LLM-judge dimensions; one-click prod-convo →
-      eval-case; tool-call rate caps; per-agent spend budgets; topic
-      allow/deny; output moderation hook
-- [ ] Security hardening bucket: PII redaction in logs/breadcrumbs,
-      per-tenant retention auto-purge, per-END-USER rate limits, RAG
-      docs treated as untrusted input
-- [ ] Prompt versioning + canary; scaling bucket (provider-aware LLM
-      concurrency + LLM failover chain mirroring channel failover)
-- [ ] Streaming managed replies — PLAN-READY, parked (plan file:
-      ~/.claude/plans/phase-streaming-replies-PARKED.md; ~1 day)
-- [ ] Novu-gap Tier A: Inbox v2 (actions/archive/snooze), Preferences
-      v2 (per-workflow + preference center), Workflow engine v2
-      (digestKey/throttle/delay-until/cancel-trigger), env promotion
-      dev→prod + outbound customer webhooks
-- [ ] CLI resilience: `asyncify dev` exits if the quick tunnel isn't
-      publicly reachable in 60s — slow Cloudflare-DNS days (hit 2026-08-14
-      and twice 2026-08-19; clean pass 2026-08-21) strand users before any
-      rewire. Add --wait/-w (default ~5min) or keep-waiting-then-rewire.
-- [ ] Tier B / small: Idempotency-Key protocol (409/422/24h replay);
-      tool approval via workflow; rolling dual API keys; 415 JSON error
-      mapping; keyset pagination + projections + TTL jitter; Slack
-      OAuth one-click (13b) + welcome message; tg QR handoff
-- [ ] Email compliance set: List-Unsubscribe/RFC 8058, public
-      unsubscribe endpoint, consent fields, marketing footer
-- [ ] P21 leftovers: agent_tool_calls execution-duration column
-      (per-tool avgMs currently null); crash-mid-turn traces (D7)
-- [ ] @asyncify-hq/agent-toolkit add-on (wraps trigger API; cheap later)
-- [ ] Small polish leftovers in the Phase 17/18/19 lists below
 
 ## Recently shipped (was: In progress)
 
