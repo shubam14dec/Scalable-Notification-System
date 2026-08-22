@@ -6,7 +6,26 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A5 — prompt versioning + canary (plan approved 2026-08-23)
+### Phase A5 — SHIPPED 2026-08-23 (review)
+All 5 slices done (commits 918c69c E, f798621 A, 89d635f B, 2739db2 C,
+db1d4ef D), suite 761→799, root+dashboard+sdk tsc clean throughout.
+What shipped: immutable prompt versions (restore-is-a-save, legacy
+backfill), canary trials on real conversations (structurally-sticky arm,
+A4 candidate machinery reused, eval-driver opt-out, per-turn
+served-by attribution), both-arm sampled judging (no refusal on live
+traffic, raw averages not pass/fail, degrade-never-storm), set-based
+report + Canary panel with Promote-as-decision, Restore routed through
+the pre-save check, mid-trial-edit warning, full docs+SDK+changesets
+(incl. slice E's A2-A4 audit: sdk-node's undocumented evals surface,
+AGENT-TOOLS pre-A2 claims, README contributor gate warning). Review
+notes: (1) best design writing of the track — "an unjudged control arm
+is not a control", "stickiness is the shape of the statement", refusal
+= "the judge inventing the requirement it grades against". (2) Two doc
+overclaims caught against source by the docs agent itself. (3) Prod
+delta: NONE (new queue rides existing worker; judging on agents' own
+creds). (4) samplePercent is API-only for now (no dashboard knob).
+Ladder: judge ✓ gate ✓ pre-save ✓ versioning+canary ✓ → A2b live
+supervision is the last rung.
 Every prompt edit = an immutable restorable version (template-versioning
 pattern: agents.prompt_version + agent_prompt_versions(agent_id,
 version, system_prompt, model)); a new version can trial on a % of REAL
@@ -35,11 +54,19 @@ Scale: O(1) arm roll at open; judging bounded by sample% × traffic.
       no race window); eval driver explicit noCanary opt-out; per-turn
       attribution raw.canaryVersion (arm alone lies after a stop);
       promote = restore-as-save + clear, restore-first crash ordering.
-- [ ] Slice C — comparison: per-arm counters + sampled turn judging
-      (per-turn storage, per-arm averages) + Canary panel with
-      Promote/Stop.
-- [ ] Slice D — docs+close-out: guide canary story, AGENT-TOOLS API,
-      gap-analysis, sdk types + changeset, todo, INTERVIEW-PREP.
+- [x] Slice C — comparison — DONE 2026-08-23 (commit 2739db2, suite
+      785→799): both-arm sampled judging (groundedness+tone only — no
+      refusal: live traffic has no author declaration; raw scores, no
+      pass/fail), attribution by what SERVED the turn (thread props by
+      enrollment, turns by raw.canaryVersion), guard pauses via the
+      durable expires_at marker, set-based report SQL, Canary panel,
+      Restore now routes through PreSaveCheck. Fire-and-forget proven
+      behaviourally. CAVEAT → D: mid-trial live-prompt edit changes
+      what "control" means — warn in pre-save panel + docs note.
+- [x] Slice D — DONE 2026-08-23 (commit db1d4ef): guide canary story +
+      ladder completed everywhere, AGENT-TOOLS version+canary reference,
+      sdk surface + changeset, mid-trial warning line; caught 2 of its
+      own doc overclaims against source.
 - [x] Slice E — A2/A3/A4 docs AUDIT — DONE 2026-08-23 (commit 918c69c):
       7 files fixed (README contributor gate warning + pre-save para;
       sdk-node README's previously-undocumented agents.evals surface +
@@ -213,9 +240,7 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A4. Pre-save eval runs — SHIPPED 2026-08-22, review above. (Its
       second half — conversation → eval-case — was already shipped in
       P22: "Save as eval" on the conversation page.)
-- [ ] A5. Prompt versioning + canary — template-versioning pattern on
-      agent prompts; canary = % of turns on the new prompt with judged
-      comparison (needs A2/A3 to judge the canary).
+- [x] A5. Prompt versioning + canary — SHIPPED 2026-08-23, review above.
 - [ ] A6. Model routing — cheap turns to a small model, escalate on
       reasoning/tools. DELIBERATELY BLOCKED on A3 (guide §9: a router
       that quietly sends hard turns to a weak model is a quality
