@@ -1,11 +1,14 @@
 # Agent tools: custom tools, human approval, and evals
 
-A **managed** agent ships with a fixed built-in menu (`trigger_workflow`,
-`set_metadata`, `resolve_conversation`, `present_buttons`, `present_choices`,
+A **managed** agent ships with a fixed built-in menu (`set_metadata`,
+`resolve_conversation`, `present_buttons`, `present_choices`,
 `request_input`, `remember` — see **Built-in memory tool** below —
-and `handoff_to_human` — see **Built-in handoff tool** below), plus two
-**conditional** built-ins that appear only when there's something to search
-(`search_knowledge`, `search_history` — see **Built-in retrieval tools** below).
+and `handoff_to_human` — see **Built-in handoff tool** below), plus three
+**conditional** built-ins that appear only when there's something for them
+to act on: `trigger_workflow` (offered once the tenant has at least one
+workflow — its key argument is an enum of your real workflow keys, so a
+made-up workflow can't be fired), and `search_knowledge` /
+`search_history` (see **Built-in retrieval tools** below).
 **Custom tools** extend that menu with
 *your* code: you
 register a tool — a model-facing name, a description, and a JSON-Schema

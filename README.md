@@ -201,10 +201,16 @@ routing, custom MX domain when DNS is available):
 Prefer no code at all? Set an agent's runtime to **managed**, paste an
 LLM API key (any Anthropic-compatible endpoint works via the per-agent
 base URL), and the platform runs the model loop itself. Managed agents
-get four tools automatically: `trigger_workflow`, `set_metadata`,
-`resolve_conversation`, and `present_buttons` (tappable choices —
-rendered natively in the widget, as Telegram inline keyboards, and as
-a numbered options list in email). Beyond buttons, a reply can carry a
+get ten built-in tools: seven always on — `set_metadata`, `remember`
+(durable per-customer profile), `resolve_conversation`,
+`present_buttons` (tappable choices — rendered natively in the widget,
+as Telegram inline keyboards, and as a numbered options list in email),
+`present_choices`, `request_input`, and `handoff_to_human` — plus three
+that appear only when there's something for them to act on:
+`trigger_workflow` (once you have a workflow; its key argument is an
+enum of your real workflows), `search_knowledge` (with a ready
+knowledge source), and `search_history` (once past conversations
+exist). Beyond buttons, a reply can carry a
 single **card** — a select menu or a text-input field, via
 `present_choices` / `request_input` — rendered natively per channel; see
 [docs/AGENT-CHANNELS.md](docs/AGENT-CHANNELS.md#cards-and-plan-cards).
