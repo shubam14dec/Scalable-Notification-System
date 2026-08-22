@@ -140,9 +140,13 @@ architecture — we started where they're heading.
   tapes. ~~Still worth copying from them: the CI wiring (our A3)~~ — CI
   wiring **shipped 2026-08-22 (A3)**: a paths-gated, required
   `agent-evals` check that boots the real stack and drives the fixture
-  agent through real turns, so an agent regression blocks the merge. The
-  one thing left worth copying: **mock-tape speed** for pure-prompt
-  iteration.
+  agent through real turns, so an agent regression blocks the merge. Their
+  autosave (above) has no equivalent step, and **2026-08-22 (A4)** pushed
+  ours one further in the other direction: a managed agent's **Save**
+  runs the enabled scenarios against the *unsaved* candidate config and
+  shows a per-scenario delta before the write — warn, never block, since
+  a customer's own prompt is not ours to lock. The one thing left worth
+  copying: **mock-tape speed** for pure-prompt iteration.
 
 ## 6. Honest scorecard
 

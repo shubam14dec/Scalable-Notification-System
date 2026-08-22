@@ -110,7 +110,13 @@ tunnel was never a feature; it was a stand-in for DNS.
 **Agent guardrails and evals add nothing deployment-specific.** The guardrail
 counters (daily token budget, per-tool rate cap) ride the existing Redis, and the
 eval-run queue rides the existing worker — no new service, secret, or env var.
-Deploy day is the checklist above, unchanged.
+That still holds for **LLM-judged dimensions** and the **pre-save check**: an
+in-product run judges with the *agent's own* LLM credentials, already stored
+per tenant, and a pre-save run is the same queued run with a candidate config on
+its row. The `EVAL_LLM_*` / `ASYNCIFY_JUDGE_*` variables you may have set belong
+to the **CLI and CI** (`npm run eval`, the `agent-evals` check — see
+[evals/README.md](../evals/README.md)); the API and worker never read them, so
+they are not production config. Deploy day is the checklist above, unchanged.
 
 **Agent knowledge & memory add nothing global either.** Grounding (indexed
 knowledge) and episodic memory run entirely on **two per-tenant BYO

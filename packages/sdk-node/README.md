@@ -125,6 +125,51 @@ Caps are enforced: ≤32 keys per customer, key ≤64 chars, value ≤300 chars.
 key on a full profile → `AsyncifyError` (409) — overwrite an existing key
 instead. Never store secrets or payment data here.
 
+## Testing a prompt change before it ships (evals)
+
+An eval is a scripted conversation plus assertions about what the agent *did* —
+which tools it called — and, optionally, **LLM-judged dimensions** for what a
+tool trace can't see: `groundedness`, `tone`, `refusal`, scored 1–5 against a bar
+you set. Runs drive the real pipeline (queue → worker → brain → tools), so a
+green run is about the agent your customers actually reach:
+
+```ts
+await asyncify.agents.evals.create('acme-support', {
+  name: 'refund-window',
+  scenario: {
+    turns: [
+      { user: 'my headphones broke — can I get a refund?' },
+      { expect: { tool: 'lookup_order' } },
+      { expect: { judge: { groundedness: { min: 4 } } } },
+    ],
+  },
+});
+
+// Grade the agent as it is live right now…
+const { runId } = await asyncify.agents.evals.run('acme-support');
+
+// …or grade an edit you have NOT saved yet: the real agent, tools, guardrails
+// and knowledge, with only the prompt and/or model swapped in for the run.
+// Nothing is written to the agent — this is what the dashboard's pre-save
+// check does. Managed agents only; a candidate on a bridge agent is a 400.
+const { runId: preSaveRun } = await asyncify.agents.evals.run('acme-support', {
+  trigger: 'pre_save',
+  candidate: { systemPrompt: 'You are Acme support. Refunds within 14 days…' },
+});
+
+// Runs are async — poll until it leaves 'running'
+const { run } = await asyncify.agents.evals.getRun('acme-support', preSaveRun);
+// run.status  → 'running' | 'passed' | 'failed' | 'error'
+// run.results → [{ name, passed, attempts, failures, judged? }]
+//   failures: ['judge.groundedness: 2/5 < 4 — "30 days" appears in no source']
+//   judged:   [{ turn, dim: 'groundedness', verdict: 'fail', score: 2, rationale }]
+```
+
+A judged dimension comes back as `verdict: 'skipped'` when no judge was
+available (the agent has no model, or its LLM client couldn't be built) — never
+a silent pass. Compare `run.results` against the previous run's to show a delta
+rather than a wall of green.
+
 ## API surface
 
 | Method | Purpose |
@@ -140,6 +185,8 @@ instead. Never store secrets or payment data here.
 | `agents.tools.create / list / update / delete / rotateSecret` | Per-agent custom tool registry |
 | `agents.knowledge.create / list / reindex / remove` | Per-agent knowledge sources for grounded answers |
 | `agents.memories.list / put / remove` | Per-customer long-term memory (durable facts, by subscriber external id) |
+| `agents.evals.list / create / update / remove` | Per-agent eval scenarios (scripted turns + tool-trace and judged expectations) |
+| `agents.evals.run / runs / getRun` | Run the enabled scenarios — live config, or an unsaved `candidate` — and poll the verdict |
 | `approvals.list / decide` | Human-in-the-loop tool-call queue |
 | `settings.getApprovals / putApprovals` | Which channels carry approval cards |
 | `subscriberToken(subscriberId, ttlSeconds?)` | Browser-safe inbox token |

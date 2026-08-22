@@ -225,8 +225,30 @@ tone (holds your configured voice), refusal (declines when it must) —
 scored 1–5 against a bar *you* set: the model grades, the runner decides
 pass/fail. Every scenario drives the real pipeline (queue → worker →
 brain → tools), so a green suite certifies the system your customers
-actually hit. Prompt edits are deploys; this is their CI. See
-[docs/AGENT-TOOLS.md](docs/AGENT-TOOLS.md) and
+actually hit. Prompt edits are deploys; this is their CI.
+
+That suite runs at **both ends of an edit**. In the dashboard, saving a
+managed agent's prompt or model runs its enabled scenarios against the
+*edit* first — real pipeline, candidate config, nothing written, your
+live agent untouched for the whole run — then shows a per-scenario
+delta against the last run of the saved version (newly failing / fixed
+/ still failing) instead of a wall of green. It warns; it never blocks
+— **Save anyway** is there from the first frame, because locking
+someone out of their own prompt is the wrong kind of safe.
+
+**Contributors: agent behavior is gated in CI.** A push or PR touching
+agent-behaviour paths (`evals/**`, `src/core/eval-*`,
+`src/core/managed-brain*`, `scripts/eval*.ts`, `scripts/acme-tools/**`)
+runs the required **`agent-evals`** check — it boots the real stack,
+seeds the config-as-code fixture agent
+([`evals/agents/support-demo.agent.json`](evals/agents/support-demo.agent.json))
+and drives it through real, paid LLM turns, so a behavior regression
+blocks the merge instead of shipping. Change none of those paths and it
+skips itself green, always printing why; fork PRs skip too, since the
+judge key is a repo secret. It proved itself on its debut run by
+catching an eval scenario that had quietly gone stale. See
+[docs/AGENT-TOOLS.md](docs/AGENT-TOOLS.md),
+[evals/README.md](evals/README.md) and
 [docs/ASYNCIFY-AGENTS-GUIDE.md](docs/ASYNCIFY-AGENTS-GUIDE.md) §10.
 
 **The house rule for managed-agent prompts — explicit instruction beats

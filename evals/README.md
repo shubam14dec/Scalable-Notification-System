@@ -5,7 +5,9 @@ Test your agent's prompt like you test your code.
 A scenario file scripts a conversation as user turns plus **expectations about
 tool calls** — not prose vibes. The harness drives an **existing** agent through
 the real Asyncify API + worker, then asserts the tool-call trace each turn
-actually produced.
+actually produced. An expect can also ask an **LLM judge** to grade what the
+trace can't show — groundedness, tone, refusal, scored against a bar you set
+([Judged expectations](#judged-expectations-expectjudge)).
 
 ```
 npm run eval                 # run every evals/*.json
@@ -24,8 +26,9 @@ The scenario format on this page is the same whether a scenario lives in a
 dashboard (stored per agent, run by a button). The dashboard runner drives turns
 in-process through the identical production pipeline and reads the same Postgres,
 so the two paths assert on tool traces exactly the same way. The customer-facing
-walkthrough — writing, running, the advisory save gate, and drafting an eval from
-a real conversation in one click — is in
+walkthrough — writing, running, the pre-save check that grades an edited prompt
+before it commits, and drafting an eval from a real conversation in one click —
+is in
 **[ASYNCIFY-AGENTS-GUIDE.md](../docs/ASYNCIFY-AGENTS-GUIDE.md)** ("Testing your
 agent (evals)").
 

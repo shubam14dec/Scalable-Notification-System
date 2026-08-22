@@ -20,7 +20,8 @@ result.
 This page is the runbook for the three pieces: **registering** a tool, your
 **endpoint's contract** (the signed POST it must answer), and the **approval**
 flow that can pause a tool behind a human. It closes with the **eval harness**
-for testing that your agent actually makes the right calls.
+for testing that your agent actually makes the right calls — and, for what a
+call trace can't show, that it says the right things.
 
 ## What a tool is
 
@@ -153,9 +154,13 @@ those absent, neither tool is ever offered.
 
 > **Grounding v1 — honest scope.** Grounding is three real mechanisms: the prompt
 > **directive**, the **conditional availability** of `search_knowledge`, and the
-> **retrieval audit trail** (every lookup is a visible tool call). It is *not* an
-> automated faithfulness **judge** that scores and blocks un-grounded replies —
-> that enforcement layer is a roadmap item, not shipped. Knowledge sources are
+> **retrieval audit trail** (every lookup is a visible tool call). What it is
+> *not* is an automated faithfulness **judge in the live reply path**, scoring
+> each answer and withholding an un-grounded one — that inline enforcement layer
+> is a roadmap item, not shipped. Groundedness *is* graded off the live path:
+> `expect.judge.groundedness` scores it 1–5 against your bar in the eval harness
+> (see **Evals** below), which catches a drifting prompt before it ships rather
+> than a bad reply mid-conversation. Knowledge sources are
 > **text, URL, or `.txt`/`.md`** today; **PDF is not yet supported**.
 
 ## Built-in handoff tool (`handoff_to_human`)
@@ -569,7 +574,10 @@ subsection.
 
 The eval harness proves your **real configured LLM**, given your **real
 prompt**, makes the **right tool calls** — asserting the **tool-call trace**, not
-prose vibes.
+prose vibes. For the qualities a trace can't express, an expect can also carry
+**LLM-judged dimensions** — `groundedness`, `tone`, `refusal` — scored 1–5
+against a bar *you* set, with the runner (not the judge model) converting the
+score into pass/fail.
 
 ```bash
 npm run eval                 # run every evals/*.json
@@ -584,8 +592,8 @@ npm run eval -- refund-path  # run just evals/refund-path.json
 same Postgres). A turn that never gets a reply is reported as such.
 
 **Scenario file** (`evals/<name>.json`, zero-dep JSON): a list of `turns`, each
-either a `user` message or an `expect` about the tool trace of the most recent
-user turn.
+either a `user` message or an `expect` about the most recent user turn — its
+tool trace, its reply, or a judged dimension of it.
 
 ```jsonc
 {
@@ -608,10 +616,19 @@ user turn.
 (a call whose input superset-matches), `noTool: X` (not called),
 `pendingApproval: X` (a gated tool paused for approval this turn), `replyContains`
 / `replyContainsAny` / `replyNotContains` (case-insensitive checks on the turn's
-last reply).
+last reply), and `judge: {…}` — any of `groundedness` (`true`, or `{ min }`),
+`tone` (`{ rubric?, min? }`) and `refusal` (`"must_refuse" | "must_answer"`).
+Scores are 1–5 and `min` defaults to **4**; an unknown dimension name is
+rejected rather than ignored, and the deterministic matchers on the same expect
+must pass before a judge is ever called.
 
 Full details — how the trace is reconstructed, the starter scenarios, and why
-the read path is the DB — are in **[evals/README.md](../evals/README.md)**.
+the read path is the DB — are in **[evals/README.md](../evals/README.md)**. That
+file also covers judging from the CLI (`EVAL_LLM_API_KEY` + `EVAL_LLM_MODEL`;
+without them, judged dimensions come back visibly `skipped`, never passed) and
+the repo's required **`agent-evals`** CI check, which boots the real stack and
+drives the config-as-code fixture agent in `evals/agents/` through real turns, so
+an agent regression blocks the merge.
 
 ### Running evals from the API
 
