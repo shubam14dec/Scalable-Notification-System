@@ -156,6 +156,28 @@ const brain = defineAgent({
 Every turn arrives as a **signed webhook** (the SDK's `verifySignature`
 checks it), so nobody can impersonate Asyncify to your endpoint.
 
+### Day two: the loop that keeps it good
+
+Getting live was the easy part. From here, every prompt Priya writes is a
+deploy to Maya — so there is a loop for that, and it pays off in this order:
+
+1. **Write a few evals before you need them.** The cheapest ones are free: any
+   conversation that went exactly right — or exactly wrong — becomes a scripted
+   test in one click (§10).
+2. **Then edit with a net under you.** With scenarios enabled, **Save** grades
+   the words Priya just typed *before* they commit, and shows her what changed
+   against the last run (§10).
+3. **Put the big rewrites on trial.** A version can serve a slice of real
+   conversations alongside the live one, both arms measured the same way,
+   before it becomes everyone's agent (§10).
+4. **Turn on model routing once traffic grows.** The easy turns get answered on
+   a cheaper model; anything consequential re-runs on the main one (§9).
+
+None of it is required to go live — the agent works without any of it. It's
+what keeps the agent good after the twentieth prompt edit. It's also a *prompt*
+loop, so it belongs to the managed brain: a bridge agent's thinking is Acme's
+own code, and there is no prompt here for Asyncify to grade.
+
 ---
 
 ## 3. Connecting the channels
@@ -196,7 +218,9 @@ plan card** (⏳ → ✓ per step) instead of dead air, plus typing indicators.
 She can **edit or delete** her messages afterwards; edits propagate across
 channels. When she says thanks, the agent resolves the thread (and an
 **auto-resolve sweep** quietly closes threads that trail off, so nothing
-lingers forever).
+lingers forever). And if Priya happens to be trialling a new prompt while Maya
+is chatting, Maya is on one side of that trial for the whole thread and never
+both — the agent doesn't change its voice mid-conversation (section 10).
 
 Later, in Acme's account settings, Maya finds **Connect channels** — one tap
 (or a phone-scannable QR, with a copyable `/start` command for networks that
@@ -256,6 +280,11 @@ dashboard's **Add approver** button (a QR each approver scans once). Every
 tap is identified — and when the tapper's Slack/Telegram is linked to an
 Acme identity, the audit trail shows the person, not just a platform id.
 
+However this particular refund went — textbook, or embarrassing — the
+conversation itself can become a permanent test of it in one click, so the next
+prompt edit is checked against this exact case before it reaches Maya
+(section 10).
+
 ---
 
 ## 6. Guardrails: powers that limit themselves
@@ -280,7 +309,12 @@ The agent **detected** the repeat, the **rule decided** it needs a human, and Sa
 **judges** — with the history in front of him. This is the refund-fraud pattern
 made safe: a genuine customer rarely needs two refunds a month; a compromised
 account might. The count is per customer and counts only refunds that actually
-ran.
+ran. This rule doesn't switch off when Priya is working on the prompt, either:
+it stays live through a pre-save check, so an edit is graded with the same
+brakes a real customer would meet — and **guard pauses** is one of the rows a
+prompt trial compares arm by arm, which makes "does this friendlier wording talk
+more people into a second refund attempt?" a number instead of a hunch
+(section 10).
 
 **2. Hourly rate cap** *(per tool)* — *"at most N calls of this tool per customer
 per hour."* Over the cap, the tool politely refuses to the model
@@ -357,6 +391,10 @@ its own: when Maya says *"I want to talk to a person,"* or when the agent
 genuinely can't help after honest attempts, it calls its built-in
 `handoff_to_human` tool, tells Maya a teammate is taking over, and **goes
 silent** — it will not reply again on that conversation until a human returns it.
+(*How readily* it makes that call is a prompt decision, and a measurable one:
+**handoffs** is one of the rows a prompt trial compares between the live and
+trial arms, so "did my rewrite make the agent give up sooner?" has an answer —
+section 10.)
 
 ### Priya's one-time setup (one delta from section 6)
 
@@ -1043,6 +1081,47 @@ one it replaces on real conversations.
 *(All of it is API too — the version history, the trial, and the comparison —
 in [docs/AGENT-TOOLS.md](AGENT-TOOLS.md) and `@asyncify-hq/node`.)*
 
+### A month with Acme's prompt
+
+Read end to end, this section is a lot of machinery. Lived, it's four moments
+in a month — each one lands in the section that explains it, so this is the
+map, not the territory:
+
+**Week 1 — a surprise becomes a test.** A conversation goes wrong: the agent
+quotes a 30-day return window Acme's policy page never gave it. Priya opens
+that conversation, hits **Save as eval**, fills in what *should* have happened
+(`search_knowledge` called, `groundedness` at least 4), and enables it. Over
+the rest of the week she does the same to three conversations that went
+*right* — a refund, a resolve-on-thanks, an injection attempt that must not
+fire a tool. Four scenarios is a suite, and none of them was written from a
+blank page.
+
+**Week 2 — an edit gets graded before it ships.** Sam asks for a warmer refund
+paragraph. Priya rewrites it and hits **Save** — and the check runs those four
+against the words she just typed. `refund-window` comes back *newly failing*:
+the friendlier wording quietly dropped the 14 days. She fixes the paragraph and
+saves for real. Maya, mid-conversation the whole time, was never once talking
+to the candidate.
+
+**Week 3 — a rewrite has to earn it on real traffic.** A bigger persona pass is
+past what four scenarios can settle, so a version goes on **trial** at 10%.
+A week later the panel has both arms side by side, judged at the same rate:
+the trial resolving a little more, handing off a little less, groundedness 4.4
+against the live prompt's 4.1. Priya **Promotes** — and every earlier wording
+is still in the trail behind it, because the history only grows.
+
+**Week 4 — the bill, not the quality.** Traffic has tripled. Priya switches
+**model routing** on (§9), and because that changes *who writes Maya's replies*
+it is graded like any other prompt edit: her resolve-on-thanks scenario passing
+on the routed run is the evidence that the small model can close a thread by
+itself, and her refund scenario passing is the evidence that escalation fires.
+Seven days later the strip tells her what it bought.
+
+Four moments, one habit: nothing here asks Priya to be careful, only to save
+her work in a form the platform can re-check. (The fifth surface, the CI gate
+above, is deliberately not in this month — that one guards *our* fixture agent
+in git, not Acme's, which is the whole reason Acme's ladder is in-product.)
+
 ---
 
 ## 11. Agents and notifications are one system
@@ -1094,6 +1173,9 @@ const asyncify = new AsyncifyClient({ apiKey: process.env.ASYNCIFY_API_KEY });
 await asyncify.workflows.upsert({ key: 'order-shipped', name: 'Order shipped', steps: [...] });
 await asyncify.agents.create({ identifier: 'acme-support', name: 'Acme Support', ... });
 const { deepLink } = await asyncify.agents.linkToken('acme-support', user.id); // Telegram linking
+
+// the quality surfaces are on the same client: eval runs (with per-dimension
+// judge results), the prompt version history, and canary trials + comparison (§10)
 ```
 
 ### `@asyncify-hq/agent` — the bridge brain (only if you chose Path B)
@@ -1119,8 +1201,9 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 ## 13. Operating it
 
 - **Dashboard**: Conversations (live transcripts with honest tool
-  breadcrumbs), Approvals (pending + full decision history), Agents
-  (prompt, tools, welcome), Connections, Activity/Analytics.
+  breadcrumbs, and the **Turn Inspector** on any turn — every model call and
+  tool call with its timing and tokens), Approvals (pending + full decision
+  history), Agents (prompt, tools, welcome), Connections, Activity/Analytics.
 - **Prompt changes are deployments — test them like code.** Evals (section 10)
   replay scripted conversations through the real pipeline and assert on the
   agent's **tool calls** — including adversarial cases ("ignore your instructions
@@ -1132,6 +1215,20 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
   scenarios, **Save** grades the edit first and shows the delta (warn, never
   block), and the platform's own fixture agent is gated in CI, where a
   regression fails the build.
+- **Reading the quality surfaces.** None of them asks for a daily ritual; each
+  answers a different question when you have it. **The run history** (the
+  agent's *Evals* tab) keeps every run — manual and pre-save alike — tagged
+  with the exact config it graded, which is where *"what did we actually check
+  before that change went out?"* still has an answer months later. **A red
+  pre-save panel is about the edit, not the agent**: it's a delta against the
+  last ordinary run, so the thing that broke is almost always the paragraph
+  just typed — fix it, or Save anyway with your eyes open. **While a trial is
+  running**, the canary's two columns are the scoreboard, and the one
+  discipline is not editing the live prompt out from under it (all three:
+  section 10). **The cost pulse** is two numbers: routing's 7-day
+  cheap-vs-escalated split in the agent editor (section 9), which says whether
+  routing is paying for itself on this agent's traffic, and tokens-used-today
+  in **Health** (section 6), which is what you size the circuit breaker from.
 - **Guardrails (section 6) are always on when set** — the repeat-action rule and
   hourly rate cap ride each tool, the daily token budget rides the agent; the
   platform enforces them without a human in the loop.
