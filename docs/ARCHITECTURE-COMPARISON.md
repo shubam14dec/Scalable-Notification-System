@@ -145,8 +145,21 @@ architecture — we started where they're heading.
   ours one further in the other direction: a managed agent's **Save**
   runs the enabled scenarios against the *unsaved* candidate config and
   shows a per-scenario delta before the write — warn, never block, since
-  a customer's own prompt is not ours to lock. The one thing left worth
-  copying: **mock-tape speed** for pure-prompt iteration.
+  a customer's own prompt is not ours to lock. ~~The one thing left worth
+  copying: **mock-tape speed** for pure-prompt iteration.~~ **2026-08-23
+  (A5)** carried the same candidate knob past the save: every managed
+  prompt save is now an immutable version (restore *publishes* forward,
+  never rewinds), and a version can trial on a **percentage of real
+  conversations** — arm rolled once at conversation open and sticky for
+  the thread's life, injected through A4's candidate mechanism rather
+  than a second brain — with the promote decision backed by a per-arm
+  report: set-based counters plus judged groundedness/tone sampled from
+  BOTH arms at the same rate (averages, not pass/fail — live traffic has
+  no scenario author's bar). Their environment-promotion subsystem moves
+  a config between environments; nothing on their side measures two
+  prompt versions against each other on traffic they are both serving.
+  Still worth copying from them: **mock-tape speed** for pure-prompt
+  iteration.
 
 ## 6. Honest scorecard
 

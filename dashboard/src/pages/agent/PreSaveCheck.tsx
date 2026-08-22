@@ -9,7 +9,7 @@
 // in flight, when the run errors, when the request never got off the ground.
 // A check that can trap a customer mid-edit is worse than no check at all.
 import { useEffect, useRef, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { Button, Modal, Mono, Skeleton } from '../../ui';
 import { timeAgo } from '../Activity';
@@ -21,6 +21,7 @@ import {
   preSaveSummary,
   runDot,
   scenarioDelta,
+  type Agent,
   type EvalCandidate,
   type EvalRun,
   type ScenarioResult,
@@ -103,6 +104,18 @@ export function PreSaveCheck({
     startMutation();
   }, [startMutation]);
 
+  // A5 slice C's routed caveat. A trial's CONTROL arm is whatever the live
+  // prompt says, so saving an edit mid-trial moves the thing the trial version
+  // is being compared against — the comparison stays honest about turns already
+  // counted, but stops being one experiment. Read off the shared ['agents']
+  // list (AgentDetail's own source, always warm behind this modal), so the line
+  // costs no extra request and disappears the moment the trial ends.
+  const agentsQuery = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api<{ agents: Agent[] }>('/v1/agents'),
+  });
+  const canary = agentsQuery.data?.agents.find((a) => a.identifier === identifier)?.canary ?? null;
+
   const detail = useEvalRunDetail(identifier, runId, PRE_SAVE_POLL_MS);
   const run = detail.data?.run ?? null;
   const results = run?.results ?? [];
@@ -124,6 +137,17 @@ export function PreSaveCheck({
           edited <Mono className="text-t2">{candidateLabel(candidate)}</Mono>. Nothing is saved and
           the live agent is untouched until you choose below.
         </p>
+
+        {/* True whatever the check does — so it sits above the run, not inside
+            it, and shows even when the run never started. */}
+        {canary && (
+          <p className="text-[11px] text-warn">
+            A canary is running (v{canary.version}
+            {canary.percent === null ? '' : ` on ${canary.percent}% of new conversations`}). Saving
+            changes the live prompt, which is what the trial's control arm serves — from here on the
+            comparison measures v{canary.version} against a different baseline than it started with.
+          </p>
+        )}
 
         {failedToStart ? (
           <div className="rounded-md border border-bd bg-elevated px-3 py-2.5">

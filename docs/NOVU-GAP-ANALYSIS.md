@@ -79,10 +79,12 @@ now have, and how to sell it honestly:
 - **Honest caveat we volunteer:** the judge runs on the agent's own
   model/creds (zero extra setup, no second key to rotate); self-judge
   bias is documented, a `judgeModel` override is planned.
-- **Where it leads (the ladder):** judge → CI eval gate (A3) → prompt
-  canary comparison (A5) → model routing (A6). Each rung needs the one
-  before it — a router without a judge is a quality regression disguised
-  as a cost win. Novu has none of the ladder above the harness.
+- **Where it leads (the ladder):** judge → CI eval gate (A3) → pre-save
+  check (A4) → prompt canary comparison (A5) → live supervision (A2b) →
+  model routing (A6). Each rung needs the one before it — a router
+  without a judge is a quality regression disguised as a cost win. Novu
+  has none of the ladder above the harness. Everything through A5 is
+  shipped; A2b is the next rung.
 - **2026-08-22 — rung two shipped (A3).** The `agent-evals` job boots
   the real stack, seeds our fixture agent through the real API and
   drives evals/*.json as REAL LLM conversations (judged dimensions
@@ -98,8 +100,27 @@ now have, and how to sell it honestly:
   above, so nothing sits between a prompt change and the customers it reaches
   unless someone remembers to run it.
 
+- **2026-08-23 — versioning + an in-product prompt canary shipped (A5).**
+  Every managed prompt save is an immutable version (restore *publishes*
+  a new one rather than rewinding history), and a version can then trial
+  on a **percentage of real conversations** — sticky per conversation,
+  riding the same candidate knob as the pre-save check — with a per-arm
+  comparison behind Promote: ops counters plus **judged groundedness and
+  tone sampled from BOTH arms at the same rate** (an unjudged control arm
+  is not a control; averages only, since live traffic has no author's bar
+  to pass). Their side, stated straight: novu **does** have versioning
+  surfaces (versioned MJML layouts, versioned skill bundles) and a real
+  environment-promotion subsystem — publish agents/workflows dev→prod with
+  a dry-run diff, which is a Tier-A gap of ours, still. What they have no
+  equivalent of is a **percentage split of live agent traffic between two
+  prompt versions, judged on both sides**: promotion moves a config between
+  environments, it does not measure one prompt against another on the
+  customers it is already serving.
+
 Sales framing: "prompt edits are deploys — and we're the platform that
-treats them that way."
+treats them that way." A/B-testing a prompt on real traffic, with the
+judge grading both arms, is the rung above that: promotion answers "is it
+deployed?", a canary answers "is it better?".
 
 ---
 

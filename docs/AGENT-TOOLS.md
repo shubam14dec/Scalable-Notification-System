@@ -21,7 +21,9 @@ This page is the runbook for the three pieces: **registering** a tool, your
 **endpoint's contract** (the signed POST it must answer), and the **approval**
 flow that can pause a tool behind a human. It closes with the **eval harness**
 for testing that your agent actually makes the right calls — and, for what a
-call trace can't show, that it says the right things.
+call trace can't show, that it says the right things — then with the two API
+surfaces that carry a prompt change to production: **prompt versions** and the
+**canary** that trials one against live traffic.
 
 ## What a tool is
 
@@ -677,3 +679,170 @@ such key at all, so existing readers see exactly the shape they saw before.
 
 Typed wrappers for all of the above are in `@asyncify-hq/node`
 (`client.agents.evals.run(...)` / `.getRun(...)`).
+
+## Prompt versions
+
+Every save that **changes** a managed agent's `systemPrompt` or `model`
+snapshots it first: `promptVersion` on the agent row moves to the next number
+and the new values are stored as that version, in the same transaction as the
+save. A save that submits identical values versions nothing — the outcome is
+compared, not the request, so a re-submit of the same prompt is not a new
+version.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /v1/agents/:identifier/versions` | the history → `{currentVersion, versions[]}` |
+| `GET /v1/agents/:identifier/versions/:version` | one snapshot in full → `{version:{…}}` |
+| `POST /v1/agents/:identifier/versions/:version/restore` | publish that snapshot as the live config |
+
+**The list is deliberately light.** Each entry is
+`{version, model, promptLength, promptHead, current, createdAt}` — a 140-char
+head, never the prompt body, because a hundred versions of a 100,000-char prompt
+is megabytes down the wire for a list of numbers and dates. The full text comes
+from the single-version route, which returns
+`{version, systemPrompt, model, current, createdAt}`.
+
+**Restore is a SAVE, not a rewind.** It copies the old snapshot forward through
+the ordinary update path, so it mints a **new** version rather than deleting the
+ones after it — restoring v1 publishes v3, and v2 stays in the history:
+
+```bash
+curl -X POST -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/agents/support-bot/versions/1/restore
+# → 200 { "agent": {…}, "restoredFrom": 1, "version": 3 }
+```
+
+`restoredFrom` is what you asked for, `version` is what was published. They are
+equal only when the restore was a no-op — the live config already matched, so
+nothing was minted. Because it goes through the ordinary save path, a restore
+also meets every guard an ordinary save meets, now and later.
+
+**Managed only.** All three routes answer **400** on a bridge agent — its brain
+is your code behind a signed URL, so there is no prompt here to version — and
+**404** for an unknown agent or an unknown version. A `:version` that isn't a
+positive integer is a 404, never a coerced `NaN`.
+
+## Canary: trialling a version on real conversations
+
+A canary puts one prompt version in front of a **percentage of real
+conversations** and compares it against the live prompt on the same traffic.
+
+Two properties make it safe to run on customers. It is **sticky**: the arm is
+rolled once, when a conversation OPENS, and never re-rolled — so a customer
+never meets two different personalities inside one thread, and traffic converges
+over *new* conversations rather than instantly. And it is **not a second brain**:
+a canary-arm turn injects the version's snapshot through the very same
+`candidate` mechanism the pre-save check uses (above), so the trial runs the real
+agent, real tools, real guardrails, real knowledge — only the prompt and model
+swapped. Nothing about the live agent's configuration changes while a trial runs.
+
+| Method & path | Purpose |
+|---|---|
+| `POST /v1/agents/:identifier/canary` | start a trial → `{agent}` |
+| `DELETE /v1/agents/:identifier/canary` | stop it, changing nothing → `{agent}` |
+| `GET /v1/agents/:identifier/canary/report` | the per-arm comparison |
+| `POST /v1/agents/:identifier/canary/promote` | the trial version becomes live |
+
+```bash
+curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/support-bot/canary \
+  -d '{ "version": 8, "percent": 10, "samplePercent": 20 }'
+# → 200 { "agent": { …, "canary": { "version": 8, "percent": 10,
+#                                   "startedAt": "…", "samplePercent": 20 } } }
+```
+
+**Start body:**
+
+| Field | Rules |
+|---|---|
+| `version` | required, a positive integer that exists on this agent (else **404**). |
+| `percent` | required, **1–99**. Both ends are excluded on purpose: 0 is "no trial" (that's `DELETE`) and 100 is "ship it" (that's Promote). An all-or-nothing "split" would leave one arm empty and a comparison with nothing to compare. |
+| `samplePercent` | optional, **0–100**, default **20** — the share of replies sampled for judging, in BOTH arms. Both ends are meaningful here, unlike `percent`: `0` runs the trial on counters alone (spend nothing extra), `100` judges every reply, which is affordable on a low-traffic agent and is the only way a short trial gathers enough judgments to separate the arms. |
+
+**One trial at a time.** Starting a second while one is running is a **409**,
+enforced by the write itself — never a silent replacement, whose partial results
+would be misattributed to the new version. Changing the version or the percent
+means stop, then start. The agent object carries `canary` **only while a trial
+is running**, so its presence is the flag.
+
+**Stop reverts at the next turn.** Conversations already enrolled keep their arm
+recorded (the report needs to know what they were enrolled in) but are served
+the live prompt from their next turn onward — a rejected prompt stops serving
+immediately and everywhere, rather than lingering in the threads that happened to
+open under it.
+
+### The report
+
+```bash
+curl -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/agents/support-bot/canary/report
+```
+
+```jsonc
+{
+  "version": 8, "percent": 10, "samplePercent": 20, "startedAt": "…",
+  "arms": [
+    { "arm": "canary",  "conversations": 42, "turns": 118, "resolutions": 31,
+      "handoffs": 4, "guardPauses": 1, "avgTokensPerTurn": 1840,
+      "judged": { "groundedness": { "avg": 4.4, "n": 24 },
+                  "tone":         { "avg": 4.6, "n": 24 } } },
+    { "arm": "control", "conversations": 391, "turns": 1102, "resolutions": 268,
+      "handoffs": 55, "guardPauses": 9, "avgTokensPerTurn": 1795,
+      "judged": { "groundedness": { "avg": 4.1, "n": 221 },
+                  "tone":         { "avg": 4.5, "n": 221 } } }
+  ]
+}
+```
+
+**Both arms are always present**, zeros included, so an arm with no traffic yet
+reads as "nothing here" rather than vanishing. `judged` is empty until the first
+sampled reply is judged, and always empty at `samplePercent: 0`.
+
+**Both arms are judged at the same rate** — an unjudged control arm is not a
+control: "groundedness 4.4" means nothing without the live prompt's number,
+measured the same way, on the same traffic, by the same judge. The judging is
+sampled, asynchronous, and happens strictly **after** the reply is delivered; a
+broken judge queue degrades the comparison and never the product.
+
+**Two dimensions only, and they are averages, not verdicts.** `groundedness` and
+`tone` are the two that score 1–5 and can therefore be averaged across an arm.
+There is no `refusal` here: it is a requirement, and it is only meaningful
+against a scenario author's declaration of which way a reply should have gone —
+real traffic carries no such declaration, so a refusal verdict would be the judge
+inventing the requirement it then grades against. For the same reason there is no
+pass/fail on this surface, unlike an eval's `min` bar: the evidence is one arm's
+average against the other's.
+
+**Two attributions, deliberately.** `conversations`, `resolutions`, `handoffs`
+and `guardPauses` count by the arm a conversation was **enrolled** in — a thread
+is assigned once, and "did it resolve?" is a property of the thread. `turns`
+count by what **actually served** them: a canary-arm turn that ran on the live
+prompt (after a Stop, or if the version vanished underneath it) is evidence for
+the control arm, not for the trial version.
+
+The report is scoped to the trial running **right now** — there is no history
+endpoint, because the only question it serves is "promote or stop?". When no
+trial is running it is a **404**, not an empty body: a report full of zeros would
+read like a trial going badly instead of a trial that isn't happening.
+
+### Promote
+
+```bash
+curl -X POST -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/agents/support-bot/canary/promote
+# → 200 { "agent": {…}, "promotedFrom": 8, "version": 9 }
+```
+
+Promote **is** the restore path: the winning version's content is published as a
+new version, so every change to what the agent says lands in one append-only
+trail rather than arriving by a second mechanism. Then the trial ends. `404` when
+no trial is running.
+
+**One caveat worth knowing.** The control arm is whatever the live prompt says,
+so editing the live prompt **while a trial is running** changes what the trial is
+being compared against — the numbers already counted stay true, but the
+comparison stops being one experiment. The dashboard warns about this on the
+pre-save panel; nothing blocks the edit.
+
+Typed wrappers are in `@asyncify-hq/node` (`client.agents.versions.*`,
+`client.agents.canary.*`).

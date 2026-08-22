@@ -170,6 +170,56 @@ available (the agent has no model, or its LLM client couldn't be built) — neve
 a silent pass. Compare `run.results` against the previous run's to show a delta
 rather than a wall of green.
 
+## Versioning and canary (managed agents)
+
+Every save that changes a managed agent's prompt or model snapshots itself, so
+the history is append-only — **restore doesn't rewind it, it publishes**:
+
+```ts
+const { versions } = await asyncify.agents.versions.list('acme-support');
+// [{ version: 7, model, promptLength, promptHead, current: true, createdAt }, …]
+
+const { version } = await asyncify.agents.versions.get('acme-support', 5);
+// version.systemPrompt → the full text of that snapshot
+
+// Roll back = a new save carrying v5's content. v6 and v7 stay in the history.
+const restored = await asyncify.agents.versions.restore('acme-support', 5);
+// restored.restoredFrom → 5, restored.version → 8
+```
+
+A new version can also **trial on a share of real conversations** before it
+takes over. The arm is picked when a conversation opens and sticks for its whole
+life — nobody meets two personalities in one thread — and a canary-arm turn runs
+on the trial snapshot through the same candidate mechanism the pre-save check
+uses. Nothing about the live agent changes:
+
+```ts
+await asyncify.agents.canary.start('acme-support', {
+  version: 8,
+  percent: 10,        // 1–99 of NEWLY OPENED conversations join the trial arm
+  samplePercent: 20,  // 0–100 (default 20) of replies judged in BOTH arms
+});
+
+const report = await asyncify.agents.canary.report('acme-support');
+// report.arms → exactly two, 'canary' and 'control', zeros before traffic lands
+//   { arm, conversations, turns, resolutions, handoffs, guardPauses,
+//     avgTokensPerTurn, judged: { groundedness: { avg: 4.3, n: 31 }, tone: {…} } }
+
+await asyncify.agents.canary.promote('acme-support'); // …or .stop(…)
+```
+
+Both arms are judged at the **same** rate on purpose — an unjudged control arm
+is not a control. The judged numbers are **averages, not verdicts**: live
+traffic carries no scenario author's declaration of what the reply should have
+been, so there is no bar to pass here, only canary's average against control's.
+`promote` ends the trial by publishing the winner as an ordinary new version;
+`stop` ends it with no change, and enrolled conversations return to the live
+prompt at their next turn. One trial per agent — starting a second is a `409`.
+
+Careful with the control arm: saving an edit to the live prompt **while a trial
+is running** changes what the control arm is serving, so the comparison from
+that point measures against a different baseline than it started with.
+
 ## API surface
 
 | Method | Purpose |
@@ -187,6 +237,8 @@ rather than a wall of green.
 | `agents.memories.list / put / remove` | Per-customer long-term memory (durable facts, by subscriber external id) |
 | `agents.evals.list / create / update / remove` | Per-agent eval scenarios (scripted turns + tool-trace and judged expectations) |
 | `agents.evals.run / runs / getRun` | Run the enabled scenarios — live config, or an unsaved `candidate` — and poll the verdict |
+| `agents.versions.list / get / restore` | Prompt history for a managed agent; restore publishes an old snapshot as a new version |
+| `agents.canary.start / stop / promote / report` | Trial a version on a share of real conversations, then read the per-arm comparison |
 | `approvals.list / decide` | Human-in-the-loop tool-call queue |
 | `settings.getApprovals / putApprovals` | Which channels carry approval cards |
 | `subscriberToken(subscriberId, ttlSeconds?)` | Browser-safe inbox token |

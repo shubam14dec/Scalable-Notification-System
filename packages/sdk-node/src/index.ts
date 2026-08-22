@@ -83,6 +83,14 @@ export interface Agent {
   maxTokens: number | null;
   autoResolveMinutes: number | null;
   hasLlmKey: boolean;
+  /**
+   * The prompt snapshot the agent is serving right now. Every managed save that
+   * CHANGES the prompt or model mints the next number; meaningless on a bridge
+   * agent, which has no prompt to version.
+   */
+  promptVersion: number;
+  /** The trial running right now, or null when none is — see `agents.canary`. */
+  canary: AgentCanary | null;
   status: 'active' | 'disabled';
   createdAt: string;
   updatedAt: string;
@@ -274,6 +282,98 @@ export interface AgentEvalRun {
   candidate?: EvalRunCandidate;
   startedAt: string;
   finishedAt: string | null;
+}
+
+/**
+ * One entry in an agent's prompt history, in the LIGHT shape the list returns:
+ * length + head only, never the whole prompt (a long prompt × a long history is
+ * megabytes down the wire for a list of numbers and dates). `versions.get`
+ * fetches the full text of one.
+ *
+ * HAND-KEPT COPY of the server's versions-list projection
+ * (src/api/routes/agents.ts), which is the source of truth for this wire shape;
+ * this package ships standalone and cannot import server types.
+ */
+export interface AgentPromptVersionSummary {
+  version: number;
+  /** The model this snapshot pinned; null means it ran on the platform default. */
+  model: string | null;
+  promptLength: number;
+  /** First 140 chars of the prompt — enough to tell two versions apart. */
+  promptHead: string;
+  /** True for the version the agent is serving right now. */
+  current: boolean;
+  createdAt: string;
+}
+
+/** One prompt snapshot in full (`versions.get`). */
+export interface AgentPromptVersion {
+  version: number;
+  systemPrompt: string | null;
+  model: string | null;
+  current: boolean;
+  createdAt: string;
+}
+
+/**
+ * The trial running on an agent right now, or `null` when none is. Presence is
+ * the flag: the API sends the object only while a canary is active, so there is
+ * no "percent 0" or "version null" state to interpret.
+ *
+ * HAND-KEPT COPY of the server's `agentView.canary` (src/api/routes/agents.ts).
+ */
+export interface AgentCanary {
+  /** The prompt version on trial. */
+  version: number;
+  /** Share of NEWLY OPENED conversations enrolled in the trial arm, 1–99. */
+  percent: number | null;
+  startedAt: string | null;
+  /** Share of replies judged in BOTH arms; resolved server-side, never null. */
+  samplePercent: number;
+}
+
+/**
+ * One arm of a canary comparison. Both arms are ALWAYS present in a report —
+ * an arm with no traffic yet reports zeros rather than vanishing.
+ *
+ * Two attributions on purpose: `conversations` / `resolutions` / `handoffs` /
+ * `guardPauses` count by the arm a conversation was ENROLLED in (a thread is
+ * assigned once, and "did it resolve?" is a property of the thread), while
+ * `turns` count by what ACTUALLY SERVED them — a canary-arm turn that ran on
+ * the live prompt (after a Stop, say) is evidence for the control arm, not for
+ * the trial version.
+ *
+ * HAND-KEPT COPY of the server's `CanaryArmStats` + `judged`
+ * (src/db/conversations.repo.ts, src/core/turn-judge.ts).
+ */
+export interface CanaryArmReport {
+  arm: 'canary' | 'control';
+  conversations: number;
+  turns: number;
+  resolutions: number;
+  handoffs: number;
+  guardPauses: number;
+  /** Mean input+output tokens over turns that RECORDED usage; null if none did. */
+  avgTokensPerTurn: number | null;
+  /**
+   * Judged averages by dimension (`groundedness`, `tone`) — `{ avg, n }` each,
+   * from the sampled turns of THIS arm. Empty until the first sampled reply is
+   * judged, and always empty when the trial runs at `samplePercent: 0`.
+   *
+   * Averages only: live traffic carries no scenario author's bar, so there is
+   * no pass/fail here — the comparison is canary's average against control's.
+   */
+  judged: Record<string, { avg: number; n: number }>;
+}
+
+/** The comparison behind a Promote decision, scoped to the CURRENT trial. */
+export interface CanaryReport {
+  version: number;
+  percent: number | null;
+  samplePercent: number;
+  startedAt: string;
+  /** Exactly two entries: the trial arm and the live-prompt control arm. */
+  arms: CanaryArmReport[];
 }
 
 /**
@@ -589,6 +689,107 @@ export class AsyncifyClient {
         this.request<{ run: AgentEvalRun }>(
           'GET',
           `/v1/agents/${encodeURIComponent(identifier)}/evals/runs/${encodeURIComponent(runId)}`,
+        ),
+    },
+
+    /**
+     * Prompt history for a managed agent. Every save that CHANGES the prompt or
+     * the model snapshots itself, so the history is append-only: `restore` does
+     * not rewind it, it publishes the old content as a NEW version. Reads as
+     * `client.agents.versions.list('acme-support')`.
+     *
+     * Managed agents only — a bridge agent's brain is your own code behind a
+     * signed URL, so every route here answers 400 rather than pretending there
+     * is a prompt to version.
+     */
+    versions: {
+      /** The history, newest first, in the light shape (no prompt bodies). */
+      list: (identifier: string) =>
+        this.request<{ currentVersion: number; versions: AgentPromptVersionSummary[] }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/versions`,
+        ),
+      /** One snapshot in full, prompt text included. */
+      get: (identifier: string, version: number) =>
+        this.request<{ version: AgentPromptVersion }>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/versions/${version}`,
+        ),
+      /**
+       * Publish an old snapshot as the live config. This is a SAVE, not a
+       * rewind: it copies the snapshot forward through the ordinary update
+       * path, so it mints a new version (`version` in the response) and meets
+       * every guard an ordinary save meets. Restoring v1 never deletes v2 — it
+       * publishes v3. A restore whose content already matches live mints
+       * nothing, and `version` then equals `restoredFrom`.
+       */
+      restore: (identifier: string, version: number) =>
+        this.request<{ agent: Agent; restoredFrom: number; version: number }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/versions/${version}/restore`,
+        ),
+    },
+
+    /**
+     * Trial a prompt version on a share of REAL conversations before it takes
+     * over. The arm is assigned when a conversation OPENS and is sticky for its
+     * whole life — a customer never meets two personalities in one thread — so
+     * traffic converges over new conversations rather than instantly. Reads as
+     * `client.agents.canary.start('acme-support', { version: 7, percent: 10 })`.
+     *
+     * Managed agents only (bridge → 400), one trial per agent at a time.
+     */
+    canary: {
+      /**
+       * Start the trial. `percent` is 1–99 — both ends excluded, because 0 is
+       * "no trial" (that is `stop`) and 100 is "ship it" (that is `promote`),
+       * and an all-or-nothing split leaves the comparison with an empty arm.
+       * `samplePercent` (0–100, default 20) is the share of replies judged in
+       * BOTH arms; 0 runs the trial on counters alone.
+       *
+       * A second start while one is already running is a **409**, never a
+       * silent replacement: changing the version or the percent means stop,
+       * then start. Unknown version → 404.
+       */
+      start: (
+        identifier: string,
+        options: { version: number; percent: number; samplePercent?: number },
+      ) =>
+        this.request<{ agent: Agent }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/canary`,
+          options,
+        ),
+      /**
+       * End the trial without promoting. Conversations already enrolled keep
+       * their arm (it records what they were enrolled in, which the report
+       * needs) but revert to the live prompt at their NEXT turn.
+       */
+      stop: (identifier: string) =>
+        this.request<{ agent: Agent }>(
+          'DELETE',
+          `/v1/agents/${encodeURIComponent(identifier)}/canary`,
+        ),
+      /**
+       * The trial version becomes the live prompt and the trial ends. This is
+       * the `versions.restore` path, so promotion enters history as an ordinary
+       * versioned save rather than by a second mechanism.
+       */
+      promote: (identifier: string) =>
+        this.request<{ agent: Agent; promotedFrom: number; version: number }>(
+          'POST',
+          `/v1/agents/${encodeURIComponent(identifier)}/canary/promote`,
+        ),
+      /**
+       * The per-arm comparison behind the promote-or-stop decision: counters
+       * for both arms plus judged averages from the sampled turns of each.
+       * Scoped to the CURRENT trial — **404** when none is running, rather than
+       * a report full of zeros that would read like a trial going badly.
+       */
+      report: (identifier: string) =>
+        this.request<CanaryReport>(
+          'GET',
+          `/v1/agents/${encodeURIComponent(identifier)}/canary/report`,
         ),
     },
 

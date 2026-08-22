@@ -756,9 +756,10 @@ exempt — a reply that makes no factual claims scores 5.
 credentials Acme configured for the agent. That is a deliberate tradeoff — a model
 grading its own output is a known bias, and it buys zero extra setup, zero extra
 vendor and no second key to rotate. A `judgeModel` override that points the judge
-at a different model is future work; the same engine is what a **live judge
-supervisor** (scoring real conversations after the fact, not just evals) will run
-on.
+at a different model is future work. The same engine already grades **real**
+conversations — that's how a canary compares its two arms (*The canary*, below) —
+and a full **live judge supervisor**, watching every conversation rather than a
+trial's sample, is the rung above that.
 
 **A dimension that couldn't be graded says so.** Judging needs an LLM client. The
 dashboard and API runs build the agent's own; `npm run eval` holds a tenant api
@@ -810,8 +811,10 @@ conversations**, judged dimensions included. A regression doesn't get a warning;
 it fails the build and the change cannot merge. The boundary is worth being
 straight about: that gate protects *our* fixture agent, which lives in git.
 Acme's agents live in the database, where Priya edits them — their safety net is
-the in-product ladder: manual eval runs and the **pre-save check** below, both
-shipped, with a prompt canary the next rung up.
+the in-product ladder: manual eval runs, the **pre-save check**, and a **prompt
+canary** on real conversations, all three shipped and all three below. The next
+rung up is live supervision — judging *every* conversation, not a trial's
+sample.
 
 ### The pre-save check: grading the edit, not the last version
 
@@ -866,6 +869,109 @@ prompt here to grade (the API says so outright rather than pretending —
 That closes the loop that started on the Conversations page: a production
 surprise becomes a **Save as eval** draft, Priya polishes and enables it, and
 from that moment it stands between every future prompt edit and Maya.
+
+### Every save is a version
+
+Evals answer "does this prompt still pass the tests I wrote?" They can't answer
+"was last Tuesday's wording better?" — so Asyncify keeps the wording.
+
+Every save that actually **changes** a managed agent's prompt or model snapshots
+it first. The agent grows a **Versions** tab: a dated list, the live one marked
+**current**, each row showing its model and the opening line of its prompt, with
+the full text one click away. (Re-saving the same words changes nothing — a
+version records a *change*, not a click.)
+
+Priya can **Restore** any of them. And restore does the honest thing: it
+**publishes**, it doesn't rewind. Restoring v1 doesn't delete v2 and v3 — it
+copies v1's words forward as **v4**. The history only ever grows, so "what was
+the agent saying on the day that complaint came in?" always has an answer, and a
+rollback is just another entry in the same trail. And because a restore is a
+live prompt change like any other, it gets the same safety net: on an agent with
+enabled evals, Restore opens the **pre-save check** against the old snapshot and
+only Priya's confirmation actually restores it. She can also **Run evals against this version** straight from a row —
+grading an old prompt without going anywhere near the live one.
+
+### The canary: a version on trial, on real conversations
+
+Evals are Priya's scenarios. The pre-save check runs them against her edit. Both
+are her judgment about what *should* happen — and there is one question neither
+can answer: **is the new prompt actually better with real customers?**
+
+So a version can go on **trial**. Priya picks a version, picks a percentage —
+say **10%** — and starts the canary. From that moment, one in ten *newly opened*
+conversations is answered by the trial version. The other nine are answered by
+the live prompt, exactly as before.
+
+Three things about that are worth being precise, because they're what makes it
+safe to point at Maya:
+
+- **It's sticky.** The arm is decided once, when Maya's conversation opens, and
+  never re-rolled. Maya never talks to two different personalities in one
+  thread — mid-conversation her agent doesn't change its voice, its policy, or
+  its mind. It also means traffic converges *gradually*, over new conversations,
+  not the instant Priya hits Start.
+- **It's the same machinery as the pre-save check.** A trial turn is the real
+  agent — real tools, real guardrails, real knowledge, real approvals — with only
+  the prompt (and model) swapped in for that turn, through the exact mechanism
+  the pre-save check already uses. There's no shadow clone to drift out of sync.
+- **Nothing about the live agent changes.** Priya's prompt in the editor is
+  untouched; the other 90% of conversations don't know a trial is happening. If
+  she stops the trial, the conversations that had joined it are back on the live
+  prompt at their **next turn** — a prompt she's rejected stops serving
+  immediately, not whenever those threads happen to end.
+
+**The comparison panel.** A trial without evidence is just a coin flip with
+extra steps, so the canary shows Priya two columns — **live** and **trial** —
+over the same window:
+
+```
+                       live            trial (v8)
+  conversations         391                    42
+  turns               1,102                   118
+  resolutions           268                    31
+  handoffs               55                     4
+  guard pauses            9                     1
+  avg tokens/turn     1,795                 1,840
+  ───────────────────────────────────────────────
+  groundedness 4.1 · n=221   groundedness 4.4 · n=24
+  tone         4.5 · n=221   tone         4.6 · n=24
+```
+
+The counters come from the conversations themselves. The judged rows come from
+the same LLM judge the evals use, run **after the fact** on a sampled share of
+real replies — **20%** of them, and the same 20% **in both arms** (a trial
+started through the API can set that share anywhere from 0, meaning counters
+only, to 100). Sampling **both** arms, at the **same** rate, is the part that
+matters: *an unjudged control arm is not a control.* "Groundedness 4.4" means nothing
+without the live prompt's 4.1, measured the same way, on the same traffic, by
+the same judge. The judging never touches Maya's reply — it happens after she's
+already got it.
+
+Two honest notes on those numbers:
+
+- **They're averages, not verdicts.** In an eval, Priya writes the bar and the
+  runner says pass or fail. Live traffic has no author saying what *should* have
+  happened, so there is no bar here and nothing is marked failed. The evidence is
+  one column against the other. (For the same reason only groundedness and tone
+  are graded — `refusal` is a requirement, and inventing the requirement in order
+  to grade against it would be worse than not grading at all.)
+- **Don't edit the live prompt mid-trial.** The control column *is* the live
+  prompt. Saving an edit while a trial is running moves the thing the trial is
+  being measured against — the turns already counted stay true, but from that
+  point it isn't one experiment any more. Asyncify warns her on the pre-save
+  panel when she tries; it doesn't stop her, because it's her agent.
+
+**Then Promote is a decision, not a hope.** With the evidence next to the button,
+Priya either **Promotes** — the trial version becomes the live prompt, published
+as an ordinary new version in the same history as every other save, and the trial
+ends — or she **Stops**, and nothing changes except that she now knows.
+
+That's the point of the whole ladder: a prompt edit starts as a guess, becomes a
+graded change, and only becomes everyone's agent after it has out-performed the
+one it replaces on real conversations.
+
+*(All of it is API too — the version history, the trial, and the comparison —
+in [docs/AGENT-TOOLS.md](AGENT-TOOLS.md) and `@asyncify-hq/node`.)*
 
 ---
 
@@ -990,7 +1096,7 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 | Handoff | `handoff_to_human` built-in; live "waiting for human" queue + operator reply box; teammate label to the customer; attributed summary on handback; reused `approvals` ops audience |
 | Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker |
 | Notifications | workflows/digests/delays from agent tools, proactive pushes, resolve webhooks, approval pings |
-| Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); pre-save check — a prompt edit is graded before it saves, warn never block; one-click eval from a real conversation; a config-as-code fixture agent gated by a required CI check (a regression fails the build, not just a warning); anti-fabrication transcripts |
+| Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); pre-save check — a prompt edit is graded before it saves, warn never block; one-click eval from a real conversation; append-only prompt versions (restore publishes, never rewinds); prompt canary — a version trials on a % of real conversations, sticky per conversation, with a per-arm comparison (counters + judged averages sampled from both arms at the same rate) behind Promote; a config-as-code fixture agent gated by a required CI check (a regression fails the build, not just a warning); anti-fabrication transcripts |
 | Ops | connections re-pointable with history; `asyncify dev` local loop |
 
 *Deep dives: `docs/AGENT-TOOLS.md` (tools, endpoint contract, approvals,
