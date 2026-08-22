@@ -292,10 +292,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       Pickup = read ~/.claude/plans/phase-streaming-replies-PARKED.md,
       launch the 4 slices.
 - [x] A2. LLM-judge dimensions — SHIPPED 2026-08-21, review above.
-- [ ] A2c. Landing page: judged-evals selling line in the agents scene
-      ("test your prompt like code — with a judge for what traces can't
-      see"); asyncify-site repo, fit into existing scene copy, user-
-      approved 2026-08-21 as "afterwards".
+- (folded into A16 below) A2c. Landing page judged-evals line —
+      superseded 2026-08-23: the site update now covers ALL of A2–A6,
+      see A16.
 - [ ] A2b. LIVE judge supervisor (user's idea 2026-08-21): async judging
       of PRODUCTION turns reusing A2's engine verbatim — per-agent
       toggle (off / sampled % / knowledge-turns-only / all), reply sends
@@ -342,8 +341,43 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       inactivity sweep; Telegram QR handoff.
 - [ ] A15. CLI resilience: asyncify dev 60s reachability gate strands
       users on slow quick-tunnel-DNS days (2026-08-14, 2x 2026-08-19;
-      clean 2026-08-21) — add --wait (default ~5min) or
+      clean 2026-08-21; flaked again 2026-08-22 ×2 and 2026-08-23 —
+      lifetime 1-for-5) — add --wait (default ~5min) or
       keep-waiting-then-rewire.
+- [ ] A16. LANDING PAGE gains the quality ladder (user ask 2026-08-23:
+      "these are the important aspects of production-grade AI agents —
+      update the landing page by these features"). Repo: asyncify-site
+      (sibling; live at asyncify.org via Cloudflare Pages auto-deploy
+      from github.com/shubam14dec/asyncify-site — pushing = deploying,
+      so verify locally first). Absorbs A2c. What to sell (the five
+      shipped rungs, each with its proven one-liner):
+      · A2 judged evals — "test your prompt like code, with a judge for
+        what traces can't see; the model grades, the code decides"
+      · A3 CI gate — "a push that breaks the agent cannot merge — real
+        LLM conversations as a required check" (+ the debut story: it
+        caught a silently-broken test on its first run)
+      · A4 pre-save check — "prompt edits are deploys: yours go through
+        CI, your customers' are graded before Save commits — warn,
+        never block"
+      · A5 versioning + canary — "every prompt save is a version; trial
+        a new one on 10% of real conversations, judged against the old,
+        promote on evidence" ("an unjudged control arm is not a
+        control")
+      · A6 model routing — "the easy turns on a cheaper model — trusted
+        to talk, never to act; escalation is law, not judgment"
+      HOW (constraints from the site's own history): fit the EXISTING
+      agents scenes/copy — extend, don't redesign; GSAP motion stays
+      SUBTLE and only where it improves UX (his standing rule), gate
+      with matchMedia for reduced-motion; keep the shipped performance
+      discipline (stylesheet owns first paint, deferred scene builds —
+      don't regress the 0.4s load); mobile stills pattern for any new
+      scene content; check whether the ladder fits the existing agents
+      answer-back scene as a beat/caption set or earns a compact new
+      section near the install/finale. Copy source of truth:
+      docs/ASYNCIFY-AGENTS-GUIDE.md §9–10 + NOVU-GAP-ANALYSIS quality
+      addendum (claims must stay honest — nothing the product can't
+      demo). Close-out includes phone verification (his pattern) and
+      og-card unchanged.
 - NOTE (standing caveat, not work): the approval-pause eval scenario
   fails loudly if refund_customer is unregistered from support-demo —
   by design.
