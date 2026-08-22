@@ -95,15 +95,17 @@ function ArmColumn({
   samplePercent: number;
 }) {
   const judged = Object.entries(arm?.judged ?? {});
+  // Labels are words a customer already knows, not our internal vocabulary
+  // (his feedback 2026-08-23) — "turns" and "guard pauses" read as jargon.
   const rows: Array<[string, string]> = [
     ['conversations', fmtInt(arm?.conversations)],
-    ['turns', fmtInt(arm?.turns)],
-    ['resolutions', fmtInt(arm?.resolutions)],
-    ['handoffs', fmtInt(arm?.handoffs)],
-    ['guard pauses', fmtInt(arm?.guardPauses)],
+    ['agent replies', fmtInt(arm?.turns)],
+    ['conversations resolved', fmtInt(arm?.resolutions)],
+    ['handed to a human', fmtInt(arm?.handoffs)],
+    ['tool calls paused for approval', fmtInt(arm?.guardPauses)],
     // fmtInt renders null as an em dash: "we recorded no usage" and "it cost
     // nothing" are different claims, and a 0 here would tell the second lie.
-    ['avg tokens/turn', fmtInt(arm?.avgTokensPerTurn)],
+    ['avg tokens per reply', fmtInt(arm?.avgTokensPerTurn)],
   ];
 
   return (
@@ -122,11 +124,27 @@ function ArmColumn({
         ))}
       </dl>
       <div className="mt-2 border-t border-bd pt-2">
+        {/* His feedback 2026-08-23: "n=5" is stats shorthand — a customer
+            shouldn't need to decode it. Every judged line now says what the
+            number IS (a 1-5 average) and where it came from (how many replies
+            the judge scored), in words. */}
+        {judged.length > 0 && (
+          <span className="mb-1 block text-[11px] text-t3">
+            reply quality, scored 1–5 by an LLM judge on a {samplePercent}% sample:
+          </span>
+        )}
         {judged.length > 0 ? (
           judged.map(([dim, stat]) => (
-            <Mono key={dim} className="block text-t2">
-              {dim} {stat.avg.toFixed(1)} · n={stat.n}
-            </Mono>
+            <div key={dim} className="flex items-baseline justify-between gap-3">
+              <span className="text-[12px] text-t3">{dim}</span>
+              <Mono className="text-t2">
+                {stat.avg.toFixed(1)} / 5 avg
+                <span className="text-t3">
+                  {' '}
+                  ({stat.n} {stat.n === 1 ? 'reply' : 'replies'} judged)
+                </span>
+              </Mono>
+            </div>
           ))
         ) : (
           // Empty judged is two different situations, and guessing between them
@@ -134,7 +152,7 @@ function ArmColumn({
           // off means "never, for this trial".
           <span className="text-[11px] text-t3">
             {samplePercent > 0
-              ? `no judged turns yet — sampling ${samplePercent}% of both arms`
+              ? `no judged replies yet — the judge scores a random ${samplePercent}% of replies in both columns`
               : 'judging is off for this trial'}
           </span>
         )}
@@ -310,7 +328,7 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
             <span className="text-t1">{canary.percent}%</span> of new conversations
             {canary.startedAt && ` · started ${timeAgo(canary.startedAt)}`}
             {canary.samplePercent > 0
-              ? ` · judging ${canary.samplePercent}% of turns in both arms`
+              ? ` · an LLM judge scores ${canary.samplePercent}% of replies on both sides`
               : ' · counters only (judging off)'}
           </p>
 
