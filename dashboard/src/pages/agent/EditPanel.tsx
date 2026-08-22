@@ -398,15 +398,33 @@ export function AgentForm({
               <div className="space-y-1 border-t border-bd pt-3">
                 {routingWords ? (
                   <>
-                    <p className="text-[11px] text-t2">
+                    <p className="text-[11px] text-t3">
                       Last {routingStats.data.windowDays} days ·{' '}
-                      <Mono className="text-t2">{fmtInt(routingStats.data.replies)}</Mono> replies
+                      <Mono className="text-t3">{fmtInt(routingStats.data.replies)}</Mono> replies
                     </p>
-                    <p className="text-[11px] text-t2">
-                      {routingWords.cheap} · {routingWords.escalated}
-                    </p>
+                    {/* The headline figures — large numbers, quiet words (his
+                        feedback: these ARE the feature's payoff; 11px prose
+                        buried them). Same figure idiom as the health stats. */}
+                    <div className="flex gap-6 pt-1">
+                      <div>
+                        <Mono className="block text-[20px] leading-tight text-t1">
+                          {routingWords.cheap.pct}%
+                        </Mono>
+                        <span className="mt-0.5 block max-w-[180px] text-[11px] leading-snug text-t2">
+                          {routingWords.cheap.label}
+                        </span>
+                      </div>
+                      <div>
+                        <Mono className="block text-[20px] leading-tight text-t1">
+                          {routingWords.escalated.pct}%
+                        </Mono>
+                        <span className="mt-0.5 block max-w-[180px] text-[11px] leading-snug text-t2">
+                          {routingWords.escalated.label}
+                        </span>
+                      </div>
+                    </div>
                     {routingWords.unrouted && (
-                      <p className="text-[11px] text-t3">{routingWords.unrouted}</p>
+                      <p className="pt-1 text-[11px] text-t3">{routingWords.unrouted}</p>
                     )}
                   </>
                 ) : (

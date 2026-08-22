@@ -417,8 +417,11 @@ export function candidateLabel(candidate: EvalCandidate): string {
  * wonder where the missing point went.
  */
 export function routingSummary(s: AgentRoutingStats): {
-  cheap: string;
-  escalated: string;
+  /** The two headline figures, split from their labels so the panel can set
+   *  the NUMBER large and the words quiet (his feedback 2026-08-23: these are
+   *  the payoff of the whole feature and were whispering in 11px). */
+  cheap: { pct: number; label: string };
+  escalated: { pct: number; label: string };
   unrouted: string | null;
 } | null {
   const routed = s.cheapReplies + s.escalatedReplies;
@@ -427,8 +430,8 @@ export function routingSummary(s: AgentRoutingStats): {
   const escPct = Math.round((s.escalatedReplies / s.replies) * 100);
   const restPct = 100 - cheapPct - escPct;
   return {
-    cheap: `${cheapPct}% of replies were answered by the cheap model`,
-    escalated: `${escPct}% started cheap and escalated to the main model`,
+    cheap: { pct: cheapPct, label: 'of replies were answered by the cheap model' },
+    escalated: { pct: escPct, label: 'started cheap and escalated to the main model' },
     unrouted:
       s.unroutedReplies > 0 && restPct > 0
         ? `The other ${restPct}% ran on the main model without routing — it was switched off when they were sent.`
