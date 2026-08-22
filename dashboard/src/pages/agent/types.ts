@@ -16,6 +16,12 @@ export interface Agent {
   welcomeMessage: string | null;
   suggestedPrompts: SuggestedPrompt[] | null;
   hasLlmKey: boolean;
+  /**
+   * Phase A5: the live prompt-snapshot number (managed agents only — a bridge
+   * agent has no versions behind it). The Versions panel reads the authoritative
+   * marker off the versions endpoint; this is the same number on the agent row.
+   */
+  promptVersion?: number;
   /** Phase 22 G2: per-agent daily token circuit breaker (null = off). */
   maxDailyTokens?: number | null;
   /**

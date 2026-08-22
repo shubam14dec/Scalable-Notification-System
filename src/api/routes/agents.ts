@@ -14,8 +14,10 @@ import {
   findConversationByThread,
   getAgent,
   getAgentById,
+  getAgentPromptVersion,
   getConversation,
   getSubscriberByExternalId,
+  listAgentPromptVersions,
   insertConversationMessage,
   listAgents,
   listConnectionsForAgent,
@@ -251,6 +253,10 @@ function agentView(agent: Agent) {
     // D6 rolling knobs (empty object when unconfigured — defaults apply at fold time).
     context: (agent.context ?? {}) as AgentContext,
     hasLlmKey: Boolean(agent.llm_credentials),
+    // A5: the live snapshot number, so the editor can mark "current" in the
+    // version list without a second round trip. Meaningless for bridge agents
+    // (they have no versions) — the Versions surface is managed-only.
+    promptVersion: agent.prompt_version,
     status: agent.status,
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
@@ -435,6 +441,115 @@ export function registerAgentRoutes(app: FastifyInstance) {
       });
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };
+    },
+  );
+
+  // ---- A5 slice A: prompt versions ----
+  // Every managed prompt/model save snapshots itself (see updateAgent). These
+  // three routes are the history's read + restore surface. Bridge agents 400
+  // rather than 404: the agent exists, versioning simply doesn't apply to a
+  // brain that lives in the customer's own code.
+
+  /** Resolve :identifier + :version, rejecting bridge agents and bad numbers. */
+  async function resolveVersionTarget(
+    tenantId: string,
+    identifier: string,
+    reply: FastifyReply,
+  ): Promise<Agent | null> {
+    const agent = await getAgent(tenantId, identifier);
+    if (!agent) {
+      await reply.code(404).send({ error: 'unknown agent' });
+      return null;
+    }
+    if (agent.runtime !== 'managed') {
+      await reply.code(400).send({
+        error:
+          'prompt versions need a managed agent: a bridge agent’s brain is your own code, not a prompt',
+      });
+      return null;
+    }
+    return agent;
+  }
+
+  /** :version is a positive integer or nothing — never a coerced NaN. */
+  function parseVersion(raw: string): number | null {
+    return /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null;
+  }
+
+  app.get<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/versions',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await resolveVersionTarget(req.tenant.id, req.params.identifier, reply);
+      if (!agent) return reply;
+      const versions = await listAgentPromptVersions(agent.id);
+      return {
+        currentVersion: agent.prompt_version,
+        // Lists stay light: length + head, never the whole prompt (a long
+        // prompt × a long history is megabytes for a panel of dates).
+        versions: versions.map((v) => ({
+          version: v.version,
+          model: v.model,
+          promptLength: v.prompt_length,
+          promptHead: v.prompt_head,
+          current: v.version === agent.prompt_version,
+          createdAt: v.created_at,
+        })),
+      };
+    },
+  );
+
+  app.get<{ Params: { identifier: string; version: string } }>(
+    '/v1/agents/:identifier/versions/:version',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await resolveVersionTarget(req.tenant.id, req.params.identifier, reply);
+      if (!agent) return reply;
+      const version = parseVersion(req.params.version);
+      const row = version && (await getAgentPromptVersion(agent.id, version));
+      if (!row) return reply.code(404).send({ error: 'unknown version' });
+      return {
+        version: {
+          version: row.version,
+          systemPrompt: row.system_prompt,
+          model: row.model,
+          current: row.version === agent.prompt_version,
+          createdAt: row.created_at,
+        },
+      };
+    },
+  );
+
+  /**
+   * Restore is a SAVE, not a rewind. It copies the old snapshot forward through
+   * the ordinary update path, so it mints a NEW version, bumps prompt_version,
+   * and will meet whatever guards later land on saves (A5 slice B's canary).
+   * History is append-only: restoring v1 never deletes v2, it publishes v3.
+   */
+  app.post<{ Params: { identifier: string; version: string } }>(
+    '/v1/agents/:identifier/versions/:version/restore',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await resolveVersionTarget(req.tenant.id, req.params.identifier, reply);
+      if (!agent) return reply;
+      const version = parseVersion(req.params.version);
+      const row = version && (await getAgentPromptVersion(agent.id, version));
+      if (!row) return reply.code(404).send({ error: 'unknown version' });
+
+      const restored = await updateAgent(req.tenant.id, req.params.identifier, {
+        systemPrompt: row.system_prompt ?? undefined,
+        // null is the CLEAR sentinel here (back to DEFAULT_MODEL) — restoring a
+        // snapshot that ran without a pinned model must reproduce exactly that.
+        model: row.model,
+      });
+      if (!restored) return reply.code(404).send({ error: 'unknown agent' });
+      return {
+        agent: agentView(restored),
+        restoredFrom: row.version,
+        // Equal to restoredFrom's content but a new number — unless the restore
+        // was a no-op (the live config already matched), which mints nothing.
+        version: restored.prompt_version,
+      };
     },
   );
 

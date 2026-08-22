@@ -14,9 +14,10 @@ import { HealthStrip } from './agent/HealthStrip';
 import { KnowledgePanel } from './agent/KnowledgePanel';
 import { MemoryPanel } from './agent/MemoryPanel';
 import { ToolsPanel } from './agent/ToolsPanel';
+import { VersionsPanel } from './agent/VersionsPanel';
 import type { Agent, AgentBody, ChannelInfo } from './agent/types';
 
-type TabId = 'edit' | 'channels' | 'tools' | 'evals' | 'knowledge' | 'memory';
+type TabId = 'edit' | 'channels' | 'tools' | 'evals' | 'versions' | 'knowledge' | 'memory';
 
 export default function AgentDetailPage() {
   const { identifier = '' } = useParams();
@@ -87,6 +88,7 @@ export default function AgentDetailPage() {
       ? ([
           { id: 'tools', label: 'Tools' },
           { id: 'evals', label: 'Evals' },
+          { id: 'versions', label: 'Versions' },
           { id: 'knowledge', label: 'Knowledge' },
           { id: 'memory', label: 'Memory' },
         ] as { id: TabId; label: string }[])
@@ -205,6 +207,7 @@ export default function AgentDetailPage() {
         {activeTab === 'channels' && <ChannelsPanel agent={agent} />}
         {activeTab === 'tools' && managed && <ToolsPanel agent={agent} />}
         {activeTab === 'evals' && managed && <EvalsPanel agent={agent} />}
+        {activeTab === 'versions' && managed && <VersionsPanel agent={agent} />}
         {activeTab === 'knowledge' && managed && <KnowledgePanel agent={agent} />}
         {activeTab === 'memory' && managed && <MemoryPanel agent={agent} />}
       </div>

@@ -825,3 +825,25 @@ alter table conversations add column if not exists had_human boolean not null de
 -- stored result is attributable to the config that produced it. NULL on every
 -- ordinary run — pre-A4 rows and plain runs keep their exact previous shape.
 alter table agent_eval_runs add column if not exists candidate jsonb;
+
+-- ---- Phase A5 Slice A: prompt versioning ----
+-- Every managed prompt/model save mints an IMMUTABLE snapshot, exactly the
+-- template-versioning shape above (parent counter + (id, version) rows): the
+-- agent row carries the live pointer, agent_prompt_versions carries the
+-- history. Append-only — a restore is a NEW save that copies an old snapshot
+-- forward, never a rewrite, so the trail of what the agent has ever said is
+-- complete. Bridge agents get no rows (their brain is customer code behind a
+-- signed URL — there is no prompt here to version); the guard is at write time.
+-- Both snapshot columns are nullable: a managed agent may legitimately run with
+-- no model (DEFAULT_MODEL applies) and the pre-edit state of a converted agent
+-- may have neither.
+alter table agents add column if not exists prompt_version int not null default 1;
+
+create table if not exists agent_prompt_versions (
+  agent_id      uuid not null references agents(id) on delete cascade,
+  version       int  not null,
+  system_prompt text,
+  model         text,
+  created_at    timestamptz not null default now(),
+  primary key (agent_id, version)
+);

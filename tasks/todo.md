@@ -6,6 +6,43 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A5 — prompt versioning + canary (plan approved 2026-08-23)
+Every prompt edit = an immutable restorable version (template-versioning
+pattern: agents.prompt_version + agent_prompt_versions(agent_id,
+version, system_prompt, model)); a new version can trial on a % of REAL
+conversations before taking over. Design: (1) canary IS the A4
+candidate knob at turn time — conversation in canary arm → inject the
+canary version as candidate; no second override mechanism. (2) STICKY
+per conversation — arm assigned once at conversation open (one column);
+a customer never talks to two personalities in one thread; traffic
+converges over NEW conversations, not instantly. (3) One active canary
+per agent; Promote = trial version becomes live + canary ends; version
+delete/restore blocked around an active canary. (4) Comparison = ops
+counters per arm (set-based SQL) + SAMPLED async judging of real turns
+(default 20% both arms, configurable; A2 judgeReply verbatim,
+after-reply, never blocking) — deliberately the seed of A2b (which
+shrinks to all-conversation supervision + alerting + auto-handoff).
+Scale: O(1) arm roll at open; judging bounded by sample% × traffic.
+- [ ] Slice A — versioning: schema + snapshot on prompt/model save +
+      API list/get/restore + dashboard Versions panel (view, Restore,
+      Run-evals-against-this-version via candidate). Sequenced first.
+- [ ] Slice B — canary core: config (version+percent 1-99, one active,
+      managed-only), sticky arm at conversation open, turn-time
+      candidate injection, Start/Stop/Promote API + controls.
+- [ ] Slice C — comparison: per-arm counters + sampled turn judging
+      (per-turn storage, per-arm averages) + Canary panel with
+      Promote/Stop.
+- [ ] Slice D — docs+close-out: guide canary story, AGENT-TOOLS API,
+      gap-analysis, sdk types + changeset, todo, INTERVIEW-PREP.
+- [x] Slice E — A2/A3/A4 docs AUDIT — DONE 2026-08-23 (commit 918c69c):
+      7 files fixed (README contributor gate warning + pre-save para;
+      sdk-node README's previously-undocumented agents.evals surface +
+      changeset; AGENT-TOOLS pre-A2 claims incl. Grounding-v1
+      correction; guide's 4 contradicting summaries; evals/README
+      intro; ARCH-COMPARISON A4; DEPLOYMENT env-var precision), 4
+      correctly needed nothing (ARCHITECTURE/ROADMAP/REQUEST-FLOW are
+      pre-agents-scope docs; NOVU-GAP already current).
+
 ### Phase A4 — SHIPPED 2026-08-22 (review)
 All 3 slices done (commits 10b6af5, eb022b3, 2bef096), suite 752→761,
 root+dashboard+sdk tsc clean. What shipped: candidate {systemPrompt?,

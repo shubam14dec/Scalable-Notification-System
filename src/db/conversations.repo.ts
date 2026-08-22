@@ -31,6 +31,11 @@ export interface Agent {
   /** Up to 6 one-tap starters offered with the welcome (null = none). */
   suggested_prompts: Array<{ title: string; message: string }> | null;
   status: 'active' | 'disabled';
+  /**
+   * A5: which agent_prompt_versions row is LIVE. Managed agents only — a bridge
+   * agent keeps the default 1 with no version rows behind it, meaning nothing.
+   */
+  prompt_version: number;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;
@@ -116,8 +121,11 @@ export async function createAgent(a: {
   suggestedPrompts?: Array<{ title: string; message: string }> | null;
   context?: AgentContext;
 }): Promise<Agent | null> {
-  const { rows } = await pool.query(
-    `insert into agents
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `insert into agents
        (tenant_id, identifier, name, description, runtime, bridge_url,
         signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
         auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens, context)
@@ -125,27 +133,47 @@ export async function createAgent(a: {
              coalesce($17::jsonb, '{}'::jsonb))
      on conflict (tenant_id, identifier) do nothing
      returning *`,
-    [
-      a.tenantId,
-      a.identifier,
-      a.name,
-      a.description ?? null,
-      a.runtime,
-      a.bridgeUrl ?? null,
-      a.sealedSecret,
-      a.model ?? null,
-      a.systemPrompt ?? null,
-      a.llmBaseUrl ?? null,
-      a.sealedLlmCredentials ?? null,
-      a.maxTokens ?? null,
-      a.autoResolveMinutes ?? null,
-      a.welcomeMessage ?? null,
-      a.suggestedPrompts ? JSON.stringify(a.suggestedPrompts) : null,
-      a.maxDailyTokens ?? null,
-      a.context ? JSON.stringify(a.context) : null,
-    ],
-  );
-  return rows[0] ?? null;
+      [
+        a.tenantId,
+        a.identifier,
+        a.name,
+        a.description ?? null,
+        a.runtime,
+        a.bridgeUrl ?? null,
+        a.sealedSecret,
+        a.model ?? null,
+        a.systemPrompt ?? null,
+        a.llmBaseUrl ?? null,
+        a.sealedLlmCredentials ?? null,
+        a.maxTokens ?? null,
+        a.autoResolveMinutes ?? null,
+        a.welcomeMessage ?? null,
+        a.suggestedPrompts ? JSON.stringify(a.suggestedPrompts) : null,
+        a.maxDailyTokens ?? null,
+        a.context ? JSON.stringify(a.context) : null,
+      ],
+    );
+    const agent: Agent | undefined = rows[0];
+    // A5: a managed agent is born at version 1 — the prompt it was created with
+    // is history from the first second, so the version list is never missing its
+    // own origin. Bridge agents get no row (no prompt to version). Same
+    // transaction as the insert: an agent can never exist without its v1.
+    if (agent && agent.runtime === 'managed') {
+      await client.query(
+        `insert into agent_prompt_versions (agent_id, version, system_prompt, model)
+         values ($1, 1, $2, $3)
+         on conflict (agent_id, version) do nothing`,
+        [agent.id, agent.system_prompt, agent.model],
+      );
+    }
+    await client.query('COMMIT');
+    return agent ?? null;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function listAgents(tenantId: string): Promise<Agent[]> {
@@ -178,7 +206,12 @@ export async function updateAgent(
     runtime?: 'bridge' | 'managed';
     bridgeUrl?: string;
     status?: string;
-    model?: string;
+    /**
+     * null CLEARS the model (back to DEFAULT_MODEL) — '' is the wire sentinel.
+     * The public PATCH schema can't produce null (model is min(1)); the clear
+     * exists so an A5 restore can reproduce a snapshot that had no model.
+     */
+    model?: string | null;
     systemPrompt?: string;
     llmBaseUrl?: string | null;
     sealedLlmCredentials?: string;
@@ -195,14 +228,31 @@ export async function updateAgent(
     context?: AgentContext;
   },
 ): Promise<Agent | null> {
-  const { rows } = await pool.query(
-    `update agents set
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Lock the agent row for the whole save. Two concurrent prompt edits would
+    // otherwise read the same version counter and race for the same version
+    // number — one would lose its snapshot to the primary key. Serialized here,
+    // the second save simply mints the next version.
+    const before = await client.query(
+      'select * from agents where tenant_id = $1 and identifier = $2 for update',
+      [tenantId, identifier],
+    );
+    const existing: Agent | undefined = before.rows[0];
+    if (!existing) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const { rows } = await client.query(
+      `update agents set
        name            = coalesce($3, name),
        description     = coalesce($4, description),
        runtime         = coalesce($5, runtime),
        bridge_url      = coalesce($6, bridge_url),
        status          = coalesce($7, status),
-       model           = coalesce($8, model),
+       -- '' sentinel clears the model (back to DEFAULT_MODEL)
+       model           = case when $8::text = '' then null else coalesce($8, model) end,
        system_prompt   = coalesce($9, system_prompt),
        -- '' sentinel clears the base URL (back to api.anthropic.com)
        llm_base_url    = case when $10::text = '' then null else coalesce($10, llm_base_url) end,
@@ -225,29 +275,121 @@ export async function updateAgent(
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
-    [
-      tenantId,
-      identifier,
-      patch.name ?? null,
-      patch.description ?? null,
-      patch.runtime ?? null,
-      patch.bridgeUrl ?? null,
-      patch.status ?? null,
-      patch.model ?? null,
-      patch.systemPrompt ?? null,
-      patch.llmBaseUrl === null ? '' : (patch.llmBaseUrl ?? null),
-      patch.sealedLlmCredentials ?? null,
-      patch.maxTokens ?? null,
-      patch.autoResolveMinutes === null ? 0 : (patch.autoResolveMinutes ?? null),
-      patch.welcomeMessage === null ? '' : (patch.welcomeMessage ?? null),
-      patch.suggestedPrompts === null
-        ? 'null'
-        : patch.suggestedPrompts === undefined
-          ? null
-          : JSON.stringify(patch.suggestedPrompts),
-      patch.maxDailyTokens === null ? 0 : (patch.maxDailyTokens ?? null),
-      patch.context === undefined ? null : JSON.stringify(patch.context),
-    ],
+      [
+        tenantId,
+        identifier,
+        patch.name ?? null,
+        patch.description ?? null,
+        patch.runtime ?? null,
+        patch.bridgeUrl ?? null,
+        patch.status ?? null,
+        patch.model === null ? '' : (patch.model ?? null),
+        patch.systemPrompt ?? null,
+        patch.llmBaseUrl === null ? '' : (patch.llmBaseUrl ?? null),
+        patch.sealedLlmCredentials ?? null,
+        patch.maxTokens ?? null,
+        patch.autoResolveMinutes === null ? 0 : (patch.autoResolveMinutes ?? null),
+        patch.welcomeMessage === null ? '' : (patch.welcomeMessage ?? null),
+        patch.suggestedPrompts === null
+          ? 'null'
+          : patch.suggestedPrompts === undefined
+            ? null
+            : JSON.stringify(patch.suggestedPrompts),
+        patch.maxDailyTokens === null ? 0 : (patch.maxDailyTokens ?? null),
+        patch.context === undefined ? null : JSON.stringify(patch.context),
+      ],
+    );
+    let agent: Agent = rows[0];
+
+    // ---- A5: the save mints a version ----
+    // The trigger is the OUTCOME, not the request: a PATCH that carries the
+    // same prompt it already had changes nothing, so it versions nothing. Only
+    // a real change to what the brain is (prompt or model) is history.
+    const promptChanged =
+      agent.system_prompt !== existing.system_prompt || agent.model !== existing.model;
+    if (agent.runtime === 'managed' && promptChanged) {
+      const { rows: maxRows } = await client.query(
+        'select coalesce(max(version), 0)::int as max from agent_prompt_versions where agent_id = $1',
+        [agent.id],
+      );
+      let previous: number = maxRows[0].max;
+      // BACKFILL: an agent older than versioning (or one just converted from
+      // bridge) has no rows. Seed v1 from the PRE-EDIT values first, so its
+      // original prompt enters history instead of being overwritten into
+      // oblivion by its own first edit — then this save lands as v2.
+      if (previous === 0) {
+        await client.query(
+          `insert into agent_prompt_versions (agent_id, version, system_prompt, model)
+           values ($1, 1, $2, $3)`,
+          [agent.id, existing.system_prompt, existing.model],
+        );
+        previous = 1;
+      }
+      const next = previous + 1;
+      await client.query(
+        `insert into agent_prompt_versions (agent_id, version, system_prompt, model)
+         values ($1, $2, $3, $4)`,
+        [agent.id, next, agent.system_prompt, agent.model],
+      );
+      const bumped = await client.query(
+        'update agents set prompt_version = $2 where id = $1 returning *',
+        [agent.id, next],
+      );
+      agent = bumped.rows[0];
+    }
+
+    await client.query('COMMIT');
+    return agent;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ---- A5: prompt versions (immutable snapshots of a managed agent's brain) ----
+
+export interface AgentPromptVersion {
+  agent_id: string;
+  version: number;
+  system_prompt: string | null;
+  model: string | null;
+  created_at: string;
+}
+
+/**
+ * The history list. Deliberately NOT the prompt text: a hundred versions of a
+ * 100k-char prompt is megabytes down the wire for a panel that only renders
+ * numbers and dates. The length + head are enough to tell versions apart; the
+ * full text is one click away on the single-version route.
+ */
+export async function listAgentPromptVersions(
+  agentId: string,
+): Promise<
+  Array<{ version: number; model: string | null; prompt_length: number; prompt_head: string; created_at: string }>
+> {
+  const { rows } = await pool.query(
+    `select version,
+            model,
+            coalesce(length(system_prompt), 0)::int as prompt_length,
+            coalesce(left(system_prompt, 140), '')  as prompt_head,
+            created_at
+       from agent_prompt_versions
+      where agent_id = $1
+      order by version desc`,
+    [agentId],
+  );
+  return rows;
+}
+
+export async function getAgentPromptVersion(
+  agentId: string,
+  version: number,
+): Promise<AgentPromptVersion | null> {
+  const { rows } = await pool.query(
+    'select * from agent_prompt_versions where agent_id = $1 and version = $2',
+    [agentId, version],
   );
   return rows[0] ?? null;
 }
