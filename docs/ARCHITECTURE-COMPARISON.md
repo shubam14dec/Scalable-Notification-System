@@ -158,6 +158,19 @@ architecture — we started where they're heading.
   no scenario author's bar). Their environment-promotion subsystem moves
   a config between environments; nothing on their side measures two
   prompt versions against each other on traffic they are both serving.
+  **2026-08-23 (A6)** finally spent what the gate bought: cheap-first
+  **model routing**, held back until A3 could prove a small model holds
+  the bar. Every routed turn runs on the tenant's cheap model first and
+  a structural law — not a model's self-assessment — decides whether
+  that attempt ships: text or the three safe bookkeeping tools ship;
+  any other `tool_use` discards it and re-runs the whole turn on the
+  main model in a clean room (shared attempt context rather than
+  recursion, so the cheap attempt's own `remember` writes can't leak
+  into the strong prompt). Cheap-model errors escalate the same way, so
+  a misconfigured router degrades a bill and never a turn. Turning it
+  on rides the A4 candidate knob (`candidate.routing`, absent/null/
+  object) straight into the pre-save check. Their agents are
+  managed-Claude only, so there is no second tier to route between.
   Still worth copying from them: **mock-tape speed** for pure-prompt
   iteration.
 

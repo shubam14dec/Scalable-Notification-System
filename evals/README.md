@@ -32,6 +32,14 @@ is in
 **[ASYNCIFY-AGENTS-GUIDE.md](../docs/ASYNCIFY-AGENTS-GUIDE.md)** ("Testing your
 agent (evals)").
 
+An API/dashboard run can also carry a **`candidate`** — `{systemPrompt?, model?,
+routing?}` — so the scenarios grade a config the agent hasn't been saved with yet
+(what the pre-save check does). `routing` is the cheap-first model router, and it
+has three states: **absent** means the router steps aside for the whole run,
+**`null`** grades the agent with routing explicitly OFF, and **an object** routes
+the run through *that* config — an eval grades the config it was given. Full
+reference: [docs/AGENT-TOOLS.md](../docs/AGENT-TOOLS.md).
+
 ## What you need running
 
 - **API** on `ASYNCIFY_API_URL` (default `http://localhost:3000`) — `npm run api`

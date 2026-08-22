@@ -6,7 +6,26 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A6 — model routing (plan approved 2026-08-23)
+### Phase A6 — SHIPPED 2026-08-23 (review)
+All 3 slices done (commits 0a316de, f102d1c, +docs), suite 799→827,
+root+dashboard+sdk tsc clean. What shipped: cheap-first routing with
+escalation as LAW (closed safe set {set_metadata, remember,
+resolve_conversation}, unknown⇒unsafe, inspect-whole-response-before-
+executing, clean-room strong re-run via shared AttemptContext),
+error-escalation (routing degrades a bill, never a turn), raw.routing
+attribution with trigger omitted on error escalations, editor section
++ 7-day one-denominator stats strip, pre-save honestly extended
+(CandidateConfig.routing, absent/null/object), docs across guide §9 /
+AGENT-TOOLS / gap docs. Review notes: (1) agent DISPROVED the spec's
+resolve-ends-the-loop assumption — resolve-then-escalate is reachable;
+committed resolve stays + reports true. (2) Clean-room via shared
+context, not recursion (recursion would leak cheap remember writes
+into the strong prompt). (3) One flaky full-suite run (2 unrelated
+fails, vanished on 2 consecutive greens). (4) Prod delta: NONE. Ladder:
+judge ✓ gate ✓ pre-save ✓ versioning+canary ✓ routing ✓ — A2b live
+supervision is the LAST rung.
+
+### (original A6 plan, kept for the record)
 Cheap-first, STRUCTURAL escalation: every routed turn runs on the cheap
 model first (same prompt, same tools); no tool calls OR only SAFE tools
 ({set_metadata, remember, resolve_conversation} — bookkeeping + the
@@ -40,13 +59,19 @@ cheap model holds the bar).
       lie about why); trace keeps discarded attempts (discarded from
       context, never the bill). FLAG for B copy: canary turns are never
       cheap-served (candidate beats routing) — stats exclude them.
-- [ ] Slice B — surface: PATCH + Edit-panel "Model routing" section
-      (toggle + cheap-model field, plain-words copy per the labels
-      rule), routing config changes trip the pre-save check, stats
-      strip (% served cheap, escalation rate — set-based SQL), SDK +
-      changeset.
-- [ ] Slice C — docs+close-out: guide §9 cost lever ("trusted to talk,
-      never to act"), AGENT-TOOLS API ref, gap-analysis, todo review.
+- [x] Slice B — DONE 2026-08-23 (commit f102d1c, suite 808→827):
+      routing API + editor section + 7-day stats strip (ONE denominator
+      — cheap/escalated/routing-off total 100; canary excluded with a
+      copy line); pre-save honestly extended: CandidateConfig.routing
+      with ABSENT-vs-NULL semantics (absent = router steps aside, null
+      = grade routing OFF, object = grade THIS config) — "an eval
+      grades the config it was GIVEN" generalized; no new index (rides
+      agentHealth's access path; raw?'routing' index would tax every
+      insert to save nothing); SDK + changeset.
+- [x] Slice C — DONE 2026-08-23: guide §9 routing section + pillar +
+      ladder, AGENT-TOOLS routing API + candidate trichotomy,
+      evals/README candidate gap filled, gap docs; novu claim softened
+      to what round 1 supports.
 
 ### Phase A5 — SHIPPED 2026-08-23 (review)
 All 5 slices done (commits 918c69c E, f798621 A, 89d635f B, 2739db2 C,
@@ -283,8 +308,7 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       second half — conversation → eval-case — was already shipped in
       P22: "Save as eval" on the conversation page.)
 - [x] A5. Prompt versioning + canary — SHIPPED 2026-08-23, review above.
-- (IN PROGRESS above) A6. Model routing — unblocked: A3 shipped, the
-      gate proves the cheap model holds the bar.
+- [x] A6. Model routing — SHIPPED 2026-08-23, review above.
 - [ ] A7. Guardrails completion (P22 later bucket rest): tool-call rate
       caps; per-agent token/spend budgets (pause, not surprise-bill);
       topic allow/deny; output moderation hook.

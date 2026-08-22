@@ -80,11 +80,13 @@ now have, and how to sell it honestly:
   model/creds (zero extra setup, no second key to rotate); self-judge
   bias is documented, a `judgeModel` override is planned.
 - **Where it leads (the ladder):** judge → CI eval gate (A3) → pre-save
-  check (A4) → prompt canary comparison (A5) → live supervision (A2b) →
-  model routing (A6). Each rung needs the one before it — a router
-  without a judge is a quality regression disguised as a cost win. Novu
-  has none of the ladder above the harness. Everything through A5 is
-  shipped; A2b is the next rung.
+  check (A4) → prompt canary comparison (A5) → model routing (A6) →
+  live supervision (A2b). Each rung needs the ones below it — a router
+  without a judge is a quality regression disguised as a cost win, which
+  is exactly why A6 waited for A3 and A4. Novu has none of the ladder
+  above the harness. A2–A6 are shipped (A6 on 2026-08-23, below); A2b —
+  judging every live conversation, not a trial's sample — is the last
+  rung.
 - **2026-08-22 — rung two shipped (A3).** The `agent-evals` job boots
   the real stack, seeds our fixture agent through the real API and
   drives evals/*.json as REAL LLM conversations (judged dimensions
@@ -116,6 +118,28 @@ now have, and how to sell it honestly:
   prompt versions, judged on both sides**: promotion moves a config between
   environments, it does not measure one prompt against another on the
   customers it is already serving.
+
+- **2026-08-23 — the rung the gate unblocked shipped (A6): model
+  routing.** A managed agent can name a cheap model, and every routed
+  turn runs there FIRST. What ships the cheap reply is not a model's
+  opinion of its own answer but a **law**: text or the three safe
+  bookkeeping tools (`set_metadata`, `remember`,
+  `resolve_conversation`) → ship it; ANY other `tool_use` — a workflow,
+  a customer's own tool, a knowledge lookup, a card, a handoff —
+  discards the attempt and re-runs the WHOLE turn on the main model in
+  a clean room. The cheap model is trusted to talk and never to act,
+  and the safe set is closed, so a tenant-registered tool can never be
+  safe. Cheap-model errors escalate too: a misconfigured router
+  degrades a bill, never a turn. It ships eval-gated in both
+  directions — this is the feature we deliberately withheld until A3
+  proved a small model holds the bar, and turning it on trips the A4
+  pre-save check (an eval run's `candidate` takes a `routing` config,
+  so the check runs the scenarios THROUGH the router before the config
+  commits). Their side, stated only as far as our own evidence goes:
+  novu Connect is **managed-Claude only** (the round-1 finding above,
+  which still stands), so a customer brings no endpoint and no key —
+  and we have found no per-agent routing surface on their side at all.
+  Ours is a lever a BYO-LLM brain makes possible in the first place.
 
 Sales framing: "prompt edits are deploys — and we're the platform that
 treats them that way." A/B-testing a prompt on real traffic, with the

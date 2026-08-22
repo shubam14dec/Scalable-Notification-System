@@ -660,7 +660,20 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
 | Field | Rules |
 |---|---|
 | `trigger` | `manual` (default) or `pre_save` — recorded on the run, so the history says *why* it ran. |
-| `candidate` | `{ systemPrompt?, model? }` — grade **this** config instead of the agent's live one. At least one of the two keys (an empty object is a **400**, not "use the agent's config"). `systemPrompt` 1–100,000 chars, `model` 1–255 — the same caps the agent-create route enforces, because a candidate must be something the agent could actually be saved with. |
+| `candidate` | `{ systemPrompt?, model?, routing? }` — grade **this** config instead of the agent's live one. At least one of the three keys (an empty object is a **400**, not "use the agent's config"). `systemPrompt` 1–100,000 chars, `model` 1–255 — the same caps the agent-create route enforces, because a candidate must be something the agent could actually be saved with. `routing` takes the agent field's own `{enabled, cheapModel}` shape (*Model routing*, below) or `null`. |
+
+**`candidate.routing` has three states, and the difference between them is the
+contract.** Turning the router on is a behavior change like a prompt edit — the
+reply comes from a different model — so a check that graded it on the strong
+model would grade the one config you are *not* about to ship:
+
+- **absent** — no opinion; the router steps aside for the whole run (this is
+  every canary turn and every prompt-only pre-save check, byte for byte).
+- **`null`** — "routing OFF for this turn", explicitly graded. `{"candidate":
+  {"routing": null}}` is a complete, valid body: *does it still pass without the
+  router?* is a real question to ask of a save that switches routing off.
+- **an object** — route this run with **this** config, not the agent's. The run
+  really executes through it: cheap model first, safe-tool law, escalation.
 
 **`candidate` is managed-only.** A bridge agent's brain is your own code behind a
 signed URL — there is no prompt or model here to override — so a candidate on a
@@ -846,3 +859,116 @@ pre-save panel; nothing blocks the edit.
 
 Typed wrappers are in `@asyncify-hq/node` (`client.agents.versions.*`,
 `client.agents.canary.*`).
+
+## Model routing: a cheap model for the easy turns
+
+A managed agent can answer its **conversational** turns on a small model and keep
+the strong one for turns that do something. It is a field on the agent, not a
+separate resource:
+
+```bash
+curl -X PATCH -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/support-bot \
+  -d '{ "routing": { "enabled": true, "cheapModel": "claude-haiku-4-5" } }'
+# → 200 { "agent": { …, "routing": { "enabled": true, "cheapModel": "claude-haiku-4-5" } } }
+```
+
+| Field | Rules |
+|---|---|
+| `enabled` | required boolean. |
+| `cheapModel` | optional, ≤255 chars — but **required when `enabled`** (else a **400**, `cheapModel is required when routing is enabled`). Optional in the object so you can switch the router off without losing the id you typed; stored as `""` when absent, which reads the same as `enabled: false`, so a half-filled config can never accidentally route. |
+
+There is **no default** `cheapModel`, deliberately. Routing rides this agent's own
+key and `llm.baseUrl`, so only ids that endpoint actually serves can work — a
+guessed default would 400 on every turn, which is a 100% escalation rate plus a
+wasted round-trip per turn. A wrong id is *safe* (see below), not free.
+
+**`null` clears, absent leaves it alone.** On `PATCH`, omitting `routing` changes
+nothing and `"routing": null` puts the agent back to never-configured. On create
+(`POST /v1/agents`) `null` is a **400** — there is nothing to clear yet. The agent
+object always carries `routing`, `null` when it was never configured.
+
+**Managed only.** `routing` on a bridge agent is a **400** (*"a bridge agent's
+brain is your own code, not a model we choose"*), and on `PATCH` that test is made
+against what the agent will **be** after the patch, not what it was — so a
+managed→bridge conversion is rejected if it also sets a router. Clearing is
+exempt: `"routing": null` alongside `"runtime": "bridge"` is allowed, because
+switching the router off in the same request is never wrong.
+
+### The escalation law
+
+Every routed turn runs on `cheapModel` **first**, with an identical request — same
+system blocks, same cache marker, same tool menu, same messages. Then the whole
+response is inspected **before any tool executes**:
+
+- Only text, or only **safe** tools → the cheap reply ships. The safe set is
+  exactly `set_metadata`, `remember`, `resolve_conversation`: bookkeeping that
+  touches nothing outside the conversation, plus the eval-pinned "customer said
+  thanks, close it" archetype (reversible — her next message reopens the thread).
+- **Any other `tool_use`** → the attempt is discarded and the **entire turn
+  re-runs from scratch** on the agent's own model, in a clean room: fresh
+  messages, fresh model-call budget, and no trace of the cheap attempt in the
+  strong model's context. `trigger_workflow`, every custom tool, `search_*`,
+  `handoff_to_human` and the presentation tools are all in this half.
+
+Membership is by **name against a closed set**, so an unknown tool — including
+every tool you register — is unsafe by construction. Nothing here is a model
+judging a model: the signal is which tool was reached for.
+
+**Errors escalate too.** A cheap model that 400s on an unknown id, rejects the key
+or returns something unparseable is a *routing* fault, and a routing fault must
+never cost a customer their answer: it warns and escalates. A misconfigured router
+degrades to pre-routing behavior, one wasted round-trip per turn.
+
+**What an escalation does not undo.** A response is inspected whole, so a mixed
+one executes nothing — but a turn is several responses, and a safe tool executed
+on an earlier round is already committed. It is not rolled back; all three safe
+tools are idempotent by content (`set_metadata` merges, `remember` is a keyed
+upsert with a content-derived dedupe breadcrumb, `resolve_conversation` updates
+`where status <> 'resolved'`), so the strong re-run lands on the same state. In
+particular a resolve does **not** end the turn loop, so "resolved, then
+escalated" is reachable: the resolve stays committed and the turn still reports
+`resolved: true`, because the row *is* resolved.
+
+**Precedence: candidate > routing > agent default.** An eval or canary run grades
+the config it was **given**, so a candidate turns the router off for that turn —
+unless the candidate names a `routing` of its own (*Running evals from the API*,
+above), in which case the router is part of what is being graded.
+
+**Per-turn attribution.** A reply written by a routed turn carries
+`raw.routing = {model, escalated, trigger?}` on its transcript row: the model that
+actually served the reply, whether the turn escalated, and — for tool-triggered
+escalations only — which tool triggered it. `trigger` is deliberately absent on
+*error* escalations, so an escalation rate can never lie about why. The key is
+absent entirely when routing was off, so unrouted and pre-routing rows are
+byte-identical to what they were. The Turn Inspector renders an escalated turn as
+what it was: two model calls, on two different models, one of them wasted.
+
+**Cost, plainly.** A cheap turn costs a fraction of a strong one; an escalated
+turn costs ≈1.05–1.15× a plain strong turn (the discarded attempt is billed —
+discarded from the model's context, never from the bill) plus the cheap call's
+latency in front of the normal turn. The win depends on how much of your traffic
+is conversation, which is what the stats route measures.
+
+### `GET /v1/agents/:identifier/routing/stats`
+
+```jsonc
+// → 200
+{ "windowDays": 7, "replies": 1240, "cheapReplies": 769,
+  "escalatedReplies": 223, "unroutedReplies": 248 }
+```
+
+The window is **fixed at 7 days** and echoed back, so a caller's sentence can
+never drift from the number beside it. `replies` is **one denominator** — every
+reply this agent sent in the window — and the three buckets sum to it exactly:
+served cheap, escalated to the main model, and `unrouted` (no routing recorded at
+all: the router was off when they were sent, or they predate it). Two
+denominators would make incomparable numbers look comparable.
+
+**Canary-trial replies are excluded from all four numbers.** A canary-arm turn
+runs on the trial's own model, because candidate beats routing — so the router was
+never offered it, and counting it would silently depress the cheap share.
+
+**400** on a bridge agent, **404** on an unknown one.
+
+Typed wrappers are in `@asyncify-hq/node` (`client.agents.update(id, {routing})`).

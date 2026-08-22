@@ -76,7 +76,9 @@ instead of a form.
 
 **Cost control (§9)** — long conversations fold into summaries instead of
 growing linearly, stable prompt prefixes are provider-cached at ~10% price,
-and budgets are suggested from your real usage. Per-conversation economics
+budgets are suggested from your real usage, and **model routing** answers the
+easy turns on a cheaper model — escalating the whole turn to your main model
+the moment the small one reaches for a real action. Per-conversation economics
 decide whether an agent is viable at scale, not the demo.
 
 **Human handoff (§7)** — the agent knows when to step aside, a real person
@@ -559,7 +561,8 @@ remembering in "hi / thanks."
 Section 7 gave the agent two kinds of recall. It actually has **three**, and
 they answer three different questions. Then, because remembering costs tokens,
 this section covers the machinery that keeps a long relationship **fast and
-cheap**: rolling summaries, a budget hint, and automatic prompt caching.
+cheap**: rolling summaries, a budget hint, automatic prompt caching, and
+**model routing** — the easy turns answered by a cheaper model.
 
 ### The three memories
 
@@ -648,16 +651,77 @@ Real Anthropic endpoints do, and you get the full discount. Some Anthropic-*comp
 layers silently ignore the marker — that's **harmless** (no discount, no error, no
 behavior change); the usage line just shows `cached 0`.
 
-### On the roadmap: model routing
+### Model routing: the easy turns on a cheaper model
 
-A natural next step for cost is **model routing** — sending the cheap, easy turns
-(a greeting, a "thanks", a simple FAQ) to a smaller, cheaper model and
-**escalating** to the full model only when a turn needs real reasoning or a tool
-call. We've deliberately **not shipped it yet**: routing that occasionally sends a
-hard turn to a model too weak to handle it is a *quality* regression that hides as
-a cost win, so it needs the **eval gate** (section 10) proving the small model
-holds the bar on the turns it would take — before it's allowed to make that call
-on live customers. Documented as the intended direction, not a current feature.
+Look at what Acme's agent says all day. *"hi"*, *"thanks, all good"*, *"where's my
+order?"*, *"no — the other one"* — and, every so often, a refund. The bill does not
+split that way: without routing every one of those turns runs on the same
+top-tier model, so most of what Acme pays is a strong model saying *"you're
+welcome."*
+
+**Model routing** splits it. In the agent editor, under **Model**, Priya switches
+**Model routing** on and types the id of a cheaper model her endpoint already
+serves — `claude-haiku-4-5`, or whatever the small tier is at the endpoint she
+configured. From then on, every turn *starts* there.
+
+**The cheap model is trusted to talk, never to act.** The routed turn runs on the
+small model with the same instructions, the same tools, the same knowledge — an
+identical request, cheaper model. Then one rule decides whether that answer
+ships, and the rule is *what did it reach for?* A reply that is only words ships.
+So does one that does nothing but bookkeeping: `set_metadata` (a note on the
+thread for Sam), `remember` (a durable fact about Maya), `resolve_conversation`
+(Maya said thanks — close it). The moment it reaches for anything else — a
+refund or any other of Acme's tools, a workflow, a knowledge lookup, buttons or a
+card, a human — the cheap attempt is **thrown away** and the **whole turn re-runs
+from scratch on Acme's main model**, which never sees a word of what the small
+model was drafting.
+
+That is a law, not a judgment call. It is decided by *which tool was asked for*,
+before anything runs — no model is asked to grade another model's answer — and
+the safe list is closed, so a tool Priya registers herself can never end up on
+it. Maya never sees a cheap model take an action on her account. (One honest
+detail: if the cheap attempt had already written a note, saved a fact or closed
+the thread on an earlier round before it reached for the refund, that stays —
+those three are safe to repeat, so the strong re-run lands on exactly the same
+state rather than pretending an undo happened.)
+
+**Getting the model id wrong is safe.** Routing rides this agent's own key and
+base URL, so only ids that endpoint really serves can work — and if it doesn't
+serve the one Priya typed, the small call simply fails and *that turn escalates*.
+Every reply still lands, on the main model, exactly as before routing existed. A
+misconfigured router costs a wasted round-trip; it can never cost a customer
+their answer.
+
+**What routing actually did.** Once it's on, the section shows the last **7
+days** in sentences rather than a chart: *"62% of replies were answered by the
+cheap model"*, *"18% started cheap and escalated to the main model"*, and — if
+Priya turned routing on partway through the week — *"the other 20% ran on the
+main model without routing."* One denominator (every reply this agent sent in the
+window), so the three add to 100 and nobody has to do arithmetic to compare them.
+Canary-trial replies are left out entirely, and the strip says so: a trial turn
+runs on the trial's own model, so the router was never offered it.
+
+**Turning routing on is graded like a prompt edit — because it is one.** Flipping
+that switch changes which model writes Maya's replies, so it trips the **pre-save
+check** (§10): before the config commits, Priya's enabled scenarios run *through
+the router she just configured* — cheap model first, escalation and all — and she
+reads the same per-scenario delta a prompt rewrite would get. That is where the
+promise stops being a claim: a *resolve-on-thanks* scenario (*"thank you, all
+good now"* → the agent must call `resolve_conversation`) passing on the routed
+run is evidence the small model can close a conversation by itself, and a refund
+scenario passing is evidence the escalation fired. Switching routing back *off* is graded too — *"does
+it still pass without the router?"* is a real question to ask of that save.
+
+**The cost math, honestly.** A cheap turn costs a fraction of a strong one — that
+is the whole win, and on conversational traffic it is most of the bill. An
+escalated turn costs slightly **more** than it would have unrouted: the discarded
+attempt is real money (roughly 5–15% on top of a plain strong turn) and a little
+real latency, one small call in front of the normal one. So routing pays exactly
+when enough of the traffic is conversation, and the stats strip is what tells
+Priya whether hers is — 60% cheap is a real saving; 12% cheap and 70% escalated
+means this agent's day is mostly work, and she should switch it off. Managed
+agents only: a bridge agent's brain is Acme's own code, so there is no model here
+for us to choose.
 
 ---
 
@@ -815,6 +879,12 @@ the in-product ladder: manual eval runs, the **pre-save check**, and a **prompt
 canary** on real conversations, all three shipped and all three below. The next
 rung up is live supervision — judging *every* conversation, not a trial's
 sample.
+
+The gate also unblocked a rung that isn't about quality at all: **model routing**
+(§9) shipped only once evals could *prove* a small model holds the bar on the
+turns it would take — a router shipped before the gate would have been a quality
+regression disguised as a cost win — and switching it on is graded by the same
+pre-save check as any prompt edit.
 
 ### The pre-save check: grading the edit, not the last version
 
@@ -1089,7 +1159,7 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 | Channels | in-app widget, Telegram, Slack (threads, per-channel routing), email |
 | Identity | one person across channels; self-serve linking (QR + `/start` fallback) |
 | Conversation UX | welcome + suggested prompts, buttons, select/input cards, live plan cards, typing, edit/delete, resolve + auto-resolve |
-| Brains | managed (BYO LLM, prompt, built-in tools) or bridge (your code, signed webhooks) — switchable |
+| Brains | managed (BYO LLM, prompt, built-in tools) or bridge (your code, signed webhooks) — switchable; optional cheap-first **model routing** on a managed agent (every turn starts on your small model; reaching for any consequential tool discards it and re-runs the whole turn on your main model), a wrong model id degrades to "always the main model", graded by the pre-save check before it commits, with a 7-day cheap/escalated split in the editor |
 | Knowledge & memory | per-agent sources (paste/URL/.txt/.md), grounded + cited answers, per-customer episodic recall — managed runtime, BYO embeddings + Pinecone |
 | Actions | custom tool registry, signed HTTP execution, idempotent, 16KB results |
 | Approvals | dashboard + Slack channel + Telegram taps; atomic; per-tap identity; in-place card outcomes; 24h expiry; audit trail |
