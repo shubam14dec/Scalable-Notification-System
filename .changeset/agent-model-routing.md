@@ -1,5 +1,0 @@
----
-'@asyncify-hq/node': patch
----
-
-Cheap-first model routing is now typed on the client. `agents.update(id, { routing: { enabled, cheapModel } })` puts a managed agent's simple replies on a smaller model; the moment a routed turn reaches for a consequential tool — a workflow, one of your own tools, a knowledge lookup — the whole turn is discarded and re-run on the agent's main model, so a small model is trusted to talk and never to act. `cheapModel` must be an id your own LLM endpoint serves (routing rides the agent's key and base URL) and has no default; a wrong id is safe, since the failed cheap call just escalates. `routing: null` switches it off and forgets the config, and `Agent` gains the `routing` field the API now returns. `EvalRunCandidate` gains `routing` too, so a pre-save check can grade the router the operator is about to turn on — the run executes through it rather than merely recording it, and an explicit `null` grades the agent with routing off. Managed agents only: a bridge agent answers 400.
