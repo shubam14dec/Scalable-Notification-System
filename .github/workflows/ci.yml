@@ -213,6 +213,10 @@ jobs:
             :(glob)evals/**
             :(glob)src/core/managed-brain*
             :(glob)src/core/eval-*
+            :(glob)src/core/turn-judge*
+            :(glob)src/workers/processors/conversation.processor*
+            :(glob)src/workers/processors/eval-run.processor*
+            :(glob)src/db/conversations.repo*
             :(glob)scripts/eval.ts
             :(glob)scripts/eval-seed.ts
             :(glob)scripts/acme-tools/**

@@ -271,6 +271,10 @@ job too, and a separate workflow file would leave required checks stuck on
 evals/**
 src/core/managed-brain*
 src/core/eval-*
+src/core/turn-judge*
+src/workers/processors/conversation.processor*
+src/workers/processors/eval-run.processor*
+src/db/conversations.repo*
 scripts/eval.ts
 scripts/eval-seed.ts
 scripts/acme-tools/**
