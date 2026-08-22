@@ -220,6 +220,28 @@ Careful with the control arm: saving an edit to the live prompt **while a trial
 is running** changes what the control arm is serving, so the comparison from
 that point measures against a different baseline than it started with.
 
+### Model routing
+
+`agents.update(id, { routing })` puts a managed agent's simple replies on a
+cheaper model. Every routed turn runs on `cheapModel` first; the moment that
+attempt reaches for a consequential tool — a workflow, one of your own tools, a
+knowledge lookup — the whole turn is discarded and re-run on the agent's main
+model, so a small model is trusted to talk and never to act. `cheapModel` must
+be an id your own endpoint serves (routing rides this agent's key and base URL);
+a wrong id is safe — the cheap call fails, the turn escalates, and every reply
+still lands. `routing: null` switches it off. Managed agents only; a bridge
+agent answers `400`.
+
+```ts
+await asyncify.agents.update('acme-support', {
+  routing: { enabled: true, cheapModel: 'claude-haiku-4-5' },
+});
+```
+
+An eval run can grade the router before you save it — pass `routing` inside
+`candidate` and the run really executes through it (`null` grades the agent with
+routing off).
+
 ## API surface
 
 | Method | Purpose |

@@ -38,6 +38,11 @@ export interface Agent {
      */
     samplePercent: number;
   } | null;
+  /**
+   * Phase A6: cheap-first model routing, or null when it was never set up.
+   * Presence is the flag, same as `canary` above — managed agents only.
+   */
+  routing?: AgentRouting | null;
   /** Phase 22 G2: per-agent daily token circuit breaker (null = off). */
   maxDailyTokens?: number | null;
   /**
@@ -49,6 +54,31 @@ export interface Agent {
   createdAt: string;
   /** Last-save timestamp — used to tell whether an eval run predates the prompt. */
   updatedAt?: string | null;
+}
+
+/**
+ * Phase A6: the cheap-first router's config. Mirrors `RoutingConfig` in
+ * src/core/managed-brain.ts. `cheapModel` is '' when the operator switched the
+ * router off without clearing the id they had typed — the server reads that the
+ * same way it reads `enabled: false`, so a half-filled config never routes.
+ */
+export interface AgentRouting {
+  enabled: boolean;
+  cheapModel: string;
+}
+
+/**
+ * Phase A6 slice B: what the router actually did over the last `windowDays`.
+ * ONE denominator — every reply the agent sent in the window, minus canary-trial
+ * replies (a canary turn runs on the trial's own model, so the router never saw
+ * it). The three buckets sum to `replies`.
+ */
+export interface AgentRoutingStats {
+  windowDays: number;
+  replies: number;
+  cheapReplies: number;
+  escalatedReplies: number;
+  unroutedReplies: number;
 }
 
 /** An agent-speaks-first starter chip: the label plus the turn it sends. */
@@ -72,6 +102,12 @@ export interface AgentBody {
   maxDailyTokens?: number | null;
   /** Phase 24 D6: only sent when at least one knob is set (blank = untouched). */
   context?: { triggerTurns?: number; tailTurns?: number };
+  /**
+   * Phase A6: null switches routing off and forgets the config. Only sent on an
+   * EDIT (create rejects null — there is nothing to clear on an agent that does
+   * not exist yet), same rule maxDailyTokens follows.
+   */
+  routing?: AgentRouting | null;
   llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
@@ -230,6 +266,13 @@ export interface ScenarioResult {
 export interface EvalCandidate {
   systemPrompt?: string;
   model?: string;
+  /**
+   * A6: the routing config to grade. Turning the router on changes which model
+   * writes the reply, so the check has to run THROUGH the edited router or it
+   * proves nothing about the save. `null` means "grade it with routing off";
+   * the key being ABSENT means the edit did not touch routing at all.
+   */
+  routing?: AgentRouting | null;
 }
 
 /** An eval run — an enqueued job; poll until status leaves 'running'. */
@@ -357,7 +400,40 @@ export function candidateLabel(candidate: EvalCandidate): string {
   const parts: string[] = [];
   if (candidate.systemPrompt !== undefined) parts.push('system prompt');
   if (candidate.model !== undefined) parts.push('model');
+  // `in`, not `!== undefined`: an explicit null IS the edit (routing switched
+  // off), and it is exactly the case a `!== undefined` test would hide.
+  if ('routing' in candidate) parts.push('model routing');
   return parts.join(' + ');
+}
+
+/**
+ * A6 slice B — the routing numbers as sentences, per the labels rule: a number
+ * a customer reads has to say what it counts, in words, with no stats shorthand
+ * to decode. Returns null when the router served nothing in the window, so the
+ * panel shows its empty state instead of three zeroes.
+ *
+ * The remainder is computed as `100 - cheap - escalated` rather than rounded
+ * on its own, so the three percentages always add to 100 and nobody has to
+ * wonder where the missing point went.
+ */
+export function routingSummary(s: AgentRoutingStats): {
+  cheap: string;
+  escalated: string;
+  unrouted: string | null;
+} | null {
+  const routed = s.cheapReplies + s.escalatedReplies;
+  if (routed === 0 || s.replies === 0) return null;
+  const cheapPct = Math.round((s.cheapReplies / s.replies) * 100);
+  const escPct = Math.round((s.escalatedReplies / s.replies) * 100);
+  const restPct = 100 - cheapPct - escPct;
+  return {
+    cheap: `${cheapPct}% of replies were answered by the cheap model`,
+    escalated: `${escPct}% started cheap and escalated to the main model`,
+    unrouted:
+      s.unroutedReplies > 0 && restPct > 0
+        ? `The other ${restPct}% ran on the main model without routing — it was switched off when they were sent.`
+        : null,
+  };
 }
 
 export const TEXTAREA_CLS =

@@ -70,6 +70,29 @@ export interface WorkflowStep {
   push?: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> };
 }
 
+/**
+ * Cheap-first model routing for a MANAGED agent. Every routed turn runs on
+ * `cheapModel` first; if that attempt reaches for a consequential tool (a
+ * workflow, one of your own tools, a knowledge lookup) the whole turn is thrown
+ * away and re-run on the agent's main model, so a small model is trusted to
+ * talk and never to act. Cheap-model errors escalate too — a misconfigured
+ * router degrades the bill, never the reply.
+ *
+ * `cheapModel` must be an id the agent's OWN endpoint serves (routing rides its
+ * `llm.baseUrl` and key); there is deliberately no default, since a guessed id
+ * would escalate 100% of turns. It is '' on a config that was switched off
+ * without clearing the id, which reads the same as `enabled: false`.
+ *
+ * HAND-KEPT COPY of the server's `RoutingSchema` / `agentView.routing`
+ * (src/api/routes/agents.ts); this package ships standalone and cannot import
+ * server types.
+ */
+export interface AgentRouting {
+  enabled: boolean;
+  /** 1–255 chars, and required whenever `enabled` is true. */
+  cheapModel: string;
+}
+
 /** An agent as the API returns it — secrets (signing, LLM key) never included. */
 export interface Agent {
   identifier: string;
@@ -91,6 +114,8 @@ export interface Agent {
   promptVersion: number;
   /** The trial running right now, or null when none is — see `agents.canary`. */
   canary: AgentCanary | null;
+  /** Cheap-first model routing, or null when it was never set up. Managed only. */
+  routing: AgentRouting | null;
   status: 'active' | 'disabled';
   createdAt: string;
   updatedAt: string;
@@ -111,6 +136,8 @@ export interface CreateAgentOptions {
   autoResolveMinutes?: number;
   /** Managed runtime: the LLM key (stored encrypted, write-only) + optional compat base URL. */
   llm?: { apiKey?: string; baseUrl?: string };
+  /** Cheap-first model routing. Managed only — a bridge agent answers 400. */
+  routing?: AgentRouting;
 }
 
 export interface ConversationSummary {
@@ -266,6 +293,14 @@ export interface EvalRunCandidate {
   systemPrompt?: string;
   /** 1–255 chars. */
   model?: string;
+  /**
+   * The model-routing config to grade. Turning routing on changes which model
+   * writes the reply, so the run really executes THROUGH this router rather
+   * than merely noting it. `null` grades the agent with routing switched off;
+   * omitting the key entirely means the run has no opinion, and the router
+   * steps aside for it as it always did.
+   */
+  routing?: AgentRouting | null;
 }
 
 /** An eval run — created 'running', finalized by the worker. */
@@ -533,12 +568,16 @@ export class AsyncifyClient {
     list: () => this.request<{ agents: Agent[] }>('GET', '/v1/agents'),
     get: (identifier: string) =>
       this.request<{ agent: Agent }>('GET', `/v1/agents/${encodeURIComponent(identifier)}`),
-    /** Patch any subset; `autoResolveMinutes: null` switches the backstop off. */
+    /**
+     * Patch any subset; `autoResolveMinutes: null` switches the backstop off and
+     * `routing: null` switches model routing off and forgets its config.
+     */
     update: (
       identifier: string,
-      patch: Partial<Omit<CreateAgentOptions, 'identifier' | 'autoResolveMinutes'>> & {
+      patch: Partial<Omit<CreateAgentOptions, 'identifier' | 'autoResolveMinutes' | 'routing'>> & {
         status?: 'active' | 'disabled';
         autoResolveMinutes?: number | null;
+        routing?: AgentRouting | null;
       },
     ) =>
       this.request<{ agent: Agent }>(

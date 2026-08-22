@@ -7,17 +7,20 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { Button, Field, Input, Mono } from '../../ui';
 import { timeAgo } from '../Activity';
-import { SecretReveal, useEvalRuns } from './shared';
+import { SecretReveal, Toggle, useEvalRuns } from './shared';
 import { PreSaveCheck } from './PreSaveCheck';
 import {
   baselineRun,
   fmtInt,
+  routingSummary,
   runAdvisory,
   runSummary,
   type Agent,
   type AgentBody,
   type AgentEval,
   type AgentHealth,
+  type AgentRouting,
+  type AgentRoutingStats,
   type EvalCandidate,
   type SuggestedPrompt,
 } from './types';
@@ -99,6 +102,25 @@ export function AgentForm({
   const suggested = healthQuery.data?.suggestedDailyTokens;
   const p95Daily = healthQuery.data?.p95DailyTokens;
 
+  // ---- A6: model routing ----
+  // The switch is state (the section's copy and the stats strip react to it);
+  // the cheap-model id is an ordinary uncontrolled field like Model, read off
+  // the form on submit. Switching the router off does NOT wipe the id — it
+  // rides along as `enabled: false`, so turning it back on costs no retyping.
+  const [routingOn, setRoutingOn] = useState(initial?.routing?.enabled ?? false);
+  const routingStats = useQuery({
+    queryKey: ['agent-routing-stats', identifier],
+    queryFn: () => api<AgentRoutingStats>(`/v1/agents/${identifier}/routing/stats`),
+    // Only asked for once the agent EXISTS, is managed, and is actually routing:
+    // the numbers describe live traffic, and there is none to describe otherwise.
+    enabled: editing && runtime === 'managed' && Boolean(identifier) && routingOn,
+  });
+  const routingWords = routingStats.data ? routingSummary(routingStats.data) : null;
+
+  /** The routing config this form would save, or null for "off and forgotten". */
+  const readRouting = (cheapModel: string): AgentRouting | null =>
+    routingOn || cheapModel ? { enabled: routingOn, cheapModel } : null;
+
   return (
     <>
     <form
@@ -143,6 +165,16 @@ export function AgentForm({
           if (Number.isFinite(triggerTurns) && triggerTurns > 0) context.triggerTurns = triggerTurns;
           if (Number.isFinite(tailTurns) && tailTurns > 0) context.tailTurns = tailTurns;
           if (Object.keys(context).length > 0) body.context = context;
+          // A6 routing: same rule maxDailyTokens follows — send the config when
+          // there is one, send an explicit null only on an EDIT (create has
+          // nothing to clear, and its schema rejects null), send nothing at all
+          // for a brand-new agent that never touched the switch.
+          const nextRouting = readRouting(str('cheapModel'));
+          if (nextRouting) {
+            body.routing = nextRouting;
+          } else if (editing && initial?.routing) {
+            body.routing = null;
+          }
         }
         const arHours = Number.parseInt(str('autoResolveH'), 10);
         const arMins = Number.parseInt(str('autoResolveM'), 10);
@@ -161,14 +193,14 @@ export function AgentForm({
           .slice(0, 6);
         body.suggestedPrompts = cleanPrompts.length ? cleanPrompts : null;
 
-        // A4 PRE-SAVE CHECK — a managed agent with enabled evals whose PROMPT or
-        // MODEL actually changed gets those evals run against the EDITED values
-        // before the save commits. The panel owns the rest of this save: it
-        // calls back with `body` untouched (Save / Save anyway) or drops it
-        // (Cancel). Supersedes the confirm() advisory below for this one case —
-        // two warnings about the same edit is one too many. Every other save
-        // (bridge, no enabled evals, prompt+model unchanged) falls through to
-        // the pre-A4 path below, byte for byte.
+        // A4 PRE-SAVE CHECK — a managed agent with enabled evals whose PROMPT,
+        // MODEL or (A6) MODEL ROUTING actually changed gets those evals run
+        // against the EDITED values before the save commits. The panel owns the
+        // rest of this save: it calls back with `body` untouched (Save / Save
+        // anyway) or drops it (Cancel). Supersedes the confirm() advisory below
+        // for this one case — two warnings about the same edit is one too many.
+        // Every other save (bridge, no enabled evals, nothing behavioral
+        // changed) falls through to the pre-A4 path below, byte for byte.
         if (preSaveOn) {
           const nextPrompt = str('systemPrompt');
           const nextModel = str('model');
@@ -182,7 +214,24 @@ export function AgentForm({
           if (nextModel && nextModel !== (initial?.model ?? '').trim()) {
             candidate.model = nextModel;
           }
-          if (candidate.systemPrompt !== undefined || candidate.model !== undefined) {
+          // A6: enabling the router, disabling it, or swapping the cheap model
+          // all change which model writes the reply — a behavior change exactly
+          // like a prompt edit, so it rides the SAME candidate the check grades
+          // and the run really executes through the edited router. Sent even
+          // when the new value is "off" (an explicit null), because "does it
+          // still pass with routing off?" is a real question to ask of a save
+          // that switches routing off.
+          const nextRouting = readRouting(str('cheapModel'));
+          const prev = initial?.routing ?? null;
+          const changed =
+            (prev?.enabled ?? false) !== (nextRouting?.enabled ?? false) ||
+            (prev?.cheapModel ?? '') !== (nextRouting?.cheapModel ?? '');
+          if (changed) candidate.routing = nextRouting;
+          if (
+            candidate.systemPrompt !== undefined ||
+            candidate.model !== undefined ||
+            'routing' in candidate
+          ) {
             setPendingSave({ body, candidate });
             return;
           }
@@ -317,6 +366,61 @@ export function AgentForm({
               className="font-mono"
             />
           </Field>
+
+          {/* Phase A6 — model routing. Managed only: it lives inside this
+              branch, so a bridge agent never sees the section at all. */}
+          <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="block text-[12px] font-medium text-t2">Model routing</span>
+                <span className="mt-0.5 block text-[11px] text-t3">
+                  Answer the easy messages on a cheaper model. Simple replies are handled by the
+                  smaller model; anything that needs a real action — a refund, a workflow, a
+                  knowledge lookup — automatically runs on your main model instead.
+                </span>
+              </div>
+              <Toggle checked={routingOn} onChange={setRoutingOn} label="Model routing enabled" />
+            </div>
+            <Field
+              label="Cheap model"
+              hint="Must be a model your LLM endpoint already serves — routing uses this agent's own key and base URL. Getting the id wrong is safe: every reply just runs on the main model."
+            >
+              <Input
+                name="cheapModel"
+                required={routingOn}
+                placeholder="claude-haiku-4-5"
+                defaultValue={initial?.routing?.cheapModel ?? ''}
+                className="font-mono"
+              />
+            </Field>
+            {/* The stats strip — what routing actually did, in words. */}
+            {routingOn && editing && routingStats.isSuccess && (
+              <div className="space-y-1 border-t border-bd pt-3">
+                {routingWords ? (
+                  <>
+                    <p className="text-[11px] text-t2">
+                      Last {routingStats.data.windowDays} days ·{' '}
+                      <Mono className="text-t2">{fmtInt(routingStats.data.replies)}</Mono> replies
+                    </p>
+                    <p className="text-[11px] text-t2">
+                      {routingWords.cheap} · {routingWords.escalated}
+                    </p>
+                    {routingWords.unrouted && (
+                      <p className="text-[11px] text-t3">{routingWords.unrouted}</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[11px] text-t3">
+                    No routed replies in the last {routingStats.data.windowDays} days.
+                  </p>
+                )}
+                <p className="text-[11px] text-t3">
+                  Canary-trial replies always use the trial's own model, so they're not counted
+                  here.
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* Phase 24 D6 — rolling-summary knobs. Blank uses the defaults. */}
           <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
@@ -589,6 +693,7 @@ export function EditTab({ agent }: { agent: Agent }) {
             suggestedPrompts: body.suggestedPrompts,
             maxDailyTokens: body.maxDailyTokens,
             context: body.context,
+            routing: body.routing,
             llm: body.llm,
           })
         }

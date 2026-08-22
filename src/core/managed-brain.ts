@@ -191,6 +191,21 @@ export interface BrainTurnResult {
 export interface CandidateConfig {
   systemPrompt?: string;
   model?: string;
+  /**
+   * Phase A6 slice B — the candidate ROUTING config, so a pre-save check can
+   * grade an edit that turns the router on (or off, or swaps the cheap model).
+   * Enabling routing IS a behavior change: the reply comes from a different
+   * model. A check that graded it on the strong model would grade the one
+   * config the operator is not about to ship.
+   *
+   * THREE STATES, and the difference matters:
+   *   absent      — no opinion; the pre-A6-slice-B law holds and the router
+   *                 steps aside for the whole turn (this is every canary turn
+   *                 and every prompt-only pre-save check, byte for byte).
+   *   null        — "routing OFF for this turn", explicitly graded.
+   *   an object   — route this turn with THIS config, not the agent's.
+   */
+  routing?: RoutingConfig | null;
 }
 
 /**
@@ -622,14 +637,23 @@ export async function runManagedTurn(
   // eval/canary run grading one SPECIFIC config; rerouting it to a cheap model
   // would grade a config nobody asked about and quietly corrupt the scores (and
   // a pre-save check that passed on the cheap model proves nothing about the
-  // edit). So `opts.candidate` switches the router off entirely for that turn.
+  // edit). So a candidate switches the router off for that turn — UNLESS the
+  // candidate names a routing config of its own (slice B), in which case the
+  // router is part of what is being graded and that config is what runs. The
+  // rule is the same one it always was, applied to one more field: an eval
+  // grades the config it was GIVEN.
   const strongModel = opts?.candidate?.model ?? agent.model ?? DEFAULT_MODEL;
-  const routingCfg = agent.routing;
+  // ABSENT vs null is the whole distinction, so this is an `in` test rather
+  // than a `?? agent.routing`: an explicit null means "grade it with routing
+  // OFF", which must not silently fall back to the agent's own router.
+  const candidateNamesRouting = Boolean(opts?.candidate && 'routing' in opts.candidate);
+  const routingCfg = candidateNamesRouting ? (opts!.candidate!.routing ?? null) : agent.routing;
   // Every clause is a real guard, not a formality: the column is jsonb, so a row
   // can hold anything, and an ENABLED router with no cheap model has nothing to
   // route to. '' means "routing does not apply", which is exactly today's path.
+  const routerApplies = !opts?.candidate || candidateNamesRouting;
   const cheapModel =
-    !opts?.candidate && routingCfg?.enabled === true && typeof routingCfg.cheapModel === 'string'
+    routerApplies && routingCfg?.enabled === true && typeof routingCfg.cheapModel === 'string'
       ? routingCfg.cheapModel.trim()
       : '';
 

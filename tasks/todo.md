@@ -30,11 +30,16 @@ of routed live traffic = A2b. Cost math: cheap turns ~5-10% of strong,
 escalated +10-15%, net win at ≥~40% conversational share — the stats
 strip shows the REAL split. Unblocked by A3 ✓ (the gate proves the
 cheap model holds the bar).
-- [ ] Slice A — router core: agents.routing jsonb, cheap-first loop +
-      safe-tool law + structural escalation + error-escalation in
-      managed-brain, attribution, cache note; wire-capture tests
-      (cheap id on wire for chatty turn; discard+strong re-run on tool
-      turn; 400→escalate; routing-off byte-identical).
+- [x] Slice A — DONE 2026-08-23 (commit 0a316de, suite 799→808):
+      cheap-first + safe-tool law (closed set, unknown⇒unsafe),
+      clean-room escalation via shared AttemptContext (recursion would
+      leak the cheap attempt's remember writes into the strong prompt),
+      SPEC CORRECTION: resolve does NOT end the turn loop —
+      resolve-then-escalate reachable, committed resolve stays +
+      reported true; error-escalation with trigger omitted (stats can't
+      lie about why); trace keeps discarded attempts (discarded from
+      context, never the bill). FLAG for B copy: canary turns are never
+      cheap-served (candidate beats routing) — stats exclude them.
 - [ ] Slice B — surface: PATCH + Edit-panel "Model routing" section
       (toggle + cheap-model field, plain-words copy per the labels
       rule), routing config changes trip the pre-save check, stats

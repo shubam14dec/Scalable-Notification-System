@@ -46,7 +46,12 @@ import { CardSchema } from '../../shared/cards';
 import { logExec } from '../../core/execution-log';
 import { tenantRateLimit } from '../rate-limit';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
-import { agentHealth, type AgentHealth } from '../../db/agent-health.repo';
+import {
+  agentHealth,
+  agentRoutingStats,
+  type AgentHealth,
+} from '../../db/agent-health.repo';
+import type { RoutingConfig } from '../../core/managed-brain';
 import {
   listMemories,
   upsertMemory,
@@ -74,6 +79,13 @@ function cacheHealth(key: string, value: AgentHealth): void {
   }
   healthCache.set(key, { value, at: now });
 }
+
+/**
+ * A6: the routing stats window, in days. Fixed rather than a query knob — the
+ * panel states the window in words next to the numbers, and one constant means
+ * the sentence and the SQL can never disagree.
+ */
+const ROUTING_STATS_DAYS = 7;
 
 /** days coerces to an int in [1, 30]; out-of-range (incl. 0) is a 400. */
 const HealthQuerySchema = z.object({
@@ -135,6 +147,38 @@ const AgentContextSchema = z
     { message: 'tailTurns must be less than triggerTurns (1 ≤ tail < trigger ≤ 200)', path: ['tailTurns'] },
   );
 
+/**
+ * A6 — the cheap-first router's config. Two fields, because the escalation law
+ * is binary; see `RoutingConfig` in core/managed-brain.ts, which owns the shape.
+ *
+ * `cheapModel` is optional in the OBJECT but required when `enabled`, so an
+ * operator can switch the router off without losing the id they typed (the
+ * dashboard round-trips it that way). It is stored as '' when absent, which the
+ * brain already reads as "routing does not apply" — the same thing `enabled:
+ * false` means, so a half-filled config can never accidentally route.
+ *
+ * Sending `routing: null` CLEARS it (back to never-configured). Exported so the
+ * eval-run route can accept the same shape inside a candidate — a pre-save check
+ * has to be able to grade the router the operator is about to turn on.
+ */
+export const RoutingSchema = z
+  .object({
+    enabled: z.boolean(),
+    // max only — the LOWER bound is the refine below, and only when enabled.
+    // A bare min(1) would 400 the perfectly sensible `{enabled: false,
+    // cheapModel: ''}` a form sends when the switch is off and the id blank.
+    cheapModel: z.string().max(255).optional(),
+  })
+  .refine((r) => !r.enabled || Boolean(r.cheapModel?.trim()), {
+    message: 'cheapModel is required when routing is enabled',
+    path: ['cheapModel'],
+  });
+
+/** Wire shape -> the stored `RoutingConfig` (cheapModel is '' when unset). */
+export function routingConfig(r: z.infer<typeof RoutingSchema>): RoutingConfig {
+  return { enabled: r.enabled, cheapModel: r.cheapModel ?? '' };
+}
+
 const AgentSchema = z
   .object({
     identifier: z
@@ -156,6 +200,16 @@ const AgentSchema = z
     welcomeMessage: welcomeMessageSchema,
     suggestedPrompts: suggestedPromptsSchema,
     context: AgentContextSchema.optional(),
+    /** A6 cheap-first routing. Managed only (refined below), absent = off. */
+    routing: RoutingSchema.optional(),
+  })
+  // A6: routing is a MANAGED concept — a bridge agent's brain is the customer's
+  // own code behind a signed URL, and we never pick the model it runs on. Same
+  // law the versions/canary/candidate surfaces enforce, stated at create time.
+  .refine((a) => a.routing === undefined || a.runtime === 'managed', {
+    message:
+      'model routing needs a managed agent: a bridge agent’s brain is your own code, not a model we choose',
+    path: ['routing'],
   })
   .refine((a) => a.runtime !== 'bridge' || Boolean(a.bridgeUrl), {
     message: 'bridgeUrl is required for the bridge runtime',
@@ -183,6 +237,8 @@ const AgentPatchSchema = z.object({
   welcomeMessage: welcomeMessageSchema,
   suggestedPrompts: suggestedPromptsSchema,
   context: AgentContextSchema.optional(),
+  /** A6: null switches the router off and forgets the config; absent leaves it. */
+  routing: RoutingSchema.nullable().optional(),
 });
 
 const InboundMessageSchema = z.object({
@@ -278,6 +334,11 @@ function agentView(agent: Agent) {
             samplePercent: agent.canary_sample_percent ?? SAMPLE_PERCENT_DEFAULT,
           }
         : null,
+    // A6: the cheap-first router's config, or null when it was never set up —
+    // same "presence is the flag" shape as canary above, so the editor tests the
+    // object rather than interpreting an enabled flag on a config that isn't
+    // there. Managed-only; a bridge agent can never have one.
+    routing: agent.routing ?? null,
     status: agent.status,
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
@@ -354,6 +415,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       welcomeMessage: parsed.data.welcomeMessage,
       suggestedPrompts: parsed.data.suggestedPrompts,
       context: parsed.data.context,
+      routing: parsed.data.routing ? routingConfig(parsed.data.routing) : undefined,
     });
     if (!agent) {
       return reply.code(409).send({ error: `agent "${parsed.data.identifier}" already exists` });
@@ -413,6 +475,29 @@ export function registerAgentRoutes(app: FastifyInstance) {
     },
   );
 
+  /**
+   * A6 slice B — what the router did for this agent lately. The window is FIXED
+   * at 7 days and echoed back, so the sentence the dashboard prints ("in the
+   * last 7 days") can never drift from the number it prints beside it. Managed
+   * only, like every other routing surface.
+   */
+  app.get<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/routing/stats',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      if (agent.runtime !== 'managed') {
+        return reply.code(400).send({
+          error:
+            'model routing needs a managed agent: a bridge agent’s brain is your own code, not a model we choose',
+        });
+      }
+      const stats = await agentRoutingStats(req.tenant.id, agent.id, ROUTING_STATS_DAYS);
+      return { windowDays: ROUTING_STATS_DAYS, ...stats };
+    },
+  );
+
   app.patch<{ Params: { identifier: string } }>(
     '/v1/agents/:identifier',
     { preHandler: [authenticate] },
@@ -434,6 +519,17 @@ export function registerAgentRoutes(app: FastifyInstance) {
         !(parsed.data.llm?.apiKey || existing.llm_credentials)
       ) {
         return reply.code(400).send({ error: 'managed runtime requires llm.apiKey' });
+      }
+      // A6: routing is managed-only, judged against what the agent will BE after
+      // this patch (nextRuntime), not what it was — the same test the bridgeUrl
+      // and llm.apiKey guards above make. Clearing (`routing: null`) is exempt
+      // on purpose: a managed→bridge conversion must be able to switch the
+      // router off in the same request, and a clear is never wrong.
+      if (parsed.data.routing != null && nextRuntime !== 'managed') {
+        return reply.code(400).send({
+          error:
+            'model routing needs a managed agent: a bridge agent’s brain is your own code, not a model we choose',
+        });
       }
       const unsafe = await unsafeUrlError({
         bridgeUrl: parsed.data.bridgeUrl,
@@ -459,6 +555,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
         welcomeMessage: parsed.data.welcomeMessage,
         suggestedPrompts: parsed.data.suggestedPrompts,
         context: parsed.data.context,
+        routing:
+          parsed.data.routing === undefined
+            ? undefined
+            : parsed.data.routing === null
+              ? null
+              : routingConfig(parsed.data.routing),
       });
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };

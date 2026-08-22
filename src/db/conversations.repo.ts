@@ -159,6 +159,8 @@ export async function createAgent(a: {
   welcomeMessage?: string | null;
   suggestedPrompts?: Array<{ title: string; message: string }> | null;
   context?: AgentContext;
+  /** A6: cheap-first routing, or absent = off (what every agent is born as). */
+  routing?: RoutingConfig;
 }): Promise<Agent | null> {
   const client = await pool.connect();
   try {
@@ -167,9 +169,10 @@ export async function createAgent(a: {
       `insert into agents
        (tenant_id, identifier, name, description, runtime, bridge_url,
         signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
-        auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens, context)
+        auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens, context,
+        routing)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-             coalesce($17::jsonb, '{}'::jsonb))
+             coalesce($17::jsonb, '{}'::jsonb), $18::jsonb)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
       [
@@ -190,6 +193,7 @@ export async function createAgent(a: {
         a.suggestedPrompts ? JSON.stringify(a.suggestedPrompts) : null,
         a.maxDailyTokens ?? null,
         a.context ? JSON.stringify(a.context) : null,
+        a.routing ? JSON.stringify(a.routing) : null,
       ],
     );
     const agent: Agent | undefined = rows[0];
@@ -265,6 +269,12 @@ export async function updateAgent(
     suggestedPrompts?: Array<{ title: string; message: string }> | null;
     /** D6 rolling knobs; undefined leaves untouched (no clear sentinel — the bag is small). */
     context?: AgentContext;
+    /**
+     * A6: null switches routing OFF and forgets the config (jsonb 'null' is the
+     * wire sentinel); undefined leaves it untouched. A provided object REPLACES
+     * the whole config — it is two fields, so a merge would only buy ambiguity.
+     */
+    routing?: RoutingConfig | null;
   },
 ): Promise<Agent | null> {
   const client = await pool.connect();
@@ -311,6 +321,9 @@ export async function updateAgent(
                                else coalesce($16, max_daily_tokens) end,
        -- undefined leaves the config bag untouched; a provided object replaces it
        context         = coalesce($17::jsonb, context),
+       -- A6: jsonb 'null' sentinel clears the router; null param leaves it
+       routing         = case when $18::jsonb = 'null'::jsonb then null
+                              else coalesce($18::jsonb, routing) end,
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -336,6 +349,11 @@ export async function updateAgent(
             : JSON.stringify(patch.suggestedPrompts),
         patch.maxDailyTokens === null ? 0 : (patch.maxDailyTokens ?? null),
         patch.context === undefined ? null : JSON.stringify(patch.context),
+        patch.routing === null
+          ? 'null'
+          : patch.routing === undefined
+            ? null
+            : JSON.stringify(patch.routing),
       ],
     );
     let agent: Agent = rows[0];

@@ -182,3 +182,76 @@ export async function agentHealth(
     p95DailyTokens,
   };
 }
+
+/**
+ * Phase A6 slice B — what the router actually did for one agent over a window.
+ *
+ * ONE denominator, so the numbers can be read side by side without arithmetic:
+ * every reply this agent SENT in the window (a `raw ? 'usage'` agent row — the
+ * same "a turn happened here" marker agentHealth uses, which excludes
+ * operator-pushed messages), minus canary-trial replies. Three buckets that sum
+ * to it:
+ *   cheap      — routing applied and the cheap model's answer shipped
+ *   escalated  — routing applied and the turn re-ran on the main model
+ *   unrouted   — no `raw.routing` at all, i.e. the router was off for that turn
+ *                (routing was switched on partway through the window, or the
+ *                reply predates A6)
+ *
+ * CANARY rows are excluded from all three. A canary-arm turn runs on the
+ * trial's own model because candidate beats routing (managed-brain's precedence
+ * block), so it never carries `raw.routing` — counting it in the denominator
+ * would silently depress the cheap share with turns the router was never
+ * offered. The exclusion is written out rather than left implicit so the
+ * denominator matches the sentence the dashboard prints next to it.
+ *
+ * COST (the 10-20M rule): one query, one pass, no per-turn work. Same access
+ * path agentHealth already pays for — conversations_agent_idx probes the
+ * agent's conversations, then conversation_messages_conv_idx range-scans each
+ * one by (conversation_id, created_at); the bucket split is three
+ * `count(*) FILTER`s over that single scan. Deliberately NO new index: the
+ * routed rows are a subset of rows this access path already visits, so a
+ * partial index on `raw ? 'routing'` would add write cost to every message
+ * insert to save nothing the range scan isn't already doing.
+ */
+export interface AgentRoutingStats {
+  /** Replies in the window, canary excluded — the denominator for all three. */
+  replies: number;
+  cheapReplies: number;
+  escalatedReplies: number;
+  unroutedReplies: number;
+}
+
+export async function agentRoutingStats(
+  tenantId: string,
+  agentId: string,
+  windowDays: number,
+): Promise<AgentRoutingStats> {
+  const { rows } = await pool.query(
+    `select
+       count(*)::int as replies,
+       count(*) filter (
+         where m.raw->'routing' is not null
+           and (m.raw->'routing'->>'escalated')::boolean is not true
+       )::int as cheap,
+       count(*) filter (
+         where (m.raw->'routing'->>'escalated')::boolean is true
+       )::int as escalated
+     from conversation_messages m
+     join conversations c on c.id = m.conversation_id
+     where c.tenant_id = $1
+       and c.agent_id = $2
+       and m.created_at >= now() - make_interval(days => $3)
+       and m.role = 'agent'
+       and m.deleted_at is null
+       and m.raw ? 'usage'
+       and m.raw->'canaryVersion' is null`,
+    [tenantId, agentId, windowDays],
+  );
+  const r = rows[0] as { replies: number; cheap: number; escalated: number };
+  return {
+    replies: r.replies,
+    cheapReplies: r.cheap,
+    escalatedReplies: r.escalated,
+    unroutedReplies: r.replies - r.cheap - r.escalated,
+  };
+}

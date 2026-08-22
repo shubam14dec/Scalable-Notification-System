@@ -4,6 +4,8 @@ import { authenticate } from '../auth';
 import { getAgent } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { validateScenario } from '../../core/eval-runner';
+import { RoutingSchema, routingConfig } from './agents';
+import type { CandidateConfig } from '../../core/managed-brain';
 import {
   createEval,
   createRun,
@@ -77,10 +79,20 @@ const CandidateSchema = z
   .object({
     systemPrompt: z.string().min(1).max(100_000).optional(),
     model: z.string().min(1).max(255).optional(),
+    /**
+     * A6 slice B: the ROUTING config to grade, because turning the router on is
+     * a behavior change like any prompt edit — the reply comes from a different
+     * model. `null` means "grade it with routing OFF", which is a real thing to
+     * ask for and is why this is nullable rather than just optional; ABSENT
+     * means no opinion, and the router steps aside for the whole run exactly as
+     * it did before this field existed.
+     */
+    routing: RoutingSchema.nullable().optional(),
   })
-  .refine((c) => c.systemPrompt !== undefined || c.model !== undefined, {
-    message: 'candidate needs systemPrompt and/or model',
-  });
+  .refine(
+    (c) => c.systemPrompt !== undefined || c.model !== undefined || c.routing !== undefined,
+    { message: 'candidate needs systemPrompt, model and/or routing' },
+  );
 
 const RunEvalSchema = z.object({
   trigger: z.enum(['manual', 'pre_save']).optional(),
@@ -184,7 +196,18 @@ export function registerAgentEvalRoutes(app: FastifyInstance) {
       // the customer's own code behind a signed URL — there is no prompt or
       // model here to override — so accepting one would be a lie about what the
       // run graded. The worker skips it defensively too (eval-run.processor).
-      const candidate = parsed.data.candidate;
+      // The wire shape's routing is normalized to the stored `RoutingConfig`
+      // here (cheapModel '' when unset), so exactly one shape reaches the brain
+      // — the same object an agent save would have written. `'routing' in raw`
+      // is preserved: absent and null are different instructions to the router.
+      const raw = parsed.data.candidate;
+      const candidate: CandidateConfig | undefined = raw && {
+        ...(raw.systemPrompt !== undefined ? { systemPrompt: raw.systemPrompt } : {}),
+        ...(raw.model !== undefined ? { model: raw.model } : {}),
+        ...('routing' in raw
+          ? { routing: raw.routing ? routingConfig(raw.routing) : null }
+          : {}),
+      };
       if (candidate && agent.runtime !== 'managed') {
         return reply.code(400).send({
           error:
