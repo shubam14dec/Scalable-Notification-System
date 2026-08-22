@@ -24,6 +24,7 @@ import { processStatus } from './processors/status.processor';
 import { processOverflow } from './processors/overflow.processor';
 import { processConversation, onConversationDead } from './processors/conversation.processor';
 import { processEvalRun } from './processors/eval-run.processor';
+import { processTurnJudge } from './processors/turn-judge.processor';
 import { processKnowledge, onKnowledgeDead } from './processors/knowledge.processor';
 import { runInactivitySweep, SWEEP_INTERVAL_MS } from './inactivity-sweep';
 
@@ -65,6 +66,13 @@ function main() {
   // which the conversation workers (concurrency 10) service in parallel, so an
   // eval run never starves the pipeline it drives.
   makeWorker(QUEUE.EVAL_RUN, processEvalRun, { concurrency: 1 });
+
+  // Canary turn judging (A5 slice C): one extra LLM call per SAMPLED reply,
+  // graded after the customer already has their answer. Concurrency 2 — enough
+  // that a busy trial's judgments don't lag hours behind the traffic they
+  // describe, low enough that a spike in sampled turns can never contend with
+  // the conversation pool (concurrency 10) for the agent's own rate limit.
+  makeWorker(QUEUE.TURN_JUDGE, processTurnJudge, { concurrency: 2 });
 
   // Knowledge ingestion (Phase 23): chunk + embed source content, drive
   // episodic summaries, and clean up vectors. Concurrency 1 keeps a tenant's

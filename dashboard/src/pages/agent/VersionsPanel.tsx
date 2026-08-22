@@ -8,10 +8,12 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../../lib/api';
+import { api, ApiError } from '../../lib/api';
 import { Button, Input, Mono, Modal, Skeleton, EmptyState } from '../../ui';
 import { timeAgo } from '../Activity';
-import type { Agent, AgentEval, EvalCandidate } from './types';
+import { PreSaveCheck } from './PreSaveCheck';
+import { useEvalRuns } from './shared';
+import { baselineRun, fmtInt, type Agent, type AgentEval, type EvalCandidate } from './types';
 
 /** The list shape: length + head, never the whole prompt (lists stay light). */
 interface VersionSummary {
@@ -31,6 +33,35 @@ interface VersionDetail {
   createdAt: string;
 }
 
+/** One side of the trial. `arms` always carries both — select by `.arm`. */
+interface CanaryArmReport {
+  arm: 'canary' | 'control';
+  conversations: number;
+  turns: number;
+  resolutions: number;
+  handoffs: number;
+  guardPauses: number;
+  /** null when no turn in this arm recorded usage — an em dash, never a 0. */
+  avgTokensPerTurn: number | null;
+  /** dim -> { avg, n }; `{}` until the judge has scored something. */
+  judged: Record<string, { avg: number; n: number }>;
+}
+
+interface CanaryReport {
+  version: number;
+  percent: number | null;
+  samplePercent: number;
+  startedAt: string;
+  arms: CanaryArmReport[];
+}
+
+/**
+ * A trial accumulates over hours, not seconds — a tighter loop would redraw the
+ * same numbers. Same conditional-refetchInterval idiom as useEvalRuns, and the
+ * query is off entirely when no trial is running.
+ */
+const CANARY_REPORT_POLL_MS = 30_000;
+
 /** The dotted chip idiom used for the pre-save marker in run history. */
 function Chip({ children }: { children: ReactNode }) {
   return (
@@ -47,6 +78,69 @@ function candidateFor(v: { systemPrompt: string | null; model: string | null }):
     ...(v.model ? { model: v.model } : {}),
   };
   return candidate.systemPrompt || candidate.model ? candidate : null;
+}
+
+/**
+ * One arm of the comparison. Both columns render from the same component so the
+ * two sides can never disagree about what a row means — the whole point of the
+ * panel is that the numbers are read side by side.
+ */
+function ArmColumn({
+  label,
+  arm,
+  samplePercent,
+}: {
+  label: string;
+  arm: CanaryArmReport | undefined;
+  samplePercent: number;
+}) {
+  const judged = Object.entries(arm?.judged ?? {});
+  const rows: Array<[string, string]> = [
+    ['conversations', fmtInt(arm?.conversations)],
+    ['turns', fmtInt(arm?.turns)],
+    ['resolutions', fmtInt(arm?.resolutions)],
+    ['handoffs', fmtInt(arm?.handoffs)],
+    ['guard pauses', fmtInt(arm?.guardPauses)],
+    // fmtInt renders null as an em dash: "we recorded no usage" and "it cost
+    // nothing" are different claims, and a 0 here would tell the second lie.
+    ['avg tokens/turn', fmtInt(arm?.avgTokensPerTurn)],
+  ];
+
+  return (
+    <div>
+      <span className="block text-[11px] font-medium uppercase tracking-wider text-t3">
+        {label}
+      </span>
+      <dl className="mt-1.5 space-y-1">
+        {rows.map(([name, value]) => (
+          <div key={name} className="flex items-baseline justify-between gap-3">
+            <dt className="text-[12px] text-t3">{name}</dt>
+            <dd>
+              <Mono className="text-t1">{value}</Mono>
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-2 border-t border-bd pt-2">
+        {judged.length > 0 ? (
+          judged.map(([dim, stat]) => (
+            <Mono key={dim} className="block text-t2">
+              {dim} {stat.avg.toFixed(1)} · n={stat.n}
+            </Mono>
+          ))
+        ) : (
+          // Empty judged is two different situations, and guessing between them
+          // is how a panel starts lying: sampling on means "not yet", sampling
+          // off means "never, for this trial".
+          <span className="text-[11px] text-t3">
+            {samplePercent > 0
+              ? `no judged turns yet — sampling ${samplePercent}% of both arms`
+              : 'judging is off for this trial'}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function VersionsPanel({ agent }: { agent: Agent }) {
@@ -84,6 +178,46 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
   });
   const enabledEvals = (evalsQuery.data?.evals ?? []).filter((e) => e.enabled).length;
 
+  const canary = agent.canary ?? null;
+
+  // A5 slice C: the running trial's counters. Presence of `agent.canary` is the
+  // only thing that turns this on — with no trial there is nothing to poll, and
+  // the version in the key keeps a promoted trial's numbers from flashing under
+  // the next one.
+  const report = useQuery({
+    queryKey: ['agent-canary-report', agent.identifier, canary?.version ?? null],
+    queryFn: async () => {
+      try {
+        return await api<CanaryReport>(`/v1/agents/${agent.identifier}/canary/report`);
+      } catch (err) {
+        // A trial that ended between renders 404s; a bridge agent 400s. Neither
+        // is a failure to show anyone — both mean "no trial", which this panel
+        // already renders by dropping the strip once `agent.canary` refreshes
+        // away. Swallowing them here also keeps the 30s poll from burning a
+        // retry every tick on a condition that will never resolve.
+        if (err instanceof ApiError && (err.status === 404 || err.status === 400)) return null;
+        throw err;
+      }
+    },
+    enabled: canary !== null,
+    refetchInterval: CANARY_REPORT_POLL_MS,
+  });
+  const arms = report.data?.arms ?? [];
+  // Arm order is not guaranteed by the API — always select, never index.
+  const armOf = (name: CanaryArmReport['arm']) => arms.find((a) => a.arm === name);
+
+  // A5 slice C: a restore publishes a live prompt, so it earns the same pre-save
+  // check an ordinary Save gets. The gate mirrors EditPanel's `preSaveOn`
+  // exactly — an agent with no enabled eval keeps the plain confirm, because
+  // there is nothing to run against it.
+  const evalGateOn = agent.runtime === 'managed' && Boolean(agent.identifier);
+  const runsQuery = useEvalRuns(agent.identifier, evalGateOn);
+  const preSaveOn = evalGateOn && enabledEvals > 0;
+  const [restoreCheck, setRestoreCheck] = useState<{
+    version: number;
+    candidate: EvalCandidate;
+  } | null>(null);
+
   const restore = useMutation({
     mutationFn: (version: number) =>
       api<{ restoredFrom: number; version: number }>(
@@ -116,7 +250,7 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
     onError: (err) => setActionError(err.message),
   });
 
-  // ---- A5 slice B: canary controls (minimal — the comparison panel is slice C) ----
+  // ---- A5 slice B: canary controls (slice C added the comparison above them) ----
   // Start / Stop / Promote only. Every one of them changes the agent row, so
   // they all invalidate ['agents'] (the editor and this panel read the agent
   // from it) alongside the version list a promote appends to.
@@ -154,7 +288,6 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
     onError: (err) => setActionError(err.message),
   });
 
-  const canary = agent.canary ?? null;
   const versions = data?.versions ?? [];
   const open = detail.data?.version ?? null;
   const openCandidate = open ? candidateFor(open) : null;
@@ -171,13 +304,43 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
       {actionError && <p className="mb-3 text-[12px] text-err">{actionError}</p>}
 
       {canary && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-bd bg-elevated px-3 py-2.5">
-          <span className="text-[12px] text-t2">
+        <div className="mb-4 rounded-lg border border-bd bg-elevated px-3 py-2.5">
+          <p className="text-[12px] text-t2">
             <Mono className="text-t1">v{canary.version}</Mono> is on trial with{' '}
             <span className="text-t1">{canary.percent}%</span> of new conversations
             {canary.startedAt && ` · started ${timeAgo(canary.startedAt)}`}
-          </span>
-          <span className="flex shrink-0 items-center gap-2">
+            {canary.samplePercent > 0
+              ? ` · judging ${canary.samplePercent}% of turns in both arms`
+              : ' · counters only (judging off)'}
+          </p>
+
+          {report.isLoading ? (
+            <Skeleton className="mt-3 h-36 w-full" />
+          ) : report.data ? (
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <ArmColumn
+                label="Live"
+                arm={armOf('control')}
+                samplePercent={report.data.samplePercent}
+              />
+              <ArmColumn
+                label={`Canary v${report.data.version}`}
+                arm={armOf('canary')}
+                samplePercent={report.data.samplePercent}
+              />
+            </div>
+          ) : report.isError ? (
+            // Muted, not an error box: the comparison failing to load says
+            // nothing about the trial, which is still running and still
+            // steerable with the two buttons below.
+            <p className="mt-2 text-[11px] text-t3">
+              Couldn&apos;t read the trial&apos;s counters just now — the trial itself is
+              unaffected, and this retries on its own.
+            </p>
+          ) : null}
+
+          {/* The report is the evidence, so the two decisions sit under it. */}
+          <div className="mt-3 flex justify-end gap-2 border-t border-bd pt-2.5">
             <Button
               variant="ghost"
               disabled={stopCanary.isPending || promoteCanary.isPending}
@@ -200,7 +363,7 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
             >
               Promote
             </Button>
-          </span>
+          </div>
         </div>
       )}
 
@@ -340,6 +503,19 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
                   variant="primary"
                   disabled={restore.isPending}
                   onClick={() => {
+                    // With evals enabled the check owns this decision: it runs
+                    // them against the snapshot being restored and asks once, at
+                    // the end. A confirm() here too would be one warning about
+                    // the same act too many (EditPanel's save path reasons the
+                    // same way). A snapshot with neither prompt nor model has
+                    // nothing to grade, so it keeps the plain confirm.
+                    if (preSaveOn && openCandidate) {
+                      // Close the drawer first — the check is a modal of its own
+                      // and Escape would otherwise dismiss both at once.
+                      setRestoreCheck({ version: open.version, candidate: openCandidate });
+                      setOpenVersion(null);
+                      return;
+                    }
                     if (
                       window.confirm(
                         `Restore v${open.version}? This saves its prompt as a new version and makes it live for new turns.`,
@@ -356,6 +532,24 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
           </>
         )}
       </Modal>
+
+      {/* The restore's pre-save check. Same panel the Edit tab uses, pointed at
+          the stored snapshot instead of an unsaved draft: it grades the version
+          first, and only its own Save/Save anyway fires the restore. */}
+      {restoreCheck && (
+        <PreSaveCheck
+          identifier={agent.identifier}
+          candidate={restoreCheck.candidate}
+          baseline={baselineRun(runsQuery.data?.runs ?? [])}
+          evalCount={enabledEvals}
+          onSave={() => {
+            const { version } = restoreCheck;
+            setRestoreCheck(null);
+            restore.mutate(version);
+          }}
+          onCancel={() => setRestoreCheck(null)}
+        />
+      )}
     </div>
   );
 }

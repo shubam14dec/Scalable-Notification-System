@@ -38,6 +38,7 @@ import { getDayTokens, incrDayTokens, claimBudgetNotify } from '../../shared/age
 import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
 import { emitTenantEvent } from '../../core/tenant-events';
+import { judgeTurnIfSampled } from '../../core/turn-judge';
 import { PermanentError, TransientError } from '../../shared/errors';
 import { fetch as safeFetch } from 'undici';
 import {
@@ -482,6 +483,9 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   }
 
   if (reply !== undefined && reply.length > 0) {
+    // Hoisted out of both branches so the A5 slice C judge hook below can see
+    // the row whichever way it was written (plan-card finalize or fresh insert).
+    let replyRow: ConversationMessage | null = null;
     if (planCard?.finalized) {
       // The plan-card row IS the reply row: finalize already set its content,
       // merged raw (usage/buttons/card), and pushed the channel edit. Do NOT
@@ -489,7 +493,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       // send-once delivery guard for retry safety (it no-ops sends already
       // made; the inapp branch republishes conversation.message, which the
       // widget drops as a known id).
-      const replyRow = await getConversationMessageByDedupe(conversationId, `reply-${messageId}`);
+      replyRow = await getConversationMessageByDedupe(conversationId, `reply-${messageId}`);
       if (replyRow) {
         await deliverReply(conversation, subscriber.external_id, agent, replyRow, message);
       }
@@ -497,7 +501,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       // Retry-safe in two layers: the dedupe key stops a duplicate ROW, and
       // deliverReply's send-once guard stops a duplicate SEND when a prior
       // attempt crashed between inserting the row and delivering it.
-      const replyRow =
+      replyRow =
         (await insertConversationMessage({
           conversationId,
           tenantId,
@@ -543,6 +547,29 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     // cover resolve only. Fire-and-forget after the row write (row-then-hint),
     // ALL channels, so the admin transcript + list update live for replies.
     void emitTenantEvent(conversation.tenant_id, 'conversation.changed', conversation.id);
+
+    // A5 slice C: roll for a sampled judgment of THIS reply.
+    //
+    // Placed here on purpose — after the row is written AND after deliverReply
+    // has sent it. The customer's answer is already gone by the time the coin is
+    // flipped, so judging cannot delay it. `void` is safe because
+    // judgeTurnIfSampled never rejects (it swallows and logs its own failures),
+    // so a down Redis or a broken judge queue costs a data point and nothing
+    // else. Sampling BOTH arms at the same rate is what makes the two averages
+    // comparable; the trial-is-running and enrolled-arm checks live inside.
+    if (replyRow) {
+      void judgeTurnIfSampled({
+        agent,
+        arm: conversation.canary_arm,
+        tenantId: conversation.tenant_id,
+        conversationId: conversation.id,
+        messageId: replyRow.id,
+        // What ACTUALLY served this turn — the same value stamped into
+        // raw.canaryVersion above, so a post-Stop turn in a canary-arm thread
+        // is judged (and stored) as the control observation it really is.
+        canaryVersion: servedCanaryVersion ?? null,
+      });
+    }
   }
   await applySignals(conversation, messageId, signals, subscriber, agent);
 

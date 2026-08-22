@@ -30,6 +30,7 @@ import {
   handbackConversation,
   lastOperatorMessage,
   rotateAgentSecret,
+  SAMPLE_PERCENT_DEFAULT,
   startCanary,
   updateAgent,
   type Agent,
@@ -38,6 +39,7 @@ import {
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { enqueueSummarize } from '../../core/episodic';
+import { buildCanaryReport } from '../../core/turn-judge';
 import { enqueueHandbackFold } from '../../core/rolling';
 import { emitTenantEvent } from '../../core/tenant-events';
 import { CardSchema } from '../../shared/cards';
@@ -269,6 +271,11 @@ function agentView(agent: Agent) {
             version: agent.canary_version,
             percent: agent.canary_percent,
             startedAt: agent.canary_started_at,
+            // A5 slice C: shown on the comparison panel so an operator reading
+            // "n=31" knows what it is 31 out of. Resolved here (never raw null)
+            // because null means "a trial started before sampling shipped",
+            // which behaves as the default rather than as "off".
+            samplePercent: agent.canary_sample_percent ?? SAMPLE_PERCENT_DEFAULT,
           }
         : null,
     status: agent.status,
@@ -593,6 +600,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
     // and an all-or-nothing "split" would produce an empty arm and a
     // comparison panel with nothing to compare against.
     percent: z.number().int().min(1).max(99),
+    // A5 slice C: share of replies in BOTH arms sampled for async judging.
+    // 0..100 inclusive at BOTH ends, unlike `percent` above, because both ends
+    // are meaningful here: 0 = run the trial on counters alone (judge nothing,
+    // spend nothing extra), 100 = judge every reply, which is affordable for a
+    // low-traffic agent and is the only way a short trial gathers enough
+    // judgments to separate the arms. Omitted = SAMPLE_PERCENT_DEFAULT.
+    samplePercent: z.number().int().min(0).max(100).optional(),
   });
 
   app.post<{ Params: { identifier: string }; Body: unknown }>(
@@ -608,7 +622,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const row = await getAgentPromptVersion(agent.id, parsed.data.version);
       if (!row) return reply.code(404).send({ error: 'unknown version' });
 
-      const started = await startCanary(agent.id, parsed.data.version, parsed.data.percent);
+      const started = await startCanary(
+        agent.id,
+        parsed.data.version,
+        parsed.data.percent,
+        parsed.data.samplePercent ?? SAMPLE_PERCENT_DEFAULT,
+      );
       // Null means the row already had a canary_version: one trial at a time,
       // enforced by the write itself (see startCanary), so two operators
       // racing the button get one trial and one honest 409 — never a silently
@@ -639,6 +658,33 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const stopped = await clearCanary(agent.id);
       if (!stopped) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(stopped) };
+    },
+  );
+
+  /**
+   * A5 slice C — the evidence behind Promote.
+   *
+   * Scoped to the CURRENT trial and nothing else: there is no history endpoint
+   * here, because the decision this serves ("promote or stop?") is only ever
+   * about the trial running right now. Hence 404 rather than an empty body when
+   * none is running — an operator asking for a comparison that does not exist
+   * has made a mistake, and an empty report full of zeros would look like a
+   * trial going badly instead of a trial that isn't happening.
+   *
+   * Everything is aggregated IN POSTGRES (two set-based queries, see
+   * conversations.repo.ts) — no per-conversation or per-turn iteration, so the
+   * panel's poll costs the same on an agent with ten conversations under trial
+   * as on one with ten million behind it.
+   */
+  app.get<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/canary/report',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await resolveVersionTarget(req.tenant.id, req.params.identifier, reply);
+      if (!agent) return reply;
+      const report = await buildCanaryReport(agent);
+      if (!report) return reply.code(404).send({ error: 'no canary is running on this agent' });
+      return report;
     },
   );
 

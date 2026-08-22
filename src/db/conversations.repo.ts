@@ -47,6 +47,12 @@ export interface Agent {
   /** Share of NEWLY OPENED conversations routed to the canary arm (1-99). */
   canary_percent: number | null;
   canary_started_at: string | null;
+  /**
+   * A5 slice C: share of replies in BOTH arms sampled for async LLM judging
+   * (0 = counters only). Moves with the trio above — Start sets it, Stop and
+   * Promote clear it.
+   */
+  canary_sample_percent: number | null;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;
@@ -428,17 +434,29 @@ export async function getAgentPromptVersion(
  * trial and one honest 409, never two half-applied configs. The caller has
  * already checked that the version exists and that the agent is managed.
  */
+/**
+ * A5 slice C: the share of replies — in BOTH arms — sampled for async judging
+ * when Start doesn't say otherwise. 20% is chosen to make the comparison
+ * affordable at scale: judging is one extra LLM call per sampled turn, so a
+ * 10M-turn month at 100% would double the agent's model spend, while 20% of
+ * both arms still reaches a few hundred judgments within hours of a normal
+ * trial — enough for the averages to separate, cheap enough to leave on.
+ */
+export const SAMPLE_PERCENT_DEFAULT = 20;
+
 export async function startCanary(
   agentId: string,
   version: number,
   percent: number,
+  samplePercent: number = SAMPLE_PERCENT_DEFAULT,
 ): Promise<Agent | null> {
   const { rows } = await pool.query(
     `update agents
-        set canary_version = $2, canary_percent = $3, canary_started_at = now()
+        set canary_version = $2, canary_percent = $3, canary_started_at = now(),
+            canary_sample_percent = $4
       where id = $1 and canary_version is null
       returning *`,
-    [agentId, version, percent],
+    [agentId, version, percent, samplePercent],
   );
   return rows[0] ?? null;
 }
@@ -453,12 +471,219 @@ export async function startCanary(
 export async function clearCanary(agentId: string): Promise<Agent | null> {
   const { rows } = await pool.query(
     `update agents
-        set canary_version = null, canary_percent = null, canary_started_at = null
+        set canary_version = null, canary_percent = null, canary_started_at = null,
+            canary_sample_percent = null
       where id = $1
       returning *`,
     [agentId],
   );
   return rows[0] ?? null;
+}
+
+// ---- A5 slice C: the comparison (per-turn judgments + per-arm report) ----
+
+/** One (reply, dimension) score. `arm` is what SERVED the turn — see schema.sql. */
+export interface TurnJudgmentRow {
+  tenantId: string;
+  agentId: string;
+  conversationId: string;
+  messageId: string;
+  arm: 'canary' | 'control';
+  canaryVersion: number | null;
+  dim: string;
+  score: number;
+  rationale: string;
+}
+
+/**
+ * Write a judged turn's scores. ONE statement for all dimensions (a judge call
+ * returns groundedness and tone together), and `on conflict do nothing` on
+ * unique (message_id, dim): a retried BullMQ job re-judges the same reply and
+ * its scores are DROPPED rather than added, so no reply can be counted twice
+ * and pull an arm's average toward whichever turn happened to be retried.
+ * Returns how many rows were actually new — the caller logs it, and the tests
+ * assert 0 on the second attempt.
+ */
+export async function insertTurnJudgments(rows: TurnJudgmentRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  // Positional tuples rather than N round trips: the whole verdict set is one
+  // insert regardless of how many dimensions the judge returned.
+  const values = rows
+    .map((_, i) => {
+      const b = i * 9;
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9})`;
+    })
+    .join(',');
+  const params = rows.flatMap((r) => [
+    r.tenantId,
+    r.agentId,
+    r.conversationId,
+    r.messageId,
+    r.arm,
+    r.canaryVersion,
+    r.dim,
+    r.score,
+    r.rationale,
+  ]);
+  const { rowCount } = await pool.query(
+    `insert into agent_turn_judgments
+       (tenant_id, agent_id, conversation_id, message_id, arm, canary_version, dim, score, rationale)
+     values ${values}
+     on conflict (message_id, dim) do nothing`,
+    params,
+  );
+  return rowCount ?? 0;
+}
+
+export interface CanaryArmStats {
+  arm: 'canary' | 'control';
+  conversations: number;
+  turns: number;
+  resolutions: number;
+  handoffs: number;
+  guardPauses: number;
+  /** Mean input+output tokens over the turns that RECORDED usage; null if none. */
+  avgTokensPerTurn: number | null;
+}
+
+export interface CanaryJudgedStat {
+  arm: 'canary' | 'control';
+  dim: string;
+  avg: number;
+  n: number;
+}
+
+/**
+ * Per-arm operational counters for ONE trial.
+ *
+ * TWO DIFFERENT ATTRIBUTIONS, deliberately, because two different things are
+ * being counted:
+ *  - conversations / resolutions / handoffs / guard pauses are counted by the
+ *    arm the conversation was ENROLLED in. A conversation is a thing that was
+ *    assigned once; "did this thread resolve?" is a property of the thread.
+ *  - turns are counted by what ACTUALLY SERVED them (raw.canaryVersion on the
+ *    reply row). The arm alone would lie: a canary-arm thread whose trial
+ *    version vanished underneath it falls through to the live prompt, and
+ *    slice B's revert means the same after a Stop. A reply the trial version
+ *    never wrote must not be counted as evidence for it.
+ * The two agree for every ordinary turn; where they disagree, each column is
+ * answering its own question honestly.
+ *
+ * QUERY COST — every scan is proportional to THIS TRIAL, never to table size:
+ *   `trial`  → conversations_canary_arm_idx (agent_id, canary_arm) WHERE
+ *              canary_arm is not null (slice B's partial index), with
+ *              created_at as a residual filter. Rows = conversations opened
+ *              under this trial.
+ *   `turns`  → conversation_messages_conv_idx (conversation_id, created_at),
+ *              one index range per trial conversation.
+ *   `pauses` → agent_tool_calls_conversation_idx (conversation_id).
+ * No per-row loop and no per-conversation round trip: one statement, two
+ * grouped aggregates, at 10M users the work still scales with the sampled
+ * trial rather than with history.
+ */
+export async function canaryArmStats(
+  agentId: string,
+  startedAt: string,
+  canaryVersion: number,
+): Promise<CanaryArmStats[]> {
+  const { rows } = await pool.query(
+    `with trial as (
+       select id, canary_arm, status, had_human
+         from conversations
+        where agent_id = $1 and canary_arm is not null and created_at >= $2
+     ),
+     conv as (
+       select canary_arm as arm,
+              count(*) as n,
+              count(*) filter (where status = 'resolved') as resolved,
+              count(*) filter (where had_human) as handoffs
+         from trial group by canary_arm
+     ),
+     turns as (
+       select case when (m.raw->>'canaryVersion')::int = $3 then 'canary' else 'control' end as arm,
+              (m.raw->'usage'->>'inputTokens')::numeric
+                + (m.raw->'usage'->>'outputTokens')::numeric as tokens
+         from trial t
+         join conversation_messages m on m.conversation_id = t.id
+        where m.role = 'agent'
+          -- Platform-authored rows (the budget-pause note) are not model turns
+          -- and must not dilute either arm's counts or its token average.
+          and (m.raw->>'platformNote') is null
+          and m.created_at >= $2
+     ),
+     turn_agg as (
+       select arm, count(*) as n, round(avg(tokens))::int as avg_tokens
+         from turns group by arm
+     ),
+     pauses as (
+       select t.canary_arm as arm, count(*) as n
+         from trial t
+         join agent_tool_calls c on c.conversation_id = t.id
+        -- A guard pause is a tool call that STOPPED for a human. Final status
+        -- cannot tell them apart (an approved-then-run call ends 'executed',
+        -- exactly like an auto call), but only the approval path stamps an
+        -- expiry at insert — so expires_at is the durable marker of "this one
+        -- paused". See managed-brain's recordToolCall calls.
+        where c.expires_at is not null and c.requested_at >= $2
+        group by t.canary_arm
+     )
+     select a.arm,
+            coalesce(conv.n, 0)::int          as conversations,
+            coalesce(turn_agg.n, 0)::int      as turns,
+            coalesce(conv.resolved, 0)::int   as resolutions,
+            coalesce(conv.handoffs, 0)::int   as handoffs,
+            coalesce(pauses.n, 0)::int        as guard_pauses,
+            turn_agg.avg_tokens               as avg_tokens
+       from (select unnest(array['canary','control']) as arm) a
+       left join conv     on conv.arm = a.arm
+       left join turn_agg on turn_agg.arm = a.arm
+       left join pauses   on pauses.arm = a.arm`,
+    [agentId, startedAt, canaryVersion],
+  );
+  return rows.map((r) => ({
+    arm: r.arm as 'canary' | 'control',
+    conversations: r.conversations,
+    turns: r.turns,
+    resolutions: r.resolutions,
+    handoffs: r.handoffs,
+    guardPauses: r.guard_pauses,
+    avgTokensPerTurn: r.avg_tokens ?? null,
+  }));
+}
+
+/**
+ * Judged averages per arm per dimension, scoped to ONE trial.
+ *
+ * The scope predicate is why a re-run of the same version doesn't pollute the
+ * new numbers: canary rows must carry THIS trial's version, and everything is
+ * floored at started_at. Control rows carry no version (they are live-prompt
+ * observations), so the floor alone scopes them.
+ *
+ * COST: agent_turn_judgments_report_idx (agent_id, created_at) — one index
+ * range over this trial's judgments, aggregated in the database. n never
+ * exceeds sample% of the trial's turns.
+ */
+export async function canaryJudgedStats(
+  agentId: string,
+  startedAt: string,
+  canaryVersion: number,
+): Promise<CanaryJudgedStat[]> {
+  const { rows } = await pool.query(
+    `select arm, dim, avg(score)::float8 as avg, count(*)::int as n
+       from agent_turn_judgments
+      where agent_id = $1
+        and created_at >= $2
+        and (arm = 'control' or canary_version = $3)
+      group by arm, dim
+      order by arm, dim`,
+    [agentId, startedAt, canaryVersion],
+  );
+  return rows.map((r) => ({
+    arm: r.arm as 'canary' | 'control',
+    dim: r.dim as string,
+    avg: r.avg as number,
+    n: r.n as number,
+  }));
 }
 
 export async function rotateAgentSecret(
@@ -1445,6 +1670,36 @@ export async function conversationTranscriptBefore(
        order by m.created_at desc limit $3
      ) t order by created_at asc`,
     [conversationId, beforeMessageId, limit, afterMessageId ?? null],
+  );
+  return rows;
+}
+
+/**
+ * A5 slice C — the judge's evidence window for a REAL turn: every row from the
+ * start of the thread THROUGH the reply under judgment, oldest first.
+ *
+ * The `<=` (rather than the `<` of the *Before loaders) is the whole point: the
+ * reply being graded must be in its own evidence window's tail, and so must the
+ * tool-result breadcrumbs that justify it. Anything AFTER the reply is excluded
+ * — a claim cannot be grounded in evidence that did not exist when the reply
+ * was written (the same rule eval-runner's transcriptThroughReply applies to
+ * scripted runs). The tie on created_at is broken by id so a breadcrumb written
+ * in the same millisecond as the reply cannot be dropped by the limit.
+ */
+export async function conversationTranscriptThrough(
+  conversationId: string,
+  messageId: string,
+  limit = 40,
+): Promise<ConversationMessage[]> {
+  const { rows } = await pool.query(
+    `select * from (
+       select m.* from conversation_messages m
+       where m.conversation_id = $1
+         and m.deleted_at is null
+         and m.created_at <= (select created_at from conversation_messages where id = $2)
+       order by m.created_at desc, m.id desc limit $3
+     ) t order by created_at asc, id asc`,
+    [conversationId, messageId, limit],
   );
   return rows;
 }

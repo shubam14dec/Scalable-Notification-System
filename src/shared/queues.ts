@@ -43,6 +43,18 @@ export const QUEUE = {
    * (minutes), never a hot path; jobId = runId so a re-enqueue can't double-run.
    */
   EVAL_RUN: 'eval-run',
+  /**
+   * A5 slice C: sampled LLM judging of REAL agent replies during a canary
+   * trial. One job = one already-delivered reply. Deliberately its own queue
+   * rather than a branch of `conversation-inbound`: judging is an extra model
+   * call that must never share a worker slot with a customer waiting for an
+   * answer, and its own queue means it can be paused, drained or DLQ'd without
+   * touching live traffic. Low concurrency (2) for the same reason as
+   * EVAL_RUN — bounded background spend, never a hot path. jobId = the judged
+   * message id, so a redelivered turn can't enqueue two judgments (and the
+   * unique (message_id, dim) row constraint catches whatever slips past).
+   */
+  TURN_JUDGE: 'turn-judge',
   KNOWLEDGE: 'knowledge',
 } as const;
 
@@ -58,6 +70,7 @@ export const ALL_QUEUE_NAMES: string[] = [
   QUEUE.DLQ,
   QUEUE.CONVERSATION,
   QUEUE.EVAL_RUN,
+  QUEUE.TURN_JUDGE,
   QUEUE.KNOWLEDGE,
   ...CHANNELS.flatMap((c) => PRIORITIES.map((p) => deliveryQueueName(c, p))),
 ];

@@ -28,9 +28,13 @@ Scale: O(1) arm roll at open; judging bounded by sample% × traffic.
       backfill), light list API, restore-is-a-save (mints new version →
       meets future save guards free), Versions tab. FLAG routed to
       slice C: VersionsPanel restore bypasses the pre-save eval modal.
-- [ ] Slice B — canary core: config (version+percent 1-99, one active,
-      managed-only), sticky arm at conversation open, turn-time
-      candidate injection, Start/Stop/Promote API + controls.
+- [x] Slice B — canary core — DONE 2026-08-23 (commit 89d635f, suite
+      770→785): sticky arm STRUCTURALLY (CANARY_ARM_SQL on the insert,
+      conflict-updates omit the column — a re-roll has nowhere to be
+      written; roll in JS for testability; scalar-subquery config read,
+      no race window); eval driver explicit noCanary opt-out; per-turn
+      attribution raw.canaryVersion (arm alone lies after a stop);
+      promote = restore-as-save + clear, restore-first crash ordering.
 - [ ] Slice C — comparison: per-arm counters + sampled turn judging
       (per-turn storage, per-arm averages) + Canary panel with
       Promote/Stop.

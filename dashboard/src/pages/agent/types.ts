@@ -31,6 +31,12 @@ export interface Agent {
     version: number;
     percent: number | null;
     startedAt: string | null;
+    /**
+     * Slice C: the share of turns judged in BOTH arms, already resolved by the
+     * server (never null). 0 means the trial counts outcomes only — the panel
+     * says so rather than showing an empty judged block with no explanation.
+     */
+    samplePercent: number;
   } | null;
   /** Phase 22 G2: per-agent daily token circuit breaker (null = off). */
   maxDailyTokens?: number | null;

@@ -876,3 +876,56 @@ alter table conversations add column if not exists canary_arm text;
 create index if not exists conversations_canary_arm_idx
   on conversations (agent_id, canary_arm)
   where canary_arm is not null;
+
+-- ---- Phase A5 Slice C: the comparison ----
+-- What share of REAL replies (both arms, same rate) get sampled for async LLM
+-- judging while a trial runs. Null = the default (SAMPLE_PERCENT_DEFAULT in
+-- conversations.repo.ts); 0 = counters only, judge nothing. Lives on the agent
+-- beside the rest of the trial config because it IS trial config: Start sets
+-- it and Stop/Promote clears it, so it stays null/non-null together with the
+-- other three and `canary_version is null` remains the one authoritative
+-- "no trial running" test everywhere in this file.
+alter table agents add column if not exists canary_sample_percent int;
+
+-- One row per (judged reply, dimension). RAW SCORES ONLY — no pass/fail
+-- column, deliberately: an eval scenario has an author-declared bar to clear,
+-- but a canary has no bar. The question is "is the trial version better or
+-- worse than live", and that is answered by comparing AVERAGES between arms,
+-- so storing a verdict here would invent a threshold nobody set.
+--
+-- ATTRIBUTION — `arm` records which config ACTUALLY SERVED the turn, not which
+-- arm the conversation was enrolled in. The two disagree after a Stop: a
+-- thread enrolled in the trial keeps conversations.canary_arm='canary' but its
+-- later turns run the LIVE prompt (see slice B's revert semantics), and
+-- counting those as canary evidence would credit the trial version for replies
+-- it never wrote. So such a turn is stored arm='control', canary_version null
+-- — it is a live-prompt observation, which is exactly what the control arm
+-- measures. Nothing is lost: the enrollment fact is still recoverable by
+-- joining conversations.canary_arm. `canary_version` is non-null iff
+-- arm='canary', and it is what scopes a report to THIS trial rather than to a
+-- previous trial of a different version.
+create table if not exists agent_turn_judgments (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants(id),
+  agent_id        uuid not null references agents(id) on delete cascade,
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  message_id      uuid not null references conversation_messages(id) on delete cascade,
+  arm             text not null,               -- 'canary' | 'control' (what SERVED it)
+  canary_version  int,                         -- non-null iff arm = 'canary'
+  dim             text not null,               -- 'groundedness' | 'tone'
+  score           int  not null,               -- 1-5
+  rationale       text,
+  created_at      timestamptz not null default now(),
+  -- The idempotency wall. A re-enqueued judge job (BullMQ retry, or a second
+  -- roll on a redelivered turn) re-judges the same reply and lands here; the
+  -- conflict is swallowed, so one reply can never be counted twice and skew an
+  -- average. Also the reason the writer is a single multi-row insert.
+  unique (message_id, dim)
+);
+
+-- The report's only access path: every judgment for one agent since the
+-- trial's started_at, grouped by arm+dim. agent_id leads (a report is always
+-- for one agent) and created_at gives the window an index range scan instead
+-- of a scan of the agent's whole judging history.
+create index if not exists agent_turn_judgments_report_idx
+  on agent_turn_judgments (agent_id, created_at);
