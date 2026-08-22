@@ -242,12 +242,36 @@ export interface EvalScenarioResult {
   judged?: JudgeVerdictRecord[];
 }
 
+/**
+ * A config to grade INSTEAD of the agent's live one — what powers the
+ * dashboard's pre-save check ("does the edited prompt still pass?"). At least
+ * one key must be set. Managed agents only: a candidate on a bridge agent is a
+ * 400, since its brain is your code behind a signed URL, not a prompt. Nothing
+ * is written to the agent — the override lives on the run and dies with it.
+ *
+ * HAND-KEPT COPY of the server's `CandidateSchema`
+ * (src/api/routes/agent-evals.ts), which is the source of truth for this wire
+ * shape; this package ships standalone and cannot import server types.
+ */
+export interface EvalRunCandidate {
+  /** 1–100,000 chars — the same cap agent create enforces. */
+  systemPrompt?: string;
+  /** 1–255 chars. */
+  model?: string;
+}
+
 /** An eval run — created 'running', finalized by the worker. */
 export interface AgentEvalRun {
   id: string;
   status: 'running' | 'passed' | 'failed' | 'error';
   trigger: 'manual' | 'pre_save';
   results: EvalScenarioResult[];
+  /**
+   * The candidate config this run graded instead of the agent's live one.
+   * Additive: present ONLY on a run started with one — a plain run has no such
+   * key, so pre-candidate readers are unaffected.
+   */
+  candidate?: EvalRunCandidate;
   startedAt: string;
   finishedAt: string | null;
 }
@@ -539,8 +563,16 @@ export class AsyncifyClient {
       /**
        * Enqueue a run of this agent's ENABLED evals. Returns the run id
        * immediately (202); poll `getRun` for the verdict.
+       *
+       * Pass `candidate` to grade an UNSAVED config — the edited prompt and/or
+       * model — instead of the agent's live one: the run uses the real agent,
+       * tools, guardrails and knowledge with only those swapped in, and the
+       * agent row is never touched. Managed agents only (bridge → 400).
        */
-      run: (identifier: string, options: { trigger?: 'manual' | 'pre_save' } = {}) =>
+      run: (
+        identifier: string,
+        options: { trigger?: 'manual' | 'pre_save'; candidate?: EvalRunCandidate } = {},
+      ) =>
         this.request<{ runId: string }>(
           'POST',
           `/v1/agents/${encodeURIComponent(identifier)}/evals/run`,

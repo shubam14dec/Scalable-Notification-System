@@ -612,3 +612,51 @@ last reply).
 
 Full details — how the trace is reconstructed, the starter scenarios, and why
 the read path is the DB — are in **[evals/README.md](../evals/README.md)**.
+
+### Running evals from the API
+
+The dashboard's **Run evals** button and its pre-save check are the same
+endpoint: enqueue a run, poll for the verdict.
+
+```bash
+# Grade an EDITED prompt before saving it — what the dashboard's pre-save
+# check does when you change a managed agent's prompt and hit Save.
+curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/support-bot/evals/run \
+  -d '{
+    "trigger": "pre_save",
+    "candidate": { "systemPrompt": "You are Acme support. Refunds within 14 days…" }
+  }'
+# → 202 { "runId": "..." }
+```
+
+| Method & path | Purpose |
+|---|---|
+| `POST /v1/agents/:identifier/evals/run` | enqueue a run of the agent's **enabled** evals → `202 {runId}` |
+| `GET /v1/agents/:identifier/evals/runs` | recent runs, newest first |
+| `GET /v1/agents/:identifier/evals/runs/:runId` | one run in full, with per-scenario `results[]` |
+
+**Body (every field optional):**
+
+| Field | Rules |
+|---|---|
+| `trigger` | `manual` (default) or `pre_save` — recorded on the run, so the history says *why* it ran. |
+| `candidate` | `{ systemPrompt?, model? }` — grade **this** config instead of the agent's live one. At least one of the two keys (an empty object is a **400**, not "use the agent's config"). `systemPrompt` 1–100,000 chars, `model` 1–255 — the same caps the agent-create route enforces, because a candidate must be something the agent could actually be saved with. |
+
+**`candidate` is managed-only.** A bridge agent's brain is your own code behind a
+signed URL — there is no prompt or model here to override — so a candidate on a
+bridge agent is a **400**, never a silently-ignored field.
+
+**Nothing is written.** The override lives on the **run row**, not the agent: it
+is applied when the brain is assembled for that run's turns (real tools, real
+guardrails, real knowledge, real judge — only the prompt/model swapped) and it
+applies to nothing else. The agent your customers are talking to is untouched for
+the whole run, and a retried job grades the same config the results are filed
+under.
+
+**The run remembers what it graded.** A run started with a candidate carries
+`candidate` back on its payload (`GET …/evals/runs/:runId`); a plain run has no
+such key at all, so existing readers see exactly the shape they saw before.
+
+Typed wrappers for all of the above are in `@asyncify-hq/node`
+(`client.agents.evals.run(...)` / `.getRun(...)`).

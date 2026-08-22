@@ -89,6 +89,14 @@ now have, and how to sell it honestly:
   included) as a **required status check**: a push that breaks the agent
   cannot merge. Novu's harness aspiration — "run in CI" — is our shipped
   reality, and ours gates on driven turns rather than replayed tapes.
+- **2026-08-22 — the customer-side rung shipped (A4).** Pre-save eval runs: in
+  the dashboard, saving a changed managed prompt first runs that agent's
+  enabled scenarios against the **edited** prompt (an eval run takes a
+  `candidate {systemPrompt?, model?}`; nothing is written until the customer
+  decides) and reports the per-scenario delta. Warn, never block — it's their
+  agent. Novu has no equivalent surface: its harness is the repo-side runner
+  above, so nothing sits between a prompt change and the customers it reaches
+  unless someone remembers to run it.
 
 Sales framing: "prompt edits are deploys — and we're the platform that
 treats them that way."

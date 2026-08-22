@@ -681,16 +681,19 @@ prompt.
   (*"expected tool `refund_customer` to be called"*), so Priya sees exactly what
   broke.
 - **Save with a safety net.** The prompt editor shows the last run's result next
-  to **Save**. If Priya edits the prompt while evals are red, saving asks first —
-  *"3 of 12 failed — save anyway?"* It's an **advisory gate**, not a lock: Priya
-  can still ship, but never by accident.
+  to **Save** — and on a managed agent with enabled evals, editing the prompt
+  makes **Save** run them first, against the edit itself. It's an **advisory
+  gate**, not a lock: Priya can always save anyway, but never by accident. The
+  whole flow is *The pre-save check* at the end of this section.
 
 **From a real conversation to a test, in one click.** On a **Conversation**
-detail — one that went exactly right, or exactly wrong — **Create eval from
-conversation** drafts a scenario straight from the transcript: the customer's
-turns verbatim, the tools the agent actually called turned into `expect` blocks,
-the reply checks left blank for Priya to fill. It's saved **disabled** so Priya
-polishes it before it guards future deploys. A production surprise becomes a
+detail — one that went exactly right, or exactly wrong — **Save as eval** drafts
+a scenario straight from the transcript: the customer's turns verbatim, the tools
+the agent actually called turned into `expect` blocks, the reply checks left
+blank for Priya to fill. It lands in the Evals tab as `from-conversation-<id>`
+and it's saved **disabled**, so Priya polishes it before it guards anything. She
+fills in what *should* have happened, enables it — and from then on every prompt
+edit is checked against it before it ships. A production surprise becomes a
 permanent regression test.
 
 ### Judged dimensions: grading what a tool assertion can't see
@@ -801,8 +804,62 @@ conversations**, judged dimensions included. A regression doesn't get a warning;
 it fails the build and the change cannot merge. The boundary is worth being
 straight about: that gate protects *our* fixture agent, which lives in git.
 Acme's agents live in the database, where Priya edits them — their safety net is
-the in-product ladder: manual eval runs today, pre-save runs and a prompt canary
-on the roadmap.
+the in-product ladder: manual eval runs and the **pre-save check** below, both
+shipped, with a prompt canary the next rung up.
+
+### The pre-save check: grading the edit, not the last version
+
+A last run's verdict goes stale the moment Priya touches the prompt. It graded
+the *old* words. So on a managed agent with at least one enabled eval, **Save**
+does something better than remind her: it runs the scenarios against the prompt
+she just wrote, before the edit commits.
+
+Priya rewrites the refund paragraph to be friendlier. She hits **Save**. Instead
+of saving, Asyncify runs her enabled scenarios against the **edited** prompt —
+the real agent through the real pipeline, real tools, guards, knowledge and
+judge; only the prompt (and the model, if she changed that too) swapped in for
+the duration of the run. Nothing is written yet. Maya, mid-conversation right
+now, is still talking to the old prompt — a candidate config is never live, not
+even for a second.
+
+Then the panel tells her what changed, per scenario, against her last ordinary
+run — **newly failing**, **newly passing**, **still failing**, **unchanged** —
+so she reads a *delta*, not a wall of green:
+
+```
+  2 of 6 regressed
+  ✗ refund-window      newly failing   judge.groundedness: 2/5 < 4 — "we refund
+                                       within 30 days" appears in no source; the
+                                       policy excerpt says 14
+  ✗ angry-customer     newly failing   judge.tone: 3/5 < 4 — clipped, a little curt
+  ✓ injection-attempt  unchanged
+```
+
+Her friendlier paragraph quietly dropped the "14 days" the policy page actually
+says. She can go fix it and Save again, or she can **Save anyway** — because
+sometimes the scenario is what's wrong, or the fix is urgent and the old prompt
+is worse. The check **warns; it never blocks**. This is the deliberate opposite
+of the CI gate above, which *does* block — that agent lives in git, where a
+merge can wait, while this one is Acme's agent, on Acme's business, and locking
+Priya out of her own product at 2am would be the wrong kind of safe. **Cancel**
+backs out of the save entirely.
+
+The rest of the edges are the same promise: an agent with no enabled evals saves
+exactly as it always did (with a quiet nudge that scenarios would help), and if
+the run itself errors — no judge credentials, a provider outage — Priya gets an
+honest message and can still save. A failure of the *checker* is never allowed
+to become a lock on her prompt.
+
+Pre-save runs land in the same run history as manual ones, tagged as pre-save
+and carrying the exact candidate config they graded — so "what did we check
+before that change went out?" has an answer months later. Bridge agents don't
+get this: their brain is Acme's own code behind a signed URL, so there is no
+prompt here to grade (the API says so outright rather than pretending —
+[docs/AGENT-TOOLS.md](AGENT-TOOLS.md)).
+
+That closes the loop that started on the Conversations page: a production
+surprise becomes a **Save as eval** draft, Priya polishes and enables it, and
+from that moment it stands between every future prompt edit and Maya.
 
 ---
 
@@ -922,7 +979,7 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 | Handoff | `handoff_to_human` built-in; live "waiting for human" queue + operator reply box; teammate label to the customer; attributed summary on handback; reused `approvals` ops audience |
 | Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker |
 | Notifications | workflows/digests/delays from agent tools, proactive pushes, resolve webhooks, approval pings |
-| Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); anti-fabrication transcripts |
+| Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); pre-save check — a prompt edit is graded before it saves, warn never block; one-click eval from a real conversation; anti-fabrication transcripts |
 | Ops | connections re-pointable with history; `asyncify dev` local loop |
 
 *Deep dives: `docs/AGENT-TOOLS.md` (tools, endpoint contract, approvals,
