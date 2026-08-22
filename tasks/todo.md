@@ -6,7 +6,26 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A4 — pre-save eval runs (plan approved 2026-08-22)
+### Phase A4 — SHIPPED 2026-08-22 (review)
+All 3 slices done (commits 10b6af5, eb022b3, 2bef096), suite 752→761,
+root+dashboard+sdk tsc clean. What shipped: candidate {systemPrompt?,
+model?} on eval runs (RUN-ROW attribution, internal-only override
+through the real turn pipeline, wire-capture + injection-stripped +
+no-leakage proven, judge grades the config under test); the pre-save
+panel (Save intercepted only when prompt/model actually changed;
+morphing Save/Save-anyway button — Save-anyway enabled from the
+instant the panel opens incl. mid-run; per-scenario delta vs newest
+saved-config run with honest baseline age; SUPERSEDES the old
+last-run confirm — never stacks); pre-save chips + graded-an-edit
+notes in run history; docs (guide "The pre-save check" + Save-as-eval
+loop; AGENT-TOOLS gained the previously-undocumented run-API
+reference) + sdk EvalRunCandidate + changeset. Review notes: (1)
+planning discovery — Save-as-eval already existed (P22), slice cut;
+(2) route is POST evals/run (SINGULAR) — two docs/messages had it
+wrong; (3) candidate runs never become baselines (deliberate: the
+baseline is the newest run of the SAVED config, age shown honestly);
+(4) prod delta: NONE (rides existing infra, no new env). Ladder now:
+judge ✓ → gate ✓ → pre-save ✓ → next A5 canary / A2b live judge.
 The customer-dashboard door gets its guard: Save on a changed managed
 prompt runs the agent's own evals against the EDITED prompt BEFORE the
 edit commits — WARN, NEVER BLOCK ("Save anyway" always works; the
@@ -19,23 +38,27 @@ live during the check), never a shadow clone (drift + lifecycle).
 planning: conversation→eval ("Save as eval" button, client-side
 draftScenarioFromTranscript, saved disabled) ALREADY SHIPPED in P22 —
 the A4 backlog line overstated scope; slice cut.
-- [ ] Slice A — candidate runs: POST evals/runs accepts candidate
+- [x] Slice A — DONE 2026-08-22 (commit 10b6af5, suite 752→761):
+      candidate on the RUN ROW (retried job can't disagree with stored
+      attribution); wire-capture + no-leakage + injection-stripped
+      proven; judge grades the candidate config; allowlist audit found
+      zero request-body spreads. Route is POST evals/run (singular).
+- (original) Slice A — candidate runs: POST evals/runs accepts candidate
       (managed only, bridge 400); additive `candidate` jsonb on
       agent_eval_runs (results attributable to the prompt they graded);
       override plumbed run job → driver → inbound job → conversation
       processor → managed brain, INTERNAL-only (never on the public
       message API); wire-capture test proves the candidate prompt is
       what reached the LLM; byte-compat for non-candidate runs.
-- [ ] Slice B — pre-save flow: agent editor Save (managed + ≥1 enabled
-      eval + prompt/model changed) → candidate run panel → existing
-      chips/judged UI + per-scenario delta vs latest completed normal
-      run (new fail / new pass / still failing / unchanged) → Save /
-      Save anyway / Cancel; no-evals → today's save + quiet hint; run
-      error → honest message + save-anyway (never trap the user).
-- [ ] Slice C — docs+close-out: guide §10 pre-save story (+ align the
-      existing Save-as-eval button into it), AGENT-TOOLS, capability
-      checklist, gap-analysis A4 line, sdk-node candidate type +
-      changeset, todo review, INTERVIEW-PREP.
+- [x] Slice B — DONE 2026-08-22 (commit 2bef096): PreSaveCheck panel,
+      shared ScenarioResults renderer (EvalsPanel refactored, no fork),
+      delta layer in types.ts, old confirm superseded not stacked.
+- [x] Slice C — docs — DONE 2026-08-22 (commit eb022b3): guide §10
+      "The pre-save check" + Save-as-eval loop closed + 2 stale claims
+      repaired (button name; last-run-only advisory); AGENT-TOOLS gained
+      the previously-undocumented run-API reference; gap-analysis A4
+      line; sdk-node EvalRunCandidate + changeset. (todo review +
+      INTERVIEW-PREP at phase close, manager.)
 
 ### Phase A3 — SHIPPED 2026-08-22 (review) — LIVE-PROVEN same day
 Pushed 2026-08-22 (b566c74 + d72b62c). THE DEBUT: the gate's FIRST CI
@@ -144,9 +167,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       handoff + P22 alerts + A10 alerting). Blocking-mode rejected
       (2x cost, +2-4s every reply).
 - [x] A3. CI eval gate — SHIPPED 2026-08-22, review above.
-- (IN PROGRESS above) A4. Pre-save eval runs. (Its second half —
-      one-click prod-conversation → eval-case — turned out ALREADY
-      SHIPPED in P22: "Save as eval" on the conversation page.)
+- [x] A4. Pre-save eval runs — SHIPPED 2026-08-22, review above. (Its
+      second half — conversation → eval-case — was already shipped in
+      P22: "Save as eval" on the conversation page.)
 - [ ] A5. Prompt versioning + canary — template-versioning pattern on
       agent prompts; canary = % of turns on the new prompt with judged
       comparison (needs A2/A3 to judge the canary).
