@@ -4,17 +4,12 @@
 // and paths as the former EvalsModal.
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../../lib/api';
 import { Button, Field, Input, Modal, Mono, Skeleton } from '../../ui';
 import { timeAgo } from '../Activity';
-import { Toggle, useEvalRuns } from './shared';
+import { ScenarioResults, Toggle, useEvalRunDetail, useEvalRuns } from './shared';
 import {
   DEFAULT_SCENARIO,
-  judgeChipLabel,
-  judgeChipTitle,
-  judgeDot,
-  judgedSpansTurns,
   parseScenario,
   runDot,
   runSummary,
@@ -22,79 +17,7 @@ import {
   type Agent,
   type AgentEval,
   type EvalRun,
-  type JudgeVerdictRecord,
 } from './types';
-
-/**
- * A2: the LLM-judged dimensions of one scenario result. One chip per record —
- * dot carries the verdict (the panel's existing pass/fail idiom), and the
- * rationales stay folded away behind the same chevron the conversation trace
- * uses, because a scenario can carry several ~160-char rationales.
- * Renders nothing for pre-A2 results, which have no `judged`.
- */
-function JudgedBlock({ judged }: { judged: JudgeVerdictRecord[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const showTurn = judgedSpansTurns(judged);
-
-  return (
-    <div className="mt-1">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {judged.map((rec) => (
-          <span
-            key={`${rec.turn}-${rec.dim}`}
-            title={judgeChipTitle(rec)}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] ${
-              rec.verdict === 'skipped'
-                ? 'border-dashed border-bd text-t3'
-                : rec.verdict === 'fail'
-                  ? 'border-bd text-err'
-                  : 'border-bd text-t2'
-            }`}
-          >
-            <span
-              aria-hidden
-              className="inline-block h-[6px] w-[6px] shrink-0 rounded-full"
-              style={{ background: judgeDot(rec.verdict) }}
-            />
-            {judgeChipLabel(rec, showTurn)}
-          </span>
-        ))}
-      </div>
-
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-        className="mt-1 inline-flex items-center gap-1 text-t3 transition-colors hover:text-t1"
-      >
-        {expanded ? (
-          <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0" aria-hidden />
-        )}
-        <Mono className="text-[11px] text-t3">
-          {expanded ? 'hide why' : `why — ${judged.length} judged`}
-        </Mono>
-      </button>
-
-      {expanded && (
-        <div className="mt-1.5 space-y-1 border-l border-bd pl-2.5">
-          {judged.map((rec) => (
-            <div key={`${rec.turn}-${rec.dim}`} className="text-[11px]">
-              <Mono className="text-t3">
-                turn {rec.turn} · {rec.dim} · {rec.verdict}
-                {rec.score != null && ` · ${rec.score}/5`}
-              </Mono>
-              <Mono className="mt-0.5 block whitespace-pre-wrap break-words text-t3">
-                {rec.rationale}
-              </Mono>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /** Create or edit one eval scenario. Name + JSON scenario + enabled. */
 function EvalFormModal({
@@ -225,14 +148,9 @@ export function EvalsPanel({ agent }: { agent: Agent }) {
   const activeRunId = selectedRunId ?? runs[0]?.id ?? null;
 
   // Full results for the selected/latest run — the list may carry only status;
-  // detail is polled while it's still running.
-  const runDetail = useQuery({
-    queryKey: ['agent-eval-run', agent.identifier, activeRunId],
-    queryFn: () => api<{ run: EvalRun }>(`/v1/agents/${agent.identifier}/evals/runs/${activeRunId}`),
-    enabled: !!activeRunId,
-    // Phase 25 D8: live via eval.finished hints; 30s conditional fallback while running (was 2s).
-    refetchInterval: (query) => (query.state.data?.run.status === 'running' ? 30_000 : false),
-  });
+  // detail is polled while it's still running. Phase 25 D8: live via
+  // eval.finished hints, 30s conditional fallback (was 2s).
+  const runDetail = useEvalRunDetail(agent.identifier, activeRunId);
 
   const toggleEnabled = useMutation({
     mutationFn: (vars: { id: string; enabled: boolean }) =>
@@ -349,29 +267,21 @@ export function EvalsPanel({ agent }: { agent: Agent }) {
             </span>
             <Mono className="text-t3">{timeAgo(run.finishedAt ?? run.startedAt)}</Mono>
           </div>
+          {run.candidate && (
+            <p className="mb-2 text-[11px] text-t3">
+              Pre-save check — this run graded an edited{' '}
+              {run.candidate.systemPrompt !== undefined && run.candidate.model !== undefined
+                ? 'system prompt and model'
+                : run.candidate.systemPrompt !== undefined
+                  ? 'system prompt'
+                  : 'model'}
+              , not the agent's saved config.
+            </p>
+          )}
           {run.status === 'running' && !(run.results && run.results.length) ? (
             <Skeleton className="h-16 w-full" />
           ) : run.results && run.results.length > 0 ? (
-            <ul className="space-y-1.5">
-              {run.results.map((r) => (
-                <li key={r.name} className="flex items-start gap-2 text-[12px]">
-                  <span
-                    aria-hidden
-                    className="mt-1 inline-block h-[6px] w-[6px] shrink-0 rounded-full"
-                    style={{ background: r.passed ? 'var(--ok)' : 'var(--err)' }}
-                  />
-                  <div className="min-w-0">
-                    <Mono className="text-t2">{r.name}</Mono>
-                    {!r.passed && r.failures && r.failures.length > 0 && (
-                      <Mono className="mt-0.5 block whitespace-pre-wrap break-words text-t3">
-                        {r.failures.join('\n')}
-                      </Mono>
-                    )}
-                    {r.judged && r.judged.length > 0 && <JudgedBlock judged={r.judged} />}
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <ScenarioResults results={run.results} />
           ) : (
             <p className="text-[12px] text-t3">No scenario results recorded for this run.</p>
           )}
@@ -407,6 +317,17 @@ export function EvalsPanel({ agent }: { agent: Agent }) {
                             ? `${s.passed}/${s.total} passed`
                             : r.status}
                       </Mono>
+                      {/* A4: a pre-save run graded an edit that may never have
+                          been saved — say so, or its numbers read as the
+                          agent's. */}
+                      {r.trigger === 'pre_save' && (
+                        <span
+                          title="Ran against an edited prompt or model before it was saved"
+                          className="inline-flex items-center rounded-md border border-dashed border-bd px-1.5 py-0.5 text-[11px] text-t3"
+                        >
+                          pre-save
+                        </span>
+                      )}
                     </span>
                     <Mono className="text-t3">{timeAgo(r.finishedAt ?? r.startedAt)}</Mono>
                   </button>

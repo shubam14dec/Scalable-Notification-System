@@ -8,13 +8,17 @@ import { api } from '../../lib/api';
 import { Button, Field, Input, Mono } from '../../ui';
 import { timeAgo } from '../Activity';
 import { SecretReveal, useEvalRuns } from './shared';
+import { PreSaveCheck } from './PreSaveCheck';
 import {
+  baselineRun,
   fmtInt,
   runAdvisory,
   runSummary,
   type Agent,
   type AgentBody,
+  type AgentEval,
   type AgentHealth,
+  type EvalCandidate,
   type SuggestedPrompt,
 } from './types';
 
@@ -57,6 +61,22 @@ export function AgentForm({
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: ['agent-eval-runs', identifier] }),
   });
+  // A4: the pre-save check. It needs the agent's enabled evals (same query key
+  // the Evals tab uses, so visiting both costs one fetch) and a baseline — the
+  // newest finished run of the SAVED config, which the advisory query already
+  // has in hand. Nothing here touches the save path itself.
+  const evalsQuery = useQuery({
+    queryKey: ['agent-evals', identifier],
+    queryFn: () => api<{ evals: AgentEval[] }>(`/v1/agents/${identifier}/evals`),
+    enabled: evalGateOn,
+  });
+  const enabledEvals = evalsQuery.data?.evals.filter((e) => e.enabled).length ?? 0;
+  const preSaveOn = evalGateOn && enabledEvals > 0;
+  const [pendingSave, setPendingSave] = useState<{
+    body: AgentBody;
+    candidate: EvalCandidate;
+  } | null>(null);
+
   const advisory = latestRun ? runAdvisory(latestRun, timeAgo) : null;
   const advisoryDot = !latestRun
     ? 'var(--t3)'
@@ -80,6 +100,7 @@ export function AgentForm({
   const p95Daily = healthQuery.data?.p95DailyTokens;
 
   return (
+    <>
     <form
       className="space-y-4"
       onSubmit={(e) => {
@@ -139,6 +160,33 @@ export function AgentForm({
           .filter((p) => p.title && p.message)
           .slice(0, 6);
         body.suggestedPrompts = cleanPrompts.length ? cleanPrompts : null;
+
+        // A4 PRE-SAVE CHECK — a managed agent with enabled evals whose PROMPT or
+        // MODEL actually changed gets those evals run against the EDITED values
+        // before the save commits. The panel owns the rest of this save: it
+        // calls back with `body` untouched (Save / Save anyway) or drops it
+        // (Cancel). Supersedes the confirm() advisory below for this one case —
+        // two warnings about the same edit is one too many. Every other save
+        // (bridge, no enabled evals, prompt+model unchanged) falls through to
+        // the pre-A4 path below, byte for byte.
+        if (preSaveOn) {
+          const nextPrompt = str('systemPrompt');
+          const nextModel = str('model');
+          const candidate: EvalCandidate = {};
+          // Only CHANGED keys ride along, and only non-empty ones: the server
+          // caps a candidate field at 1..N, so "cleared to blank" is not an
+          // override to grade — that save takes the normal path.
+          if (nextPrompt && nextPrompt !== (initial?.systemPrompt ?? '').trim()) {
+            candidate.systemPrompt = nextPrompt;
+          }
+          if (nextModel && nextModel !== (initial?.model ?? '').trim()) {
+            candidate.model = nextModel;
+          }
+          if (candidate.systemPrompt !== undefined || candidate.model !== undefined) {
+            setPendingSave({ body, candidate });
+            return;
+          }
+        }
 
         // Advisory eval gate (never a hard block): if the latest run failed, or
         // the prompt changed since it ran (so the run tested a different
@@ -449,6 +497,15 @@ export function AgentForm({
         </div>
       )}
 
+      {/* A4: the quiet counterpart to the check — an agent with no enabled eval
+          has nothing to check a prompt edit against, and should know it. */}
+      {evalGateOn && evalsQuery.isSuccess && enabledEvals === 0 && (
+        <p className="-mt-2 text-[11px] text-t3">
+          No evals enabled — with one, a prompt or model edit is run against it before Save
+          commits.
+        </p>
+      )}
+
       {error && <p className="text-[12px] text-err">{error}</p>}
       <div className="flex items-center justify-end gap-2">
         {footerExtra}
@@ -462,6 +519,23 @@ export function AgentForm({
         </Button>
       </div>
     </form>
+    {/* Outside the <form> on purpose: a nested submit button would re-fire this
+        save. Cancel just drops the pending body — the edit stays in the fields. */}
+    {pendingSave && (
+      <PreSaveCheck
+        identifier={identifier}
+        candidate={pendingSave.candidate}
+        baseline={baselineRun(runsQuery.data?.runs ?? [])}
+        evalCount={enabledEvals}
+        onSave={() => {
+          const body = pendingSave.body;
+          setPendingSave(null);
+          onSubmit(body);
+        }}
+        onCancel={() => setPendingSave(null)}
+      />
+    )}
+    </>
   );
 }
 

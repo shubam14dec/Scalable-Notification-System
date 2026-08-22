@@ -200,6 +200,16 @@ export interface ScenarioResult {
   judged?: JudgeVerdictRecord[];
 }
 
+/**
+ * A4: the edited config a run graded INSTEAD of the agent's live one — what the
+ * dashboard's pre-save check sends. Mirrors `CandidateSchema` in
+ * src/api/routes/agent-evals.ts; at least one key is always present.
+ */
+export interface EvalCandidate {
+  systemPrompt?: string;
+  model?: string;
+}
+
 /** An eval run — an enqueued job; poll until status leaves 'running'. */
 export interface EvalRun {
   id: string;
@@ -208,6 +218,124 @@ export interface EvalRun {
   startedAt: string;
   finishedAt: string | null;
   trigger: 'manual' | 'pre_save';
+  /**
+   * A4, additive: present ONLY on a run started with a candidate override (the
+   * server omits the key on a plain run — absent, never null). Its presence is
+   * what makes a run unusable as a BASELINE: it graded an edit, not the agent.
+   */
+  candidate?: EvalCandidate;
+}
+
+/**
+ * A4 pre-save: one scenario's outcome relative to the baseline run.
+ * `unknown` = no baseline, or a scenario the baseline never ran (added since) —
+ * there is nothing honest to say about it, so it carries no label.
+ */
+export type ScenarioDelta = 'new-fail' | 'fixed' | 'still-failing' | 'unchanged' | 'unknown';
+
+/** Where a candidate scenario stands against the same scenario in the baseline. */
+export function scenarioDelta(
+  result: ScenarioResult,
+  baseline: ScenarioResult[] | null,
+): ScenarioDelta {
+  if (!baseline) return 'unknown';
+  const before = baseline.find((b) => b.name === result.name);
+  if (!before) return 'unknown';
+  if (before.passed && !result.passed) return 'new-fail';
+  if (!before.passed && result.passed) return 'fixed';
+  if (!before.passed && !result.passed) return 'still-failing';
+  return 'unchanged';
+}
+
+/** Chip text per delta. `null` = render no chip (an unchanged pass is the norm). */
+export const DELTA_LABEL: Record<ScenarioDelta, string | null> = {
+  'new-fail': 'new fail',
+  fixed: 'fixed',
+  'still-failing': 'still failing',
+  unchanged: null,
+  unknown: null,
+};
+
+/**
+ * Delta dot colour — the only place delta colour is minted, same doctrine as
+ * runDot/judgeDot. `still failing` deliberately takes the muted t3: the scenario
+ * was already red before this edit, so it is not what the edit broke.
+ */
+export function deltaDot(delta: ScenarioDelta): string {
+  if (delta === 'new-fail') return 'var(--err)';
+  if (delta === 'fixed') return 'var(--ok)';
+  return 'var(--t3)';
+}
+
+/**
+ * The run a candidate is measured against: the newest FINISHED run of the
+ * agent's own live config. A run with a `candidate` graded somebody's edit, and
+ * a run with no recorded scenarios (errored before it graded anything) has
+ * nothing to compare — neither can be a baseline. Runs arrive newest-first.
+ */
+export function baselineRun(runs: EvalRun[]): EvalRun | null {
+  return (
+    runs.find(
+      (r) => !r.candidate && r.status !== 'running' && (r.results?.length ?? 0) > 0,
+    ) ?? null
+  );
+}
+
+/** Counted deltas plus the one-line verdict shown at the top of the check. */
+export interface PreSaveSummary {
+  total: number;
+  passed: number;
+  regressed: number;
+  fixed: number;
+  stillFailing: number;
+  /** No scenario that passed before fails now — the only thing Save waits on. */
+  clean: boolean;
+  text: string;
+}
+
+/**
+ * Summarize a candidate run against the baseline. With no baseline the counts
+ * stay zero and the text falls back to absolute pass/fail — the caller shows
+ * the "nothing to compare against" note.
+ */
+export function preSaveSummary(
+  results: ScenarioResult[],
+  baseline: ScenarioResult[] | null,
+): PreSaveSummary {
+  const total = results.length;
+  const passed = results.filter((r) => r.passed).length;
+  let regressed = 0;
+  let fixed = 0;
+  let stillFailing = 0;
+  for (const r of results) {
+    const d = scenarioDelta(r, baseline);
+    if (d === 'new-fail') regressed++;
+    else if (d === 'fixed') fixed++;
+    else if (d === 'still-failing') stillFailing++;
+  }
+  const s = total === 1 ? '' : 's';
+  let text: string;
+  if (!baseline) {
+    text = `${passed} of ${total} scenario${s} passed`;
+  } else if (regressed > 0) {
+    text = `${regressed} of ${total} scenario${s} regressed`;
+  } else if (stillFailing > 0) {
+    text = `no new failures · ${stillFailing} still failing`;
+    if (fixed > 0) text += ` · ${fixed} fixed`;
+  } else if (fixed > 0) {
+    text = `all ${total} pass · ${fixed} fixed`;
+  } else {
+    text = `all ${total} still pass`;
+  }
+  return { total, passed, regressed, fixed, stillFailing, clean: regressed === 0, text };
+}
+
+/** Human list of what the candidate overrides, for the panel's subtitle. */
+export function candidateLabel(candidate: EvalCandidate): string {
+  const parts: string[] = [];
+  if (candidate.systemPrompt !== undefined) parts.push('system prompt');
+  if (candidate.model !== undefined) parts.push('model');
+  return parts.join(' + ');
 }
 
 export const TEXTAREA_CLS =
