@@ -103,15 +103,26 @@ without losing conversations:
 2. Point it at your LLM (base URL + API key) and write the system prompt.
 3. Talk to it immediately in **Inbox preview**.
 
-The managed brain ships with built-in tools your prompt can direct:
+The managed brain ships with built-in tools your prompt can direct.
+Seven are always there:
 
 | Tool | What it does |
 |---|---|
-| `trigger_workflow` | Fires one of your notification workflows (e.g. order-shipped) |
 | `set_metadata` | Saves facts on the conversation (order number, email) |
+| `remember` | Writes to the customer's durable profile ("prefers email") — survives across conversations (§9) |
 | `present_choices` / `present_buttons` | Shows tappable options — rendered natively per channel |
 | `request_input` | Asks for a typed value (an email, an order id) |
 | `resolve_conversation` | Closes the thread when the issue is settled |
+| `handoff_to_human` | Steps aside and hands the conversation to a person on your team (§7) |
+
+And three appear only once the thing they operate on exists — the agent
+is never offered a tool that would call into a void:
+
+| Tool | Appears when… |
+|---|---|
+| `trigger_workflow` | you have at least one workflow (e.g. order-shipped); its argument is validated against your real workflow keys |
+| `search_knowledge` | the agent has a `ready` knowledge source to answer from, with citations (§8) |
+| `search_history` | there are past conversations to recall episodes from (§8) |
 
 ### Path B — bridge (your code, one command)
 
