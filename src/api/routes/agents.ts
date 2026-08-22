@@ -8,6 +8,7 @@ import { sealSecret } from '../../auth/secret-box';
 import { getEnvironment, getUserById } from '../../db/accounts.repo';
 import { upsertSubscriber } from '../../db/repositories';
 import {
+  clearCanary,
   conversationTranscript,
   createAgent,
   deleteAgent,
@@ -29,9 +30,11 @@ import {
   handbackConversation,
   lastOperatorMessage,
   rotateAgentSecret,
+  startCanary,
   updateAgent,
   type Agent,
   type AgentContext,
+  type AgentPromptVersion,
 } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { enqueueSummarize } from '../../core/episodic';
@@ -257,6 +260,17 @@ function agentView(agent: Agent) {
     // version list without a second round trip. Meaningless for bridge agents
     // (they have no versions) — the Versions surface is managed-only.
     promptVersion: agent.prompt_version,
+    // A5 slice B: present ONLY while a trial is running, so the dashboard's
+    // "is there a canary?" test is the presence of the object rather than a
+    // percent it has to interpret. canary_version is the authoritative flag.
+    canary:
+      agent.canary_version !== null
+        ? {
+            version: agent.canary_version,
+            percent: agent.canary_percent,
+            startedAt: agent.canary_started_at,
+          }
+        : null,
     status: agent.status,
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
@@ -521,11 +535,29 @@ export function registerAgentRoutes(app: FastifyInstance) {
   );
 
   /**
-   * Restore is a SAVE, not a rewind. It copies the old snapshot forward through
+   * Restore is a SAVE, not a rewind: it copies an old snapshot forward through
    * the ordinary update path, so it mints a NEW version, bumps prompt_version,
-   * and will meet whatever guards later land on saves (A5 slice B's canary).
-   * History is append-only: restoring v1 never deletes v2, it publishes v3.
+   * and meets whatever guards land on saves. History is append-only — restoring
+   * v1 never deletes v2, it publishes v3.
+   *
+   * Shared with Promote below, which IS a restore (of the version that just
+   * won its trial) plus ending the trial. One code path, so a promoted version
+   * enters history exactly like any other save rather than by a second
+   * mechanism that could drift from this one.
    */
+  async function restoreVersionAsSave(
+    tenantId: string,
+    identifier: string,
+    row: AgentPromptVersion,
+  ): Promise<Agent | null> {
+    return updateAgent(tenantId, identifier, {
+      systemPrompt: row.system_prompt ?? undefined,
+      // null is the CLEAR sentinel here (back to DEFAULT_MODEL) — restoring a
+      // snapshot that ran without a pinned model must reproduce exactly that.
+      model: row.model,
+    });
+  }
+
   app.post<{ Params: { identifier: string; version: string } }>(
     '/v1/agents/:identifier/versions/:version/restore',
     { preHandler: [authenticate] },
@@ -536,12 +568,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const row = version && (await getAgentPromptVersion(agent.id, version));
       if (!row) return reply.code(404).send({ error: 'unknown version' });
 
-      const restored = await updateAgent(req.tenant.id, req.params.identifier, {
-        systemPrompt: row.system_prompt ?? undefined,
-        // null is the CLEAR sentinel here (back to DEFAULT_MODEL) — restoring a
-        // snapshot that ran without a pinned model must reproduce exactly that.
-        model: row.model,
-      });
+      const restored = await restoreVersionAsSave(req.tenant.id, req.params.identifier, row);
       if (!restored) return reply.code(404).send({ error: 'unknown agent' });
       return {
         agent: agentView(restored),
@@ -549,6 +576,109 @@ export function registerAgentRoutes(app: FastifyInstance) {
         // Equal to restoredFrom's content but a new number — unless the restore
         // was a no-op (the live config already matched), which mints nothing.
         version: restored.prompt_version,
+      };
+    },
+  );
+
+  // ---- A5 slice B: canary (one version on trial against real traffic) ----
+  // Start / Stop / Promote. The trial itself is not a separate override
+  // mechanism: a conversation is assigned an arm when it opens, and a
+  // canary-arm turn runs on the trial version through the SAME candidate knob
+  // the pre-save eval check uses (A4). These routes only move the config.
+
+  const CanarySchema = z.object({
+    version: z.number().int().positive(),
+    // 1-99, both ends excluded on purpose: 0 is "no trial" (that's Stop) and
+    // 100 is "ship it" (that's Promote). A canary is by definition a split,
+    // and an all-or-nothing "split" would produce an empty arm and a
+    // comparison panel with nothing to compare against.
+    percent: z.number().int().min(1).max(99),
+  });
+
+  app.post<{ Params: { identifier: string }; Body: unknown }>(
+    '/v1/agents/:identifier/canary',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await resolveVersionTarget(req.tenant.id, req.params.identifier, reply);
+      if (!agent) return reply;
+      const parsed = CanarySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: parsed.error.errors[0]?.message ?? 'invalid canary' });
+      }
+      const row = await getAgentPromptVersion(agent.id, parsed.data.version);
+      if (!row) return reply.code(404).send({ error: 'unknown version' });
+
+      const started = await startCanary(agent.id, parsed.data.version, parsed.data.percent);
+      // Null means the row already had a canary_version: one trial at a time,
+      // enforced by the write itself (see startCanary), so two operators
+      // racing the button get one trial and one honest 409 — never a silently
+      // replaced trial whose partial results would be attributed to the new
+      // version. Changing the version or the percent means Stop, then Start.
+      if (!started) {
+        return reply.code(409).send({
+          error: 'a canary is already running on this agent — stop or promote it first',
+        });
+      }
+      return { agent: agentView(started) };
+    },
+  );
+
+  /**
+   * Stop the trial. Conversations already in the canary arm keep their arm
+   * (it records what they were enrolled in, which slice C needs) but revert to
+   * the live prompt at their NEXT turn — the processor re-reads the agent every
+   * turn, so a rejected prompt stops serving immediately and everywhere rather
+   * than lingering in the threads that happened to open under it.
+   */
+  app.delete<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/canary',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await resolveVersionTarget(req.tenant.id, req.params.identifier, reply);
+      if (!agent) return reply;
+      const stopped = await clearCanary(agent.id);
+      if (!stopped) return reply.code(404).send({ error: 'unknown agent' });
+      return { agent: agentView(stopped) };
+    },
+  );
+
+  /**
+   * Promote: the version that won its trial becomes the live prompt, and the
+   * trial ends. Deliberately the RESTORE path — promotion mints a new version
+   * carrying the winner's content, so history keeps recording every change to
+   * what the agent says in one append-only trail.
+   *
+   * The two steps are not one transaction (updateAgent owns its own, the repo's
+   * idiom), so the order is chosen for its failure mode: restore FIRST, then
+   * clear. A crash in between leaves the winning content live with the trial
+   * still pointing at the version it was copied from — the canary arm then
+   * serves content identical to live, which is harmless, and the operator's
+   * next Stop (or a repeated Promote — clearCanary is idempotent) tidies up.
+   * The reverse order could clear the trial and then fail to promote, quietly
+   * losing the decision the operator just made.
+   */
+  app.post<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/canary/promote',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await resolveVersionTarget(req.tenant.id, req.params.identifier, reply);
+      if (!agent) return reply;
+      if (agent.canary_version === null) {
+        return reply.code(404).send({ error: 'no canary is running on this agent' });
+      }
+      const row = await getAgentPromptVersion(agent.id, agent.canary_version);
+      if (!row) return reply.code(404).send({ error: 'unknown version' });
+
+      const promoted = await restoreVersionAsSave(req.tenant.id, req.params.identifier, row);
+      if (!promoted) return reply.code(404).send({ error: 'unknown agent' });
+      const cleared = await clearCanary(agent.id);
+      return {
+        agent: agentView(cleared ?? promoted),
+        promotedFrom: row.version,
+        // The NEW version number carrying the winner's content — equal to
+        // promotedFrom only when the trial version was already live (a no-op
+        // save mints nothing, exactly as on the restore route).
+        version: promoted.prompt_version,
       };
     },
   );

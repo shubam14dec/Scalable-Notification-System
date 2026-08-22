@@ -36,6 +36,17 @@ export interface Agent {
    * agent keeps the default 1 with no version rows behind it, meaning nothing.
    */
   prompt_version: number;
+  /**
+   * A5 slice B: the ACTIVE canary, or no canary at all. The three move
+   * together — `canary_version === null` is the one authoritative test for "no
+   * trial running" and every read in the codebase uses it (percent alone is
+   * never consulted). At most one per agent by construction: they are columns
+   * on the agent row, not rows in a table, so a second trial has nowhere to go.
+   */
+  canary_version: number | null;
+  /** Share of NEWLY OPENED conversations routed to the canary arm (1-99). */
+  canary_percent: number | null;
+  canary_started_at: string | null;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;
@@ -81,6 +92,20 @@ export interface Conversation {
    * folding-away of operator turns, so the post-handback reminder stays honest.
    */
   had_human: boolean;
+  /**
+   * A5 slice B: which side of the running canary this thread was assigned when
+   * it OPENED — null when it opened with no canary active (the overwhelming
+   * majority of rows). Written exactly once, on the insert branch of the
+   * find-or-create upsert, and never updated: a customer must not meet two
+   * personalities in one thread.
+   *
+   * NOTE for readers doing attribution: arm === 'canary' means "opened into the
+   * canary arm", NOT "every turn here ran the canary prompt". A trial that is
+   * stopped or promoted mid-thread reverts this conversation to the live prompt
+   * at its next turn (see the conversation processor). Which config actually
+   * served a given turn is stamped per-reply-row in `raw.canaryVersion`.
+   */
+  canary_arm: 'canary' | 'control' | null;
   message_count: number;
   last_message_at: string;
   created_at: string;
@@ -390,6 +415,48 @@ export async function getAgentPromptVersion(
   const { rows } = await pool.query(
     'select * from agent_prompt_versions where agent_id = $1 and version = $2',
     [agentId, version],
+  );
+  return rows[0] ?? null;
+}
+
+// ---- A5 slice B: canary (one version on trial against a slice of real traffic) ----
+
+/**
+ * Start a trial. Returns null when one is ALREADY running — the `canary_version
+ * is null` predicate makes "at most one active canary per agent" an atomic
+ * property of the write, so two operators racing the Start button produce one
+ * trial and one honest 409, never two half-applied configs. The caller has
+ * already checked that the version exists and that the agent is managed.
+ */
+export async function startCanary(
+  agentId: string,
+  version: number,
+  percent: number,
+): Promise<Agent | null> {
+  const { rows } = await pool.query(
+    `update agents
+        set canary_version = $2, canary_percent = $3, canary_started_at = now()
+      where id = $1 and canary_version is null
+      returning *`,
+    [agentId, version, percent],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * End a trial (Stop, and the second half of Promote). Idempotent: clearing an
+ * agent that has no canary is a no-op that still returns the row, so a repeated
+ * Stop — or a Promote retried after a crash between its two steps — is safe.
+ * Conversations already in the canary arm keep their arm but revert to the live
+ * prompt at their NEXT turn (the processor re-checks the agent every turn).
+ */
+export async function clearCanary(agentId: string): Promise<Agent | null> {
+  const { rows } = await pool.query(
+    `update agents
+        set canary_version = null, canary_percent = null, canary_started_at = null
+      where id = $1
+      returning *`,
+    [agentId],
   );
   return rows[0] ?? null;
 }
@@ -760,25 +827,71 @@ export async function getSubscriberByExternalId(
  * Find-or-create the conversation for a thread, reopening it if it was
  * resolved (a new message on a resolved thread = the user came back).
  */
+/**
+ * A5 slice B — THE canary arm roll, in SQL, as one expression shared by both
+ * find-or-create paths so no channel can quietly opt itself out by forgetting.
+ *
+ * `$N` is the JS roll: a number in [0,100), or NULL to decline the trial
+ * entirely (the eval driver — see `noCanary` below). The agent's canary config
+ * is read by scalar subquery in the same statement as the insert, so there is
+ * no extra round trip and no window where a trial starts between the read and
+ * the write. Deliberately NOT SQL's own `random()`: the roll belongs to the
+ * caller so tests can pin it, and so the percent boundary is checked in one
+ * language rather than two.
+ *
+ * The result is written ONLY on the insert branch — every `on conflict do
+ * update` below leaves canary_arm alone. That is what makes the arm sticky:
+ * not a rule to remember at each call site, but the shape of the statement.
+ */
+const CANARY_ARM_SQL = (rollParam: string, agentIdParam: string) => `
+      case
+        when ${rollParam}::numeric is null then null
+        else (
+          select case
+                   when a.canary_version is null then null
+                   when ${rollParam}::numeric < a.canary_percent then 'canary'
+                   else 'control'
+                 end
+            from agents a
+           where a.id = ${agentIdParam}
+        )
+      end`;
+
+/** One roll in [0,100), or null when this conversation declines the trial. */
+function canaryRoll(noCanary?: boolean): number | null {
+  return noCanary ? null : Math.random() * 100;
+}
+
 export async function openConversation(c: {
   tenantId: string;
   agentId: string;
   subscriberId: string; // subscribers.id (uuid)
   channel: string;
   threadKey: string;
+  /**
+   * A5 slice B: open this conversation OUTSIDE any running canary (arm null).
+   * The eval-run driver passes it: an eval run grades the config it was asked
+   * to grade, so a trial running in production must not silently reassign a
+   * fraction of its scenarios to a different prompt and make the scores lie.
+   * Explicit rather than inferred from `channel`/caller shape — a future
+   * internal driver should have to state its intent, not inherit it by accident.
+   */
+  noCanary?: boolean;
 }): Promise<Conversation> {
   const { rows } = await pool.query(
-    `insert into conversations (tenant_id, agent_id, subscriber_id, channel, thread_key)
-     values ($1, $2, $3, $4, $5)
+    `insert into conversations (tenant_id, agent_id, subscriber_id, channel, thread_key, canary_arm)
+     values ($1, $2, $3, $4, $5, ${CANARY_ARM_SQL('$6', '$2')})
      on conflict (agent_id, channel, thread_key) where connection_id is null do update set
        -- Reopen a RESOLVED thread (the user came back), but NEVER force a
        -- waiting_human/human thread back to active (Phase 26 D1/D11): a customer
        -- message while a human owns the pen must not steal it back — the D2 gate
        -- relies on this find not flipping the status out from under it.
+       -- canary_arm is deliberately ABSENT here: an existing thread keeps the
+       -- arm it opened with, for the whole life of the thread (A5 slice B).
        status = case when conversations.status = 'resolved' then 'active' else conversations.status end,
        last_message_at = now()
      returning *`,
-    [c.tenantId, c.agentId, c.subscriberId, c.channel, c.threadKey],
+    [c.tenantId, c.agentId, c.subscriberId, c.channel, c.threadKey, canaryRoll(c.noCanary)],
   );
   // Phase 25 (slice B): the find-or-create/reopen write — a new inbound turn (or
   // a reopened resolved thread) is a conversation change the admin list must see.
@@ -801,16 +914,17 @@ export async function openChannelConversation(c: {
 }): Promise<Conversation> {
   const { rows } = await pool.query(
     `insert into conversations
-       (tenant_id, agent_id, connection_id, subscriber_id, channel, thread_key)
-     values ($1, $2, $3, $4, $5, $6)
+       (tenant_id, agent_id, connection_id, subscriber_id, channel, thread_key, canary_arm)
+     values ($1, $2, $3, $4, $5, $6, ${CANARY_ARM_SQL('$7', '$2')})
      on conflict (connection_id, thread_key) where connection_id is not null do update set
        -- Reopen a RESOLVED thread only; keep a waiting_human/human thread in its
        -- human state so a customer message can't steal the pen back (Phase 26 D1/D11).
+       -- canary_arm absent for the same reason as in openConversation: sticky.
        status = case when conversations.status = 'resolved' then 'active' else conversations.status end,
        last_message_at = now(),
        agent_id = excluded.agent_id
      returning *`,
-    [c.tenantId, c.agentId, c.connectionId, c.subscriberId, c.channel, c.threadKey],
+    [c.tenantId, c.agentId, c.connectionId, c.subscriberId, c.channel, c.threadKey, canaryRoll()],
   );
   // Phase 25 (slice B): find-or-create/reopen write for a channel thread — see openConversation.
   void emitTenantEvent(rows[0].tenant_id, 'conversation.changed', rows[0].id);

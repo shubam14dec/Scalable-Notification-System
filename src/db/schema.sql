@@ -847,3 +847,32 @@ create table if not exists agent_prompt_versions (
   created_at    timestamptz not null default now(),
   primary key (agent_id, version)
 );
+
+-- ---- Phase A5 Slice B: canary ----
+-- A trial of ONE past/other version on a slice of REAL traffic. The agent row
+-- carries the whole config (at most one active canary per agent, so a column
+-- trio beats a table): canary_version = which agent_prompt_versions row is on
+-- trial, canary_percent = the share of NEWLY OPENED conversations that get it,
+-- canary_started_at = when the trial began (the dashboard's "started 2h ago"
+-- and slice C's window floor for per-arm counters). All three null/non-null
+-- together; canary_version IS NULL is the single authoritative "no active
+-- canary" test. Managed agents only — a bridge agent has no prompt to trial.
+alter table agents add column if not exists canary_version    int;
+alter table agents add column if not exists canary_percent    int;
+alter table agents add column if not exists canary_started_at timestamptz;
+
+-- Which arm this conversation was assigned when it OPENED: 'canary' | 'control'
+-- | null (opened while no canary was active). Rolled exactly once, on the
+-- INSERT branch of the find-or-create upsert (see openConversation), and never
+-- written again — stickiness is structural, not a rule someone has to remember:
+-- a customer never meets two personalities in one thread. No CHECK constraint,
+-- matching this file's own precedent for `conversations.status` above: the
+-- TypeScript union in conversations.repo.ts is the enforced surface.
+alter table conversations add column if not exists canary_arm text;
+
+-- Slice C's per-arm counters group live conversations by arm. Partial (the vast
+-- majority of rows are arm-null, i.e. opened outside any trial) so the index
+-- stays proportional to conversations actually under trial, not to table size.
+create index if not exists conversations_canary_arm_idx
+  on conversations (agent_id, canary_arm)
+  where canary_arm is not null;

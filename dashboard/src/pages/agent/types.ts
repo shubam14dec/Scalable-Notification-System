@@ -22,6 +22,16 @@ export interface Agent {
    * marker off the versions endpoint; this is the same number on the agent row.
    */
   promptVersion?: number;
+  /**
+   * Phase A5 slice B: the RUNNING canary, or null when none is. Presence is the
+   * flag — the API only sends the object while a trial is active, so the panel
+   * never has to decide what a percent of 0 or a null version would mean.
+   */
+  canary?: {
+    version: number;
+    percent: number | null;
+    startedAt: string | null;
+  } | null;
   /** Phase 22 G2: per-agent daily token circuit breaker (null = off). */
   maxDailyTokens?: number | null;
   /**

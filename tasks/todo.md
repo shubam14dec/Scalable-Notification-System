@@ -23,9 +23,11 @@ counters per arm (set-based SQL) + SAMPLED async judging of real turns
 after-reply, never blocking) — deliberately the seed of A2b (which
 shrinks to all-conversation supervision + alerting + auto-handoff).
 Scale: O(1) arm roll at open; judging bounded by sample% × traffic.
-- [ ] Slice A — versioning: schema + snapshot on prompt/model save +
-      API list/get/restore + dashboard Versions panel (view, Restore,
-      Run-evals-against-this-version via candidate). Sequenced first.
+- [x] Slice A — versioning — DONE 2026-08-23 (commit f798621, suite
+      761→770): transactional snapshot-on-save (outcome-compared, legacy
+      backfill), light list API, restore-is-a-save (mints new version →
+      meets future save guards free), Versions tab. FLAG routed to
+      slice C: VersionsPanel restore bypasses the pre-save eval modal.
 - [ ] Slice B — canary core: config (version+percent 1-99, one active,
       managed-only), sticky arm at conversation open, turn-time
       candidate injection, Start/Stop/Promote API + controls.

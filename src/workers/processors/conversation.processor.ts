@@ -15,6 +15,7 @@ import {
   runManagedTurn,
   postCustomToolCall,
   deniedResult,
+  DEFAULT_MODEL,
   type TurnUsage,
   type TurnTrace,
   type CandidateConfig,
@@ -49,6 +50,7 @@ import {
   conversationTranscriptBefore,
   finalizeAgentMessage,
   getAgentById,
+  getAgentPromptVersion,
   getConnectionById,
   getConnectionForConversation,
   getConversation,
@@ -212,6 +214,10 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // reasoning-leak fallback note) — tagged raw.platformNote on the stored row so
   // buildHistory excludes it from replay, exactly like the budget-pause note.
   let replyPlatformNote = false;
+  // A5 slice B: the canary version that actually served this turn (undefined =
+  // the live config did). Declared out here beside replyPlatformNote because
+  // the reply row is written below, outside the managed branch that sets it.
+  let servedCanaryVersion: number | undefined;
   // The streaming plan card (managed, non-email): posts ONE evolving agent
   // message on the first labelable tool call and finalizes it as the reply.
   let planCard: PlanCard | undefined;
@@ -289,6 +295,47 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             inboundRow: message,
           })
         : undefined;
+    // ---- A5 slice B: canary injection ----
+    // A canary is not a second override mechanism: it is the A4 candidate knob
+    // aimed at real traffic. The arm was decided once when the conversation
+    // opened; all that happens per turn is one PK read of the snapshot.
+    //
+    // REVERT SEMANTICS (deliberate): the condition re-checks the AGENT every
+    // turn, not just the conversation's arm. If the trial was stopped or
+    // promoted since this thread opened, `agent.canary_version` is null (or now
+    // points elsewhere) and this thread silently returns to the live prompt at
+    // its very next turn. Stop therefore means stop — immediately and
+    // everywhere — instead of leaving already-opened threads stranded on a
+    // config the operator has just rejected. The arm column stays as it is:
+    // it records what the thread was ENROLLED in, which is what slice C needs
+    // to attribute the turns that did run under the trial.
+    let canaryCandidate: CandidateConfig | undefined;
+    if (conversation.canary_arm === 'canary' && agent.canary_version !== null) {
+      const snapshot = await getAgentPromptVersion(agent.id, agent.canary_version);
+      // A missing snapshot (version deleted underneath a running trial) is not
+      // an error worth failing a customer's turn over — fall through to live.
+      if (snapshot) {
+        canaryCandidate = {
+          systemPrompt: snapshot.system_prompt ?? undefined,
+          // The snapshot is reproduced EXACTLY, including "no pinned model":
+          // a bare `undefined` here would silently inherit the agent's CURRENT
+          // model (see the brain's `candidate.model ?? agent.model ??
+          // DEFAULT_MODEL`), so a version saved with no model would be trialled
+          // on the wrong one. Resolving the default here keeps the trial honest.
+          model: snapshot.model ?? DEFAULT_MODEL,
+        };
+        servedCanaryVersion = snapshot.version;
+      }
+    }
+    // PRECEDENCE: an eval run's candidate always wins over a canary. The two
+    // should not co-occur (eval conversations opt out of canaries at open, so
+    // their arm is null), but if one ever did, the run must grade the config it
+    // was asked to grade — a trial silently overriding it would corrupt the
+    // scores. Never merged field-by-field: a half-canary/half-candidate prompt
+    // is a config that no one chose and no one could reproduce.
+    const turnCandidate = data.evalCandidate ?? canaryCandidate;
+    if (data.evalCandidate) servedCanaryVersion = undefined;
+
     try {
       // Richer history (incl. tool-action breadcrumbs) — the brain folds
       // them in so past tool-backed replies don't look like bare claims. D8:
@@ -308,10 +355,11 @@ async function processTurn(data: ConversationJobData): Promise<void> {
         },
         onToolCall: planCard?.onToolCall,
         onToolResult: planCard?.onToolResult,
-        // A4: present ONLY on turns driven by a candidate eval run. Reached
+        // A4: a candidate eval run's override, or (A5) the canary version this
+        // conversation was enrolled in — resolved above, eval wins. Reached
         // only inside this managed branch, so a bridge agent can never be run
         // on a candidate config even if a job somehow carried one.
-        ...(data.evalCandidate ? { candidate: data.evalCandidate } : {}),
+        ...(turnCandidate ? { candidate: turnCandidate } : {}),
       });
       reply = turn.reply ?? undefined;
       buttons = turn.buttons;
@@ -330,11 +378,13 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             usage: turn.usage,
             trace: turn.trace,
             platformNote: turn.platformNote,
+            canaryVersion: servedCanaryVersion,
           });
         } else {
           await planCard.finalize(turn.note ?? 'the model produced no reply text', {
             usage: turn.usage,
             trace: turn.trace,
+            canaryVersion: servedCanaryVersion,
           });
         }
       }
@@ -460,14 +510,28 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           // — it is not the model's words, so buildHistory must NOT replay it as
           // an assistant turn (GLM parroted it verbatim on later turns once the
           // budget cleared — the lesson-§13 imitable-prose trap).
+          // A5 slice B: which canary version actually SERVED this turn. The
+          // conversation's arm alone cannot answer that — a thread enrolled in
+          // a trial keeps arm='canary' after the trial is stopped, but its
+          // later turns ran the live prompt (see the revert semantics above).
+          // Counting those as canary turns would quietly poison slice C's
+          // per-arm comparison, so attribution is recorded per turn, here,
+          // where the row is written anyway: no new column, no extra write.
           raw:
-            turnUsage || turnTrace || buttons || card || budgetExhausted || replyPlatformNote
+            turnUsage ||
+            turnTrace ||
+            buttons ||
+            card ||
+            budgetExhausted ||
+            replyPlatformNote ||
+            servedCanaryVersion
               ? {
                   ...(turnUsage ? { usage: turnUsage } : {}),
                   ...(turnTrace ? { trace: turnTrace } : {}),
                   ...(buttons ? { buttons } : {}),
                   ...(card ? { card } : {}),
                   ...(budgetExhausted || replyPlatformNote ? { platformNote: true } : {}),
+                  ...(servedCanaryVersion ? { canaryVersion: servedCanaryVersion } : {}),
                 }
               : undefined,
         })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
@@ -1084,6 +1148,10 @@ interface PlanCardExtras {
   /** Tag the finalized row raw.platformNote (reasoning-leak fallback) so it is
    * excluded from history replay — mirrors the reply-insert path. */
   platformNote?: boolean;
+  /** A5 slice B: the canary version that served this turn — same per-turn
+   * attribution as the reply-insert path, since a plan-card turn finalizes
+   * into the reply row instead of inserting a fresh one. */
+  canaryVersion?: number;
 }
 
 interface PlanCardChannelRaw {
@@ -1343,6 +1411,7 @@ function createPlanCard(args: {
         ...(extras.buttons ? { buttons: extras.buttons } : {}),
         ...(extras.card ? { card: extras.card } : {}),
         ...(extras.platformNote ? { platformNote: true } : {}),
+        ...(extras.canaryVersion ? { canaryVersion: extras.canaryVersion } : {}),
       });
       row = (await getConversationMessage(row!.id)) ?? row;
       // Supersede any pending progress edits, then drain the throttle chain.

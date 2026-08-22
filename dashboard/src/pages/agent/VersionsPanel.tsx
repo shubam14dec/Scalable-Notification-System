@@ -9,7 +9,7 @@ import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import { Button, Mono, Modal, Skeleton, EmptyState } from '../../ui';
+import { Button, Input, Mono, Modal, Skeleton, EmptyState } from '../../ui';
 import { timeAgo } from '../Activity';
 import type { Agent, AgentEval, EvalCandidate } from './types';
 
@@ -54,6 +54,11 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
   const [openVersion, setOpenVersion] = useState<number | null>(null);
   const [actionError, setActionError] = useState('');
   const [ranVersion, setRanVersion] = useState<number | null>(null);
+  // A5 slice B: which version's "Start canary" row is expanded, and the percent
+  // typed into it. 10% is the default — small enough that a bad prompt reaches
+  // few customers, large enough to accumulate a comparable sample.
+  const [startFor, setStartFor] = useState<number | null>(null);
+  const [percent, setPercent] = useState('10');
 
   const { data, isLoading } = useQuery({
     queryKey: ['agent-versions', agent.identifier],
@@ -111,6 +116,45 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
     onError: (err) => setActionError(err.message),
   });
 
+  // ---- A5 slice B: canary controls (minimal — the comparison panel is slice C) ----
+  // Start / Stop / Promote only. Every one of them changes the agent row, so
+  // they all invalidate ['agents'] (the editor and this panel read the agent
+  // from it) alongside the version list a promote appends to.
+  const invalidateAgent = () => {
+    void queryClient.invalidateQueries({ queryKey: ['agents'] });
+    void queryClient.invalidateQueries({ queryKey: ['agent-versions', agent.identifier] });
+  };
+
+  const startCanary = useMutation({
+    mutationFn: (vars: { version: number; percent: number }) =>
+      api(`/v1/agents/${agent.identifier}/canary`, { method: 'POST', body: vars }),
+    onSuccess: () => {
+      setActionError('');
+      setStartFor(null);
+      invalidateAgent();
+    },
+    onError: (err) => setActionError(err.message),
+  });
+
+  const stopCanary = useMutation({
+    mutationFn: () => api(`/v1/agents/${agent.identifier}/canary`, { method: 'DELETE' }),
+    onSuccess: () => {
+      setActionError('');
+      invalidateAgent();
+    },
+    onError: (err) => setActionError(err.message),
+  });
+
+  const promoteCanary = useMutation({
+    mutationFn: () => api(`/v1/agents/${agent.identifier}/canary/promote`, { method: 'POST' }),
+    onSuccess: () => {
+      setActionError('');
+      invalidateAgent();
+    },
+    onError: (err) => setActionError(err.message),
+  });
+
+  const canary = agent.canary ?? null;
   const versions = data?.versions ?? [];
   const open = detail.data?.version ?? null;
   const openCandidate = open ? candidateFor(open) : null;
@@ -120,10 +164,45 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
       <p className="mb-4 text-[12px] text-t3">
         Every save that changes this agent&apos;s prompt or model is kept as a version. Restoring
         one is a new save — it publishes the old text again under a new number, so nothing in the
-        history is ever overwritten.
+        history is ever overwritten. You can also put one version on trial with a share of new
+        conversations before it takes over; a conversation keeps whichever version it started on.
       </p>
 
       {actionError && <p className="mb-3 text-[12px] text-err">{actionError}</p>}
+
+      {canary && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-bd bg-elevated px-3 py-2.5">
+          <span className="text-[12px] text-t2">
+            <Mono className="text-t1">v{canary.version}</Mono> is on trial with{' '}
+            <span className="text-t1">{canary.percent}%</span> of new conversations
+            {canary.startedAt && ` · started ${timeAgo(canary.startedAt)}`}
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="ghost"
+              disabled={stopCanary.isPending || promoteCanary.isPending}
+              onClick={() => stopCanary.mutate()}
+            >
+              Stop
+            </Button>
+            <Button
+              variant="primary"
+              disabled={stopCanary.isPending || promoteCanary.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Promote v${canary.version}? It becomes the live prompt for every conversation, and the trial ends.`,
+                  )
+                ) {
+                  promoteCanary.mutate();
+                }
+              }}
+            >
+              Promote
+            </Button>
+          </span>
+        </div>
+      )}
 
       {ranVersion !== null && (
         <p className="mb-3 text-[12px] text-t2">
@@ -147,28 +226,74 @@ export function VersionsPanel({ agent }: { agent: Agent }) {
       ) : (
         <ul className="space-y-3">
           {versions.map((v) => (
-            <li
-              key={v.version}
-              className="flex items-start justify-between gap-2 border-b border-bd pb-3 last:border-0 last:pb-0"
-            >
-              <div className="min-w-0">
-                <span className="flex items-center gap-2">
-                  <Mono className="text-t1">v{v.version}</Mono>
-                  {v.current && <Chip>current</Chip>}
-                  <Mono className="text-t3">{v.model ?? 'default model'}</Mono>
-                </span>
-                <span className="mt-0.5 block truncate text-[11px] text-t3">
-                  {v.promptLength > 0
-                    ? `${v.promptLength.toLocaleString()} chars · ${v.promptHead}`
-                    : 'no prompt'}
-                </span>
+            <li key={v.version} className="border-b border-bd pb-3 last:border-0 last:pb-0">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="flex items-center gap-2">
+                    <Mono className="text-t1">v{v.version}</Mono>
+                    {v.current && <Chip>current</Chip>}
+                    {canary?.version === v.version && <Chip>on trial</Chip>}
+                    <Mono className="text-t3">{v.model ?? 'default model'}</Mono>
+                  </span>
+                  <span className="mt-0.5 block truncate text-[11px] text-t3">
+                    {v.promptLength > 0
+                      ? `${v.promptLength.toLocaleString()} chars · ${v.promptHead}`
+                      : 'no prompt'}
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-[11px] text-t3">{timeAgo(v.createdAt)}</span>
+                  {/* Only offered on a version that isn't already live, and only
+                      while nothing is on trial — one canary per agent, so the
+                      control disappears rather than failing with a 409. */}
+                  {!v.current && !canary && startFor !== v.version && (
+                    <Button variant="ghost" onClick={() => setStartFor(v.version)}>
+                      Start canary
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => setOpenVersion(v.version)}>
+                    View
+                  </Button>
+                </div>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <span className="text-[11px] text-t3">{timeAgo(v.createdAt)}</span>
-                <Button variant="ghost" onClick={() => setOpenVersion(v.version)}>
-                  View
-                </Button>
-              </div>
+
+              {startFor === v.version && !canary && (
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-lg border border-bd bg-elevated px-3 py-2.5">
+                  <span className="text-[12px] text-t2">Send</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={99}
+                    value={percent}
+                    autoFocus
+                    onChange={(e) => setPercent(e.target.value)}
+                    className="w-16"
+                  />
+                  <span className="text-[12px] text-t2">
+                    % of new conversations to v{v.version}
+                  </span>
+                  <span className="ml-auto flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setStartFor(null);
+                        setActionError('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      disabled={startCanary.isPending}
+                      onClick={() =>
+                        startCanary.mutate({ version: v.version, percent: Number(percent) })
+                      }
+                    >
+                      Start
+                    </Button>
+                  </span>
+                </div>
+              )}
             </li>
           ))}
         </ul>

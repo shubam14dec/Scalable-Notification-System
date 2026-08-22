@@ -77,6 +77,12 @@ function inProcessDriver(
         subscriberId: subscriber.id,
         channel: 'inapp',
         threadKey: subscriberId,
+        // A5 slice B: eval conversations never join a canary. A run grades the
+        // config it was asked to grade — its own candidate, or the live prompt.
+        // If a trial running in production could reassign a fraction of these
+        // scenarios to a different prompt, every score would be a silent blend
+        // of two configs and the whole eval surface would stop meaning anything.
+        noCanary: true,
       });
       const message =
         (await insertConversationMessage({
