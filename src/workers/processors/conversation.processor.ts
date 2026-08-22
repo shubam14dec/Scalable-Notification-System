@@ -18,6 +18,7 @@ import {
   DEFAULT_MODEL,
   type TurnUsage,
   type TurnTrace,
+  type TurnRouting,
   type CandidateConfig,
 } from '../../core/managed-brain';
 import { pool } from '../../db/pool';
@@ -219,6 +220,12 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // the live config did). Declared out here beside replyPlatformNote because
   // the reply row is written below, outside the managed branch that sets it.
   let servedCanaryVersion: number | undefined;
+  // A6: what the router did with this turn (undefined = routing was off for it,
+  // which is every bridge turn and every managed turn on an unrouted agent).
+  // Same per-turn attribution argument as canaryVersion above: the agent's
+  // routing CONFIG says what may happen, only the turn says what did — and the
+  // difference is the escalation rate, i.e. the whole cost model.
+  let turnRouting: TurnRouting | undefined;
   // The streaming plan card (managed, non-email): posts ONE evolving agent
   // message on the first labelable tool call and finalizes it as the reply.
   let planCard: PlanCard | undefined;
@@ -367,6 +374,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       card = turn.card;
       turnUsage = turn.usage;
       turnTrace = turn.trace;
+      turnRouting = turn.routing;
       replyPlatformNote = turn.platformNote ?? false;
       // If a plan card was posted, its row IS the reply row — finalize it now
       // (the final edit becomes the reply). turn.reply carries the extras; a
@@ -380,12 +388,14 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             trace: turn.trace,
             platformNote: turn.platformNote,
             canaryVersion: servedCanaryVersion,
+            routing: turn.routing,
           });
         } else {
           await planCard.finalize(turn.note ?? 'the model produced no reply text', {
             usage: turn.usage,
             trace: turn.trace,
             canaryVersion: servedCanaryVersion,
+            routing: turn.routing,
           });
         }
       }
@@ -521,6 +531,9 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           // Counting those as canary turns would quietly poison slice C's
           // per-arm comparison, so attribution is recorded per turn, here,
           // where the row is written anyway: no new column, no extra write.
+          // A6: raw.routing records which model actually SERVED this reply and
+          // whether the turn escalated. Additive and ABSENT when routing was off
+          // — a pre-A6 row and an unrouted row stay byte-identical.
           raw:
             turnUsage ||
             turnTrace ||
@@ -528,7 +541,8 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             card ||
             budgetExhausted ||
             replyPlatformNote ||
-            servedCanaryVersion
+            servedCanaryVersion ||
+            turnRouting
               ? {
                   ...(turnUsage ? { usage: turnUsage } : {}),
                   ...(turnTrace ? { trace: turnTrace } : {}),
@@ -536,6 +550,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
                   ...(card ? { card } : {}),
                   ...(budgetExhausted || replyPlatformNote ? { platformNote: true } : {}),
                   ...(servedCanaryVersion ? { canaryVersion: servedCanaryVersion } : {}),
+                  ...(turnRouting ? { routing: turnRouting } : {}),
                 }
               : undefined,
         })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
@@ -1179,6 +1194,9 @@ interface PlanCardExtras {
    * attribution as the reply-insert path, since a plan-card turn finalizes
    * into the reply row instead of inserting a fresh one. */
   canaryVersion?: number;
+  /** A6: which model served this turn (+ escalation) — same per-turn
+   * attribution as the reply-insert path, for the plan-card reply row. */
+  routing?: TurnRouting;
 }
 
 interface PlanCardChannelRaw {
@@ -1439,6 +1457,7 @@ function createPlanCard(args: {
         ...(extras.card ? { card: extras.card } : {}),
         ...(extras.platformNote ? { platformNote: true } : {}),
         ...(extras.canaryVersion ? { canaryVersion: extras.canaryVersion } : {}),
+        ...(extras.routing ? { routing: extras.routing } : {}),
       });
       row = (await getConversationMessage(row!.id)) ?? row;
       // Supersede any pending progress edits, then drain the throttle chain.

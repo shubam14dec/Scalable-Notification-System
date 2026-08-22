@@ -6,6 +6,43 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A6 — model routing (plan approved 2026-08-23)
+Cheap-first, STRUCTURAL escalation: every routed turn runs on the cheap
+model first (same prompt, same tools); no tool calls OR only SAFE tools
+({set_metadata, remember, resolve_conversation} — bookkeeping + the
+eval-pinned resolve-on-thanks archetype) → ship it; ANY other tool_use
+(workflows, custom tools, search_*, cards, handoff) → DISCARD the cheap
+attempt, re-run the whole turn FRESH on the strong model (no
+contamination). The signal is law (did it reach for a consequential
+tool), never a model judging a model. Cheap-model errors (bad id, 400)
+= escalate, never fail — a misconfigured router degrades to today's
+behavior. TWO TIERS ONLY (his approval after discussion: binary law →
+binary router; money is in tier 1; one escalation rate; jsonb config
+can grow later if evidence demands). One cheap model per agent,
+free-text field like Model, NO default (BYO endpoint — guessing = 100%
+escalation). Routing config changes TRIGGER THE PRE-SAVE CHECK (his
+question surfaced this: enabling routing is a behavior change; the
+check runs scenarios THROUGH the router). Attribution raw.routing
+{model, escalated} on every reply; Turn Inspector shows escalated turns
+as two model calls naturally. Evals/gate run through the router
+honestly (driver = real path). Boundary: continuous judged monitoring
+of routed live traffic = A2b. Cost math: cheap turns ~5-10% of strong,
+escalated +10-15%, net win at ≥~40% conversational share — the stats
+strip shows the REAL split. Unblocked by A3 ✓ (the gate proves the
+cheap model holds the bar).
+- [ ] Slice A — router core: agents.routing jsonb, cheap-first loop +
+      safe-tool law + structural escalation + error-escalation in
+      managed-brain, attribution, cache note; wire-capture tests
+      (cheap id on wire for chatty turn; discard+strong re-run on tool
+      turn; 400→escalate; routing-off byte-identical).
+- [ ] Slice B — surface: PATCH + Edit-panel "Model routing" section
+      (toggle + cheap-model field, plain-words copy per the labels
+      rule), routing config changes trip the pre-save check, stats
+      strip (% served cheap, escalation rate — set-based SQL), SDK +
+      changeset.
+- [ ] Slice C — docs+close-out: guide §9 cost lever ("trusted to talk,
+      never to act"), AGENT-TOOLS API ref, gap-analysis, todo review.
+
 ### Phase A5 — SHIPPED 2026-08-23 (review)
 All 5 slices done (commits 918c69c E, f798621 A, 89d635f B, 2739db2 C,
 db1d4ef D), suite 761→799, root+dashboard+sdk tsc clean throughout.
@@ -241,11 +278,8 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       second half — conversation → eval-case — was already shipped in
       P22: "Save as eval" on the conversation page.)
 - [x] A5. Prompt versioning + canary — SHIPPED 2026-08-23, review above.
-- [ ] A6. Model routing — cheap turns to a small model, escalate on
-      reasoning/tools. DELIBERATELY BLOCKED on A3 (guide §9: a router
-      that quietly sends hard turns to a weak model is a quality
-      regression disguised as a cost win; the gate must prove the small
-      model holds the bar first).
+- (IN PROGRESS above) A6. Model routing — unblocked: A3 shipped, the
+      gate proves the cheap model holds the bar.
 - [ ] A7. Guardrails completion (P22 later bucket rest): tool-call rate
       caps; per-agent token/spend budgets (pause, not surprise-bill);
       topic allow/deny; output moderation hook.

@@ -929,3 +929,17 @@ create table if not exists agent_turn_judgments (
 -- of a scan of the agent's whole judging history.
 create index if not exists agent_turn_judgments_report_idx
   on agent_turn_judgments (agent_id, created_at);
+
+-- ---- Phase A6 slice A: model routing ----
+-- Per-agent cheap-first routing config, or null = off (the overwhelming
+-- majority of rows, so a nullable jsonb costs those rows nothing). Shape is
+-- owned by `RoutingConfig` in src/core/managed-brain.ts — the brain is what
+-- applies it — and is deliberately TWO fields:
+--   { "enabled": true, "cheapModel": "glm-4.6-flash" }
+-- One cheap model, one switch: the escalation law is binary (did the model
+-- reach for a consequential tool), so a binary router is the honest shape.
+-- No default cheap model: the id must be one the agent's OWN endpoint serves
+-- (routing rides agent.llm_base_url + the agent's key), and a guessed id is a
+-- 400 on every turn — i.e. a 100% escalation rate. jsonb rather than two
+-- columns so tiers can grow later without another migration.
+alter table agents add column if not exists routing jsonb;

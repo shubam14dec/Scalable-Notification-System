@@ -132,6 +132,25 @@ export interface TurnTrace {
 /** A single tappable choice attached to a reply (present_buttons tool). */
 type ReplyButton = { id: string; label: string };
 
+/**
+ * Phase A6 — what the router did with this turn. Present ONLY when routing was
+ * actually applied (see `routingApplies` below); absent means the turn ran the
+ * agent's own model exactly as it did before A6, so every pre-A6 reader sees
+ * what it saw.
+ */
+export interface TurnRouting {
+  /** The model that SERVED the delivered reply (cheap, or strong after an escalation). */
+  model: string;
+  /** True when the cheap attempt was discarded and the whole turn re-ran strong. */
+  escalated: boolean;
+  /**
+   * The non-safe tool the cheap attempt reached for. Absent when the escalation
+   * came from a cheap-model ERROR rather than a tool — the two are different
+   * facts and collapsing them would make the escalation-rate stat lie about why.
+   */
+  trigger?: string;
+}
+
 export interface BrainTurnResult {
   /** The reply to deliver; null when the model refused or sent no text. */
   reply: string | null;
@@ -155,6 +174,8 @@ export interface BrainTurnResult {
   usage: TurnUsage;
   /** Per-turn execution trace (model + tool events), frozen shape. */
   trace: TurnTrace;
+  /** A6: which model served this turn, and whether it escalated. Absent = routing off. */
+  routing?: TurnRouting;
 }
 
 /**
@@ -171,6 +192,95 @@ export interface CandidateConfig {
   systemPrompt?: string;
   model?: string;
 }
+
+/**
+ * Phase A6 — per-agent CHEAP-FIRST routing config (the `agents.routing` jsonb).
+ * Owned here for the same reason CandidateConfig is: the brain is what APPLIES
+ * it, so the brain owns its shape and everyone else imports this type.
+ *
+ * `cheapModel` is free text with NO default: it rides the agent's own client
+ * (its key, its llm_base_url), so only ids that endpoint actually serves can
+ * work — a guessed default would 400 on every turn, i.e. escalate 100% of the
+ * time and buy the customer a wasted round-trip per turn.
+ *
+ * A cheap model rides the request shape UNCHANGED — same system blocks, same
+ * cache_control marker, same tool menu, same messages. There is nothing to
+ * reconcile per model family here because this loop sets no sampling params at
+ * all (no temperature, no top_p — verified: the only such knob in the codebase
+ * is the JUDGE's, in eval-judge, which already drops temperature for modern
+ * Anthropic ids). So a cheapModel that is a modern-claude id is as safe to send
+ * as a compat/GLM one: the only per-agent request knob is max_tokens, which is
+ * the agent's own and applies to both tiers.
+ */
+export interface RoutingConfig {
+  enabled: boolean;
+  cheapModel: string;
+}
+
+/**
+ * THE SAFE-TOOL LAW (Phase A6). A cheap attempt may execute exactly these three
+ * and keep going; reaching for anything else discards the attempt.
+ *
+ * What unites them: none of them touches the outside world or spends the
+ * customer's money. set_metadata and remember are BOOKKEEPING — they write a
+ * note about the conversation or the customer, are keyed upserts, and are
+ * invisible to the user. resolve_conversation is here because "the user says
+ * thanks, close it" is the eval-pinned archetype of a turn a small model gets
+ * right, and it is reversible by construction: the customer's next message
+ * reopens the thread.
+ *
+ * Everything else — trigger_workflow (sends a REAL notification), every
+ * customer-registered tool (arbitrary POST to their systems), handoff_to_human
+ * (pages a person), search_* (a paid embedding call plus facts the reply will
+ * be grounded in), the presentation tools (they shape what the customer sees) —
+ * is consequential, and consequential work is what the strong model is for.
+ * The membership test is by NAME against this set, so a customer tool can never
+ * be safe: the set is closed, and unknown ⇒ unsafe.
+ */
+const SAFE_TOOLS: ReadonlySet<string> = new Set([
+  'set_metadata',
+  'remember',
+  'resolve_conversation',
+]);
+
+/**
+ * THE ONE CASE THE LAW DOES NOT UNDO — and why it is safe anyway.
+ *
+ * The law inspects each RESPONSE whole, so a mixed response executes nothing.
+ * But a turn is several responses: the cheap model can call set_metadata on
+ * round 1 (executed, correctly — it was safe) and reach for a refund on round 2
+ * (escalation). Round 1's effect is already committed. It is not rolled back,
+ * for the same reason the pre-A6 loop never rolled back a tool call on a later
+ * failure: these are real writes to a shared database, and "undo" is a lie we
+ * would have to keep. Instead every safe tool is idempotent BY CONTENT, so the
+ * strong re-run redoing it costs nothing and lands on the same state:
+ *   • set_metadata — merges into `conversation.metadata` (carried in memory
+ *     across the escalation) and writes the merged object; same key + same value
+ *     = the same row. Verified in executeTool.
+ *   • remember — upsertMemory is a keyed upsert, and its breadcrumb is written
+ *     under a content-derived dedupe key, so the second write inserts nothing.
+ *   • resolve_conversation — `update … where status <> 'resolved'` returns 0
+ *     rows the second time. Verified in conversations.repo.
+ *
+ * resolve_conversation is the interesting one, because it does NOT end the turn:
+ * verified in the loop below — executeTool sets `resolved` via the onResolve
+ * hook and the loop `continue`s, exactly as it did before A6. So "the cheap path
+ * resolved, then escalated" is REACHABLE, and the strong re-run does run against
+ * a conversation Postgres already marked resolved. The honest rule, and the
+ * INVARIANT this file keeps:
+ *
+ *   a resolve committed by a discarded attempt stays committed, and the turn
+ *   still REPORTS `resolved: true`.
+ *
+ * That is why `resolved` lives on the shared turn state and not on the attempt.
+ * Reporting false would be the actual bug: the row is resolved, and the caller
+ * would skip the WS `conversation.resolved` event, leaving the dashboard showing
+ * an open thread that the database says is closed. Nothing else breaks — the
+ * status column gates FUTURE turns, not this one (the processor already
+ * committed to running the brain), and the customer's next message reopens the
+ * thread. The strong model is never told about it: it re-decides from the same
+ * prompt the cheap model saw, and if it resolves too, the update is a no-op.
+ */
 
 interface Subscriber {
   external_id: string;
@@ -256,25 +366,80 @@ async function subscriberHasSummary(agentId: string, subscriberId: string): Prom
   return rows.length > 0;
 }
 
+export interface RunTurnOpts {
+  onModelCall?: () => void;
+  /** Fired BEFORE each tool executes — drives the plan card's per-step post. */
+  onToolCall?: (tool: string, input: Record<string, unknown>) => void | Promise<void>;
+  /** Fired AFTER each tool executes — closes that step (done/error). */
+  onToolResult?: (tool: string, ok: boolean) => void | Promise<void>;
+  /**
+   * Phase A4: run this turn on a candidate system prompt and/or model INSTEAD
+   * of the agent row's. Set only by the eval-run driver (pre-save check);
+   * nothing is written back to the agent.
+   */
+  candidate?: CandidateConfig;
+}
+
+/**
+ * Everything ONE attempt at a turn needs. Assembled once per turn by
+ * runManagedTurn and handed to each attempt unchanged — that sharing is the
+ * point: an escalated re-run must not re-load the agent's tools, the
+ * subscriber's memory profile or the knowledge corpus, because a cheap
+ * attempt's own `remember` write would then reappear in the strong model's
+ * <customer_profile> and the re-run would no longer be a clean-room re-run.
+ */
+interface AttemptContext {
+  agent: Agent;
+  conversation: Conversation;
+  subscriber: Subscriber;
+  inbound: ConversationMessage;
+  client: Anthropic;
+  tools: Anthropic.Tool[];
+  systemBlocks: Anthropic.TextBlockParam[];
+  /** The assembled prompt messages; every attempt starts from a copy of this. */
+  baseMessages: Anthropic.MessageParam[];
+  defsByName: Map<string, AgentToolDef>;
+  retrieval: RetrievalContext | null;
+  opts: RunTurnOpts | undefined;
+  /** TURN-level accumulators — shared, so both attempts' real spend is counted. */
+  usage: TurnUsage;
+  events: TurnTraceEvent[];
+  trace: () => TurnTrace;
+  /**
+   * Turn state that survives a discarded attempt because it mirrors a COMMITTED
+   * database effect rather than model output. Only `resolved` qualifies: see the
+   * resolve-then-escalate invariant in runTurnAttempt.
+   */
+  state: { resolved: boolean };
+}
+
+/**
+ * The outcome of ONE attempt. `escalate` is returned ONLY by an escalatable
+ * (i.e. cheap) attempt, and means: nothing consequential was executed, discard
+ * everything this attempt produced and re-run the turn on the strong model.
+ * `trigger` names the non-safe tool that tripped the law; it is absent when the
+ * cheap model call itself errored.
+ */
+type AttemptOutcome =
+  | { outcome: 'done'; result: BrainTurnResult }
+  | { outcome: 'escalate'; trigger?: string };
+
+/**
+ * A non-escalatable attempt always finishes — this narrows the union at the two
+ * strong-model call sites without pushing an impossible branch onto callers.
+ */
+function mustFinish(attempt: AttemptOutcome): BrainTurnResult {
+  if (attempt.outcome === 'done') return attempt.result;
+  throw new Error('managed brain: a non-escalatable attempt tried to escalate');
+}
+
 export async function runManagedTurn(
   agent: Agent,
   conversation: Conversation,
   subscriber: Subscriber,
   history: ConversationMessage[],
   inbound: ConversationMessage,
-  opts?: {
-    onModelCall?: () => void;
-    /** Fired BEFORE each tool executes — drives the plan card's per-step post. */
-    onToolCall?: (tool: string, input: Record<string, unknown>) => void | Promise<void>;
-    /** Fired AFTER each tool executes — closes that step (done/error). */
-    onToolResult?: (tool: string, ok: boolean) => void | Promise<void>;
-    /**
-     * Phase A4: run this turn on a candidate system prompt and/or model INSTEAD
-     * of the agent row's. Set only by the eval-run driver (pre-save check);
-     * nothing is written back to the agent.
-     */
-    candidate?: CandidateConfig;
-  },
+  opts?: RunTurnOpts,
 ): Promise<BrainTurnResult> {
   const client = await buildManagedClient(agent);
 
@@ -406,20 +571,13 @@ export async function runManagedTurn(
       : '') +
     'Never mention this reminder.</platform_reminder>';
 
-  const messages: Anthropic.MessageParam[] = [
+  // Assembled ONCE, never mutated: each attempt runs on its own copy (see
+  // runTurnAttempt), which is what makes an escalated re-run a clean room.
+  const baseMessages: Anthropic.MessageParam[] = [
     ...buildHistory(history),
     { role: 'user' as const, content: userText(inbound) + reminder },
   ];
 
-  let resolved = false;
-  // LAW (reasoning-leak guard): allow at most ONE corrective re-ask per turn
-  // when the model ships its internal deliberation as the reply text.
-  let leakRetried = false;
-  // Presentation state, not an effect: ONE slot shared by all three
-  // presentation tools (buttons/choices/input), so the last call across ANY
-  // of them wins — a reply carries buttons XOR a card, never both. Survives
-  // only if the turn ends with reply text to carry it.
-  let presentation: { buttons?: ReplyButton[]; card?: Card } | undefined;
   const usage: TurnUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -431,19 +589,126 @@ export async function runManagedTurn(
   // (D5) — the same model/tool events, but persisted on the transcript row so
   // the dashboard can render a turn with no trace backend. Bounded by
   // MAX_MODEL_CALLS (plus that turn's tool calls), so it can't grow unbounded.
+  //
+  // A6: `events` and `usage` are shared by BOTH attempts and never rewound, so
+  // an escalated turn shows the whole truth — the cheap model's calls first,
+  // then the strong model's — and the Turn Inspector renders it as what it was:
+  // two model calls, on two different `model` values, one wasted. A discarded
+  // attempt is discarded from the model's CONTEXT, never from the bill.
   const start = Date.now();
   const events: TurnTraceEvent[] = [];
   const trace = (): TurnTrace => ({ totalMs: Date.now() - start, events });
+
+  const ctx: AttemptContext = {
+    agent,
+    conversation,
+    subscriber,
+    inbound,
+    client,
+    tools,
+    systemBlocks,
+    baseMessages,
+    defsByName,
+    retrieval,
+    opts,
+    usage,
+    events,
+    trace,
+    state: { resolved: false },
+  };
+
+  // ---- Phase A6: the router ----
+  // PRECEDENCE — candidate > routing > agent default. A candidate turn is an
+  // eval/canary run grading one SPECIFIC config; rerouting it to a cheap model
+  // would grade a config nobody asked about and quietly corrupt the scores (and
+  // a pre-save check that passed on the cheap model proves nothing about the
+  // edit). So `opts.candidate` switches the router off entirely for that turn.
+  const strongModel = opts?.candidate?.model ?? agent.model ?? DEFAULT_MODEL;
+  const routingCfg = agent.routing;
+  // Every clause is a real guard, not a formality: the column is jsonb, so a row
+  // can hold anything, and an ENABLED router with no cheap model has nothing to
+  // route to. '' means "routing does not apply", which is exactly today's path.
+  const cheapModel =
+    !opts?.candidate && routingCfg?.enabled === true && typeof routingCfg.cheapModel === 'string'
+      ? routingCfg.cheapModel.trim()
+      : '';
+
+  if (cheapModel.length === 0) {
+    // Routing off / misconfigured / overridden: byte-identical to pre-A6 — one
+    // attempt on the agent's model, and NO `routing` key on the result.
+    return mustFinish(await runTurnAttempt(ctx, strongModel, false));
+  }
+
+  const cheap = await runTurnAttempt(ctx, cheapModel, true);
+  if (cheap.outcome === 'done') {
+    return { ...cheap.result, routing: { model: cheapModel, escalated: false } };
+  }
+
+  // ESCALATION. The cheap attempt executed nothing consequential (the safe-tool
+  // law is checked before any tool runs), so the turn is re-run from scratch: a
+  // fresh copy of baseMessages, a fresh MAX_MODEL_CALLS budget — it is a new
+  // turn, and the cheap attempt's calls do not spend the strong model's rounds.
+  //
+  // WORST CASE, stated plainly: one wasted cheap round-trip. Cost is
+  // (cheap turn + strong turn) ≈ 1.05-1.15x a plain strong turn, and latency is
+  // the cheap attempt's wall-clock added in front of the normal turn — usually
+  // the smallest, fastest call of the turn, since escalation is decided on the
+  // FIRST response that asks for a tool. The win is that tier-1 traffic (chat
+  // that never reaches for anything) never pays for the strong model at all.
+  const strong = mustFinish(await runTurnAttempt(ctx, strongModel, false));
+  return {
+    ...strong,
+    routing: {
+      model: strongModel,
+      escalated: true,
+      ...(cheap.trigger ? { trigger: cheap.trigger } : {}),
+    },
+  };
+}
+
+/**
+ * ONE attempt at the whole turn on ONE model: the bounded model-call loop.
+ *
+ * `escalatable` marks this as the CHEAP attempt, and turns on exactly two extra
+ * behaviors — the safe-tool law and error-escalation. A non-escalatable attempt
+ * behaves exactly as the pre-A6 loop did, line for line.
+ */
+async function runTurnAttempt(
+  ctx: AttemptContext,
+  model: string,
+  escalatable: boolean,
+): Promise<AttemptOutcome> {
+  const { agent, conversation, subscriber, inbound, client, tools, systemBlocks } = ctx;
+  const { defsByName, retrieval, opts, usage, events, trace, state } = ctx;
+  // FRESH per attempt: the loop only ever pushes, so a shallow copy is a real
+  // isolation boundary. The strong re-run therefore starts from the same prompt
+  // the cheap attempt started from — no cheap assistant turns, no cheap
+  // tool_results, no "you already tried this" hint. It cannot tell there was a
+  // first attempt, which is the whole point: a discarded attempt must not be
+  // able to steer the model that replaces it.
+  const messages: Anthropic.MessageParam[] = [...ctx.baseMessages];
+  // LAW (reasoning-leak guard): allow at most ONE corrective re-ask per turn
+  // when the model ships its internal deliberation as the reply text. Per
+  // ATTEMPT, not per turn: the strong re-run is a fresh turn and gets its own.
+  let leakRetried = false;
+  // Presentation state, not an effect: ONE slot shared by all three
+  // presentation tools (buttons/choices/input), so the last call across ANY
+  // of them wins — a reply carries buttons XOR a card, never both. Survives
+  // only if the turn ends with reply text to carry it. Never crosses an
+  // escalation: all three presentation tools are NON-safe, so a cheap attempt
+  // that calls one has already escalated before this could be set.
+  let presentation: { buttons?: ReplyButton[]; card?: Card } | undefined;
 
   for (let call = 1; call <= MAX_MODEL_CALLS; call += 1) {
     // Pulse the "composing" indicator at the start of each model round.
     opts?.onModelCall?.();
     let response: Anthropic.Message;
-    // A4: a candidate model overrides the agent's for this turn only. It rides
-    // the agent's OWN client (creds + base URL are the agent's), so the
-    // candidate must be a model that endpoint serves — an unknown id comes back
-    // 400 and surfaces as a PermanentError, exactly like a bad agent.model.
-    const model = opts?.candidate?.model ?? agent.model ?? DEFAULT_MODEL;
+    // `model` is resolved by the caller: the A4 candidate override, the A6
+    // cheap model, or the agent's own — all three ride the agent's OWN client
+    // (creds + base URL are the agent's), so whichever it is must be a model
+    // that endpoint serves. An unknown id comes back 400; for a plain or
+    // candidate turn that surfaces as a PermanentError exactly as before, and
+    // for a cheap attempt it escalates (see the catch below).
     const callStart = Date.now();
     try {
       // D5: the model call rides an OTel span; withSpan is a no-op wrapper when
@@ -462,6 +727,23 @@ export async function runManagedTurn(
       // trace only survives if a LATER persist point runs, and a thrown call is
       // rethrown exactly as before (no new persistence path for crashes).
       events.push({ t: 'model_call', ms: Date.now() - callStart, inputTokens: 0, outputTokens: 0, stopReason: 'error', model });
+      // A6 ERROR-ESCALATION. A cheap model that 400s on an unknown id, rejects
+      // the key, or returns something unparseable is a ROUTING fault, and a
+      // routing fault must never cost the customer their answer: warn, throw the
+      // attempt away, and run the turn the way it would have run before A6. A
+      // misconfigured router therefore degrades to exactly today's behavior
+      // (at the price of one wasted round-trip per turn) instead of taking the
+      // agent down — which is why cheapModel can be free text with no default.
+      // Deliberately catches EVERY error class, transient included: retrying a
+      // flaky cheap model in-band would add latency to a turn we can serve now.
+      // Strong-model errors fall through to the unchanged classification below.
+      if (escalatable) {
+        logger.warn(
+          { agent: agent.identifier, model, err: (err as Error).message },
+          'cheap model call failed — escalating this turn to the strong model',
+        );
+        return { outcome: 'escalate' };
+      }
       // Config mistakes must not retry-storm the provider: surface them in
       // the transcript instead. Everything else is worth another attempt.
       if (
@@ -505,28 +787,64 @@ export async function runManagedTurn(
     });
 
     // Check stop_reason before reading content (refusals can carry none).
+    // NOT an escalation trigger, deliberately: a refusal is a completed turn
+    // with an honest outcome, and the A6 law is STRUCTURAL — "did the model
+    // reach for a consequential tool" — never "was the answer good enough".
+    // Escalating on refusal would be a model judging a model.
     if (response.stop_reason === 'refusal') {
       logger.info({ agent: agent.identifier }, 'managed brain refused the turn');
-      return { reply: null, resolved, note: 'the model declined to answer this message', usage, trace: trace() };
+      return {
+        outcome: 'done',
+        result: {
+          reply: null,
+          resolved: state.resolved,
+          note: 'the model declined to answer this message',
+          usage,
+          trace: trace(),
+        },
+      };
     }
 
     messages.push({ role: 'assistant', content: response.content });
 
     if (response.stop_reason === 'tool_use') {
+      const toolUses = response.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
+      );
+
+      // ---- A6 THE SAFE-TOOL LAW ----
+      // ORDERING IS THE WHOLE GUARANTEE: every tool_use block in this response
+      // is inspected BEFORE any of them executes. A response asking for
+      // set_metadata AND a refund therefore executes NEITHER — a mixed response
+      // escalates whole. Skipping the safe half costs nothing (the strong re-run
+      // will decide about metadata itself, and its set_metadata would be an
+      // idempotent keyed upsert anyway); executing it would mean a discarded
+      // attempt left effects behind, which is the wrong shape even when the
+      // effect is harmless. "Discarded" has to mean discarded.
+      //
+      // This check sits ABOVE the loop-limit return on purpose: a cheap attempt
+      // that reaches its last permitted call still asking for a consequential
+      // tool should hand the turn to the strong model with a full fresh budget,
+      // not ship "tool loop limit reached" to the customer.
+      if (escalatable) {
+        const unsafe = toolUses.find((use) => !SAFE_TOOLS.has(use.name));
+        if (unsafe) return { outcome: 'escalate', trigger: unsafe.name };
+      }
+
       if (call === MAX_MODEL_CALLS) {
         // Still asking for tools on the last permitted call: stop here.
         // Effects already executed are applied and idempotent.
         return {
-          reply: null,
-          resolved,
-          note: 'tool loop limit reached before a final reply',
-          usage,
-          trace: trace(),
+          outcome: 'done',
+          result: {
+            reply: null,
+            resolved: state.resolved,
+            note: 'tool loop limit reached before a final reply',
+            usage,
+            trace: trace(),
+          },
         };
       }
-      const toolUses = response.content.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
-      );
       // Execute ALL requested tools; return ALL results in ONE user message
       // (splitting them trains the model out of parallel calls).
       const results: Anthropic.ToolResultBlockParam[] = [];
@@ -547,8 +865,10 @@ export async function runManagedTurn(
           { agent: agent.identifier, tool: use.name },
           () =>
             executeTool(use, agent, conversation, subscriber, inbound, defsByName, retrieval, {
+              // Writes THROUGH to turn state, not attempt state: by the time
+              // this fires the row is already `status='resolved'` in Postgres.
               onResolve: () => {
-                resolved = true;
+                state.resolved = true;
               },
               onButtons: (presented) => {
                 presentation = { buttons: presented };
@@ -591,7 +911,10 @@ export async function runManagedTurn(
         // a teammate" is harmless (there's no false claim to parrot). Contrast
         // the budget-pause note, which is platform bookkeeping the model never
         // authored — that one is tagged and excluded from replay.
-        return { reply: note, resolved, usage, trace: trace() };
+        //
+        // Unreachable on a cheap attempt: approval-gated tools are customer
+        // tools, which are never safe, so the attempt escalated above.
+        return { outcome: 'done', result: { reply: note, resolved: state.resolved, usage, trace: trace() } };
       }
       continue;
     }
@@ -643,12 +966,15 @@ export async function runManagedTurn(
         continue;
       }
       return {
-        reply: REASONING_LEAK_FALLBACK,
-        resolved,
-        note: 'suppressed a reasoning leak in the reply and asked the customer to rephrase',
-        platformNote: true,
-        usage,
-        trace: trace(),
+        outcome: 'done',
+        result: {
+          reply: REASONING_LEAK_FALLBACK,
+          resolved: state.resolved,
+          note: 'suppressed a reasoning leak in the reply and asked the customer to rephrase',
+          platformNote: true,
+          usage,
+          trace: trace(),
+        },
       };
     }
 
@@ -661,19 +987,31 @@ export async function runManagedTurn(
     if (reply.length === 0) notes.push('the model produced no reply text');
 
     return {
-      reply: reply.length > 0 ? reply : null,
-      // No reply text -> nothing to attach the presentation to; it drops here.
-      buttons: reply.length > 0 ? presentation?.buttons : undefined,
-      card: reply.length > 0 ? presentation?.card : undefined,
-      resolved,
-      note: notes.length > 0 ? notes.join(' · ') : undefined,
-      usage,
-      trace: trace(),
+      outcome: 'done',
+      result: {
+        reply: reply.length > 0 ? reply : null,
+        // No reply text -> nothing to attach the presentation to; it drops here.
+        buttons: reply.length > 0 ? presentation?.buttons : undefined,
+        card: reply.length > 0 ? presentation?.card : undefined,
+        resolved: state.resolved,
+        note: notes.length > 0 ? notes.join(' · ') : undefined,
+        usage,
+        trace: trace(),
+      },
     };
   }
 
   // Unreachable (the cap returns inside the loop), but keep TS satisfied.
-  return { reply: null, resolved, note: 'tool loop limit reached before a final reply', usage, trace: trace() };
+  return {
+    outcome: 'done',
+    result: {
+      reply: null,
+      resolved: state.resolved,
+      note: 'tool loop limit reached before a final reply',
+      usage,
+      trace: trace(),
+    },
+  };
 }
 
 /**

@@ -1,5 +1,6 @@
 import { pool } from './pool';
 import { emitTenantEvent } from '../core/tenant-events';
+import type { RoutingConfig } from '../core/managed-brain';
 
 /**
  * Agents + conversations repository. An agent is a customer-registered
@@ -53,6 +54,13 @@ export interface Agent {
    * Promote clear it.
    */
   canary_sample_percent: number | null;
+  /**
+   * A6: cheap-first model routing, or null = off (the default, and what every
+   * pre-A6 row holds). The shape is owned by the brain — it is the brain that
+   * applies it — so this is a type-only import and adds no runtime dependency
+   * from the repo layer onto core/.
+   */
+  routing: RoutingConfig | null;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;
