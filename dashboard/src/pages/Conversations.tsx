@@ -316,10 +316,18 @@ function MessageTrace({
           {trace.events.map((e, i) => {
             if (e.t === 'model_call') {
               modelN += 1;
+              // A6: the model id matters now — a routed turn can mix a cheap
+              // and a strong model in one trace, and "which model said this"
+              // is the whole point of the router. Highlighted when the trace
+              // contains more than one distinct model (an escalated turn), so
+              // the ordinary single-model case stays as quiet as before.
+              const mixedModels = new Set(modelCalls.map((c) => c.model)).size > 1;
               return (
                 <div key={i} className="text-[11px]">
                   <Mono className="text-t3">
-                    model call #{modelN} · {fmtMs(e.ms)} · {e.inputTokens} in / {e.outputTokens} out
+                    model call #{modelN} ·{' '}
+                    <span className={mixedModels ? 'text-t1' : undefined}>{e.model}</span> ·{' '}
+                    {fmtMs(e.ms)} · {e.inputTokens} in / {e.outputTokens} out
                     {e.cacheRead != null && e.cacheRead > 0 && (
                       <span title="prompt tokens served from provider cache">
                         {' '}· cached {e.cacheRead.toLocaleString()}
