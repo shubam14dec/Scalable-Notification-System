@@ -1,5 +1,12 @@
 # @asyncify-hq/node
 
+## 0.8.3
+
+### Patch Changes
+
+- 2a2b607: Prompt versioning and canary trials are now typed on the client. `agents.versions.list / get / restore` reads a managed agent's append-only prompt history — restore is a save, not a rewind: it publishes an old snapshot as a NEW version and reports both numbers. `agents.canary.start / stop / promote / report` trials a version on a percentage of real conversations (sticky per conversation) and returns the per-arm comparison: counters for both arms plus judged averages sampled from each at the same rate, as `CanaryReport` / `CanaryArmReport`. `Agent` gains the `promptVersion` and `canary` fields the API has been sending. Managed agents only; a bridge agent answers 400, and a second concurrent trial is a 409.
+- 620a8d5: README now documents the `agents.evals` surface (present since 0.5.0 but previously undocumented): creating scenarios, running them, pre-save candidate runs, and reading `judged[]` verdicts — with the skipped-is-not-a-pass rule.
+
 ## 0.8.2
 
 ### Patch Changes
