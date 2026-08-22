@@ -17,6 +17,7 @@ import {
   deniedResult,
   type TurnUsage,
   type TurnTrace,
+  type CandidateConfig,
 } from '../../core/managed-brain';
 import { pool } from '../../db/pool';
 import { enqueueSummarize } from '../../core/episodic';
@@ -85,6 +86,15 @@ export interface ConversationJobData {
   resolvedBy?: 'bridge' | 'operator' | 'sweep';
   /** On 'tool-decision' jobs: the agent_tool_calls row to resume. */
   toolCallId?: string;
+  /**
+   * INTERNAL (Phase A4) — never accepted from a request body. A candidate
+   * system prompt / model this ONE turn runs on instead of the agent row's,
+   * stamped only by the eval-run processor's in-process driver (pre-save eval
+   * runs). Every public enqueue site — POST /v1/agents/:id/messages, /actions,
+   * the channel webhooks — builds its job payload from an explicit field list,
+   * never a spread of the request body, so a caller cannot inject this.
+   */
+  evalCandidate?: CandidateConfig;
 }
 
 const BRIDGE_TIMEOUT_MS = 10_000;
@@ -298,6 +308,10 @@ async function processTurn(data: ConversationJobData): Promise<void> {
         },
         onToolCall: planCard?.onToolCall,
         onToolResult: planCard?.onToolResult,
+        // A4: present ONLY on turns driven by a candidate eval run. Reached
+        // only inside this managed branch, so a bridge agent can never be run
+        // on a candidate config even if a job somehow carried one.
+        ...(data.evalCandidate ? { candidate: data.evalCandidate } : {}),
       });
       reply = turn.reply ?? undefined;
       buttons = turn.buttons;

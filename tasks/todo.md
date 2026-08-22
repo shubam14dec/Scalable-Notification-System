@@ -6,6 +6,37 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A4 — pre-save eval runs (plan approved 2026-08-22)
+The customer-dashboard door gets its guard: Save on a changed managed
+prompt runs the agent's own evals against the EDITED prompt BEFORE the
+edit commits — WARN, NEVER BLOCK ("Save anyway" always works; the
+blocking gate is A3's job on OUR repo). Design: `candidate
+{systemPrompt?, model?}` override rides the eval run and reaches the
+brain at assembly time — real agent, real tools/guards/knowledge, only
+the prompt swapped; never save-then-revert (bad prompt must never be
+live during the check), never a shadow clone (drift + lifecycle).
+`model` included now because A5 canary reuses this knob. DISCOVERY at
+planning: conversation→eval ("Save as eval" button, client-side
+draftScenarioFromTranscript, saved disabled) ALREADY SHIPPED in P22 —
+the A4 backlog line overstated scope; slice cut.
+- [ ] Slice A — candidate runs: POST evals/runs accepts candidate
+      (managed only, bridge 400); additive `candidate` jsonb on
+      agent_eval_runs (results attributable to the prompt they graded);
+      override plumbed run job → driver → inbound job → conversation
+      processor → managed brain, INTERNAL-only (never on the public
+      message API); wire-capture test proves the candidate prompt is
+      what reached the LLM; byte-compat for non-candidate runs.
+- [ ] Slice B — pre-save flow: agent editor Save (managed + ≥1 enabled
+      eval + prompt/model changed) → candidate run panel → existing
+      chips/judged UI + per-scenario delta vs latest completed normal
+      run (new fail / new pass / still failing / unchanged) → Save /
+      Save anyway / Cancel; no-evals → today's save + quiet hint; run
+      error → honest message + save-anyway (never trap the user).
+- [ ] Slice C — docs+close-out: guide §10 pre-save story (+ align the
+      existing Save-as-eval button into it), AGENT-TOOLS, capability
+      checklist, gap-analysis A4 line, sdk-node candidate type +
+      changeset, todo review, INTERVIEW-PREP.
+
 ### Phase A3 — SHIPPED 2026-08-22 (review) — LIVE-PROVEN same day
 Pushed 2026-08-22 (b566c74 + d72b62c). THE DEBUT: the gate's FIRST CI
 run caught refund-path silently red (same July approval-required rot as
@@ -113,9 +144,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       handoff + P22 alerts + A10 alerting). Blocking-mode rejected
       (2x cost, +2-4s every reply).
 - [x] A3. CI eval gate — SHIPPED 2026-08-22, review above.
-- [ ] A4. Customer-facing pre-save eval runs — "3/12 scenarios
-      regressed" before a prompt edit saves; one-click
-      prod-conversation → eval-case.
+- (IN PROGRESS above) A4. Pre-save eval runs. (Its second half —
+      one-click prod-conversation → eval-case — turned out ALREADY
+      SHIPPED in P22: "Save as eval" on the conversation page.)
 - [ ] A5. Prompt versioning + canary — template-versioning pattern on
       agent prompts; canary = % of turns on the new prompt with judged
       comparison (needs A2/A3 to judge the canary).

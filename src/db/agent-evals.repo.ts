@@ -5,6 +5,7 @@
  */
 import { pool } from './pool';
 import type { JudgeVerdictRecord } from '../core/eval-runner';
+import type { CandidateConfig } from '../core/managed-brain';
 
 export interface AgentEval {
   id: string;
@@ -43,6 +44,13 @@ export interface AgentEvalRun {
   status: EvalRunStatus;
   trigger: 'manual' | 'pre_save';
   results: EvalRunScenarioResult[];
+  /**
+   * A4: the candidate config this run GRADED, verbatim — so a stored result is
+   * attributable to the config that produced it, not to whatever the agent row
+   * says today. NULL (the column default) on every ordinary run; readers must
+   * treat null and absent alike, and the API view omits the key entirely.
+   */
+  candidate: CandidateConfig | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -135,12 +143,14 @@ export async function createRun(d: {
   tenantId: string;
   agentId: string;
   trigger: 'manual' | 'pre_save';
+  /** A4: absent = an ordinary run against the agent's live config. */
+  candidate?: CandidateConfig;
 }): Promise<AgentEvalRun> {
   const { rows } = await pool.query(
-    `insert into agent_eval_runs (tenant_id, agent_id, trigger)
-     values ($1,$2,$3)
+    `insert into agent_eval_runs (tenant_id, agent_id, trigger, candidate)
+     values ($1,$2,$3,$4)
      returning *`,
-    [d.tenantId, d.agentId, d.trigger],
+    [d.tenantId, d.agentId, d.trigger, d.candidate ? JSON.stringify(d.candidate) : null],
   );
   return rows[0];
 }

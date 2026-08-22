@@ -45,7 +45,7 @@ import {
   type Scenario,
 } from '../../core/eval-runner';
 import { judgeTemperatureFor, type JudgeClient } from '../../core/eval-judge';
-import { buildManagedClient } from '../../core/managed-brain';
+import { buildManagedClient, type CandidateConfig } from '../../core/managed-brain';
 
 export interface EvalRunJobData {
   runId: string;
@@ -56,8 +56,17 @@ export interface EvalRunJobData {
  * server-side work (agents.ts), bound to one tenant + agent. Kept as a small
  * replica rather than a shared extraction so this slice touches neither the
  * messages route nor conversation.processor.ts (owned elsewhere).
+ *
+ * A4: this replica is deliberately where the two paths DIVERGE — a candidate
+ * run stamps `evalCandidate` on each conversation job it enqueues. The public
+ * route builds the same payload from a fixed field list and never sets it, so
+ * the override is reachable only from an eval run.
  */
-function inProcessDriver(tenantId: string, agentId: string): EvalDriver {
+function inProcessDriver(
+  tenantId: string,
+  agentId: string,
+  candidate?: CandidateConfig,
+): EvalDriver {
   return {
     async sendTurn({ subscriberId, text, turnIndex }) {
       const dedupeKey = `${subscriberId}-t${turnIndex}`;
@@ -83,7 +92,15 @@ function inProcessDriver(tenantId: string, agentId: string): EvalDriver {
       }
       await getQueue(QUEUE.CONVERSATION).add(
         message.id,
-        { tenantId, conversationId: conversation.id, messageId: message.id },
+        {
+          tenantId,
+          conversationId: conversation.id,
+          messageId: message.id,
+          // A4: THE override hop. Stamped here and nowhere else — the public
+          // message route builds its payload from this same explicit field
+          // list, so `evalCandidate` can only ever originate from an eval run.
+          ...(candidate ? { evalCandidate: candidate } : {}),
+        },
         { jobId: `conv-${message.id}`, attempts: 5 },
       );
       return { conversationId: conversation.id, inboundRowId: message.id };
@@ -149,15 +166,31 @@ export function usesJudge(sc: Scenario): boolean {
  * `buildClient` is injected for tests (house DI style); production takes the
  * default. It is NOT a second parameter on processEvalRun because BullMQ passes
  * a token there (workers/index.ts registers the processor directly).
+ *
+ * A4 — `candidate` (last, so the existing 3-arg callers are untouched): a run
+ * grading a candidate config JUDGES WITH THAT CONFIG. Both overrides apply:
+ *   - systemPrompt: the tone dimension grades "does this reply match the
+ *     persona?" — the persona under test is the CANDIDATE one, so grading a
+ *     candidate reply against the old persona would score the wrong question.
+ *   - model: A2's documented tradeoff is that the agent judges itself; the
+ *     config under test IS the candidate, so keeping judge and subject on the
+ *     same model preserves that property rather than quietly mixing two.
+ * The judge still rides the AGENT's client (creds/base URL are the agent's —
+ * a candidate carries no credentials), and the temperature predicate runs on
+ * the EFFECTIVE model, so a candidate switch to a modern claude id correctly
+ * drops `temperature` instead of 400-ing.
  */
 export async function buildJudgeOptions(
   agent: Agent,
   scenarios: Array<{ name: string; sc: Scenario }>,
   buildClient: (a: Agent) => Promise<JudgeClient> = buildManagedClient,
+  candidate?: CandidateConfig,
 ): Promise<JudgeRunOptions | undefined> {
   if (agent.runtime !== 'managed') return undefined;
   if (!scenarios.some((s) => usesJudge(s.sc))) return undefined;
-  if (!agent.model) {
+  const model = candidate?.model ?? agent.model;
+  const systemPrompt = candidate?.systemPrompt ?? agent.system_prompt;
+  if (!model) {
     logger.warn({ agent: agent.identifier }, 'eval judge skipped: managed agent has no model');
     return undefined;
   }
@@ -174,9 +207,9 @@ export async function buildJudgeOptions(
   }
   return {
     client,
-    model: agent.model,
-    systemPrompt: agent.system_prompt,
-    temperature: judgeTemperatureFor(agent.model),
+    model,
+    systemPrompt,
+    temperature: judgeTemperatureFor(model),
   };
 }
 
@@ -209,6 +242,20 @@ export async function processEvalRun(job: Job<EvalRunJobData>): Promise<void> {
     return;
   }
 
+  // A4: the candidate rides the RUN ROW (not the job payload) — one durable
+  // source of truth, so a retried job grades exactly what the stored results
+  // are attributed to. Bridge agents are already refused at the API; this is
+  // the defensive twin of buildJudgeOptions' runtime guard, for a row written
+  // before that check existed or edited by hand.
+  let candidate = run.candidate ?? undefined;
+  if (candidate && agent.runtime !== 'managed') {
+    logger.warn(
+      { runId, agent: agent.identifier },
+      'candidate override ignored: agent is not managed',
+    );
+    candidate = undefined;
+  }
+
   const evals = await listEnabledEvals(run.tenant_id, run.agent_id);
   const scenarios = evals.map((ev) => ({ name: ev.name, sc: ev.scenario as unknown as Scenario }));
 
@@ -216,19 +263,23 @@ export async function processEvalRun(job: Job<EvalRunJobData>): Promise<void> {
     tenantId: run.tenant_id,
     transactionId: `eval-run-${runId}`,
     level: 'info',
-    detail: `eval run started: agent=${agent.identifier} scenarios=${scenarios.length}`,
+    detail:
+      `eval run started: agent=${agent.identifier} scenarios=${scenarios.length}` +
+      (candidate ? ' (candidate config)' : ''),
   });
 
   // A2: LLM-graded expects run on the agent's OWN client (self-judge bias is a
   // documented tradeoff; a judgeModel override is future work). Absent =
   // assertions-only, never a hard failure — see buildJudgeOptions.
-  const judge = await buildJudgeOptions(agent, scenarios);
+  // A4: on a candidate run the judge grades against the config under test (see
+  // buildJudgeOptions), not the agent row's stale prompt/model.
+  const judge = await buildJudgeOptions(agent, scenarios, buildManagedClient, candidate);
 
   let status: 'passed' | 'failed' | 'error';
   let stored: EvalRunScenarioResult[];
   try {
     const results = await runScenarios(scenarios, {
-      driver: inProcessDriver(run.tenant_id, run.agent_id),
+      driver: inProcessDriver(run.tenant_id, run.agent_id, candidate),
       nonce: runId,
       ...(judge === undefined ? {} : { judge }),
     });

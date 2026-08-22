@@ -40,6 +40,10 @@ function runView(row: AgentEvalRun) {
     status: row.status,
     trigger: row.trigger,
     results: row.results,
+    // A4, ADDITIVE: present ONLY on a run started with a candidate override, so
+    // the Evals view can say "this run graded the edited prompt". A plain run's
+    // response keeps its exact pre-A4 key set — absent, never null.
+    ...(row.candidate ? { candidate: row.candidate } : {}),
     startedAt: row.started_at,
     finishedAt: row.finished_at,
   };
@@ -61,8 +65,26 @@ const UpdateEvalSchema = z
     message: 'no fields to update',
   });
 
+/**
+ * A4: the config a run should GRADE instead of the agent's live one — the
+ * dashboard's pre-save check ("does the edited prompt still pass?") and, later,
+ * A5's canary. Caps mirror the agent-create route's own (agents.ts): model
+ * 1..255, systemPrompt up to 100k — a candidate must be something the agent
+ * could actually be saved with. At least one key, or there is no override to
+ * make (an empty object is a caller bug, not "use the agent's config").
+ */
+const CandidateSchema = z
+  .object({
+    systemPrompt: z.string().min(1).max(100_000).optional(),
+    model: z.string().min(1).max(255).optional(),
+  })
+  .refine((c) => c.systemPrompt !== undefined || c.model !== undefined, {
+    message: 'candidate needs systemPrompt and/or model',
+  });
+
 const RunEvalSchema = z.object({
   trigger: z.enum(['manual', 'pre_save']).optional(),
+  candidate: CandidateSchema.optional(),
 });
 
 export function registerAgentEvalRoutes(app: FastifyInstance) {
@@ -158,12 +180,26 @@ export function registerAgentEvalRoutes(app: FastifyInstance) {
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
 
+      // A4: a candidate is a MANAGED-runtime concept. A bridge agent's brain is
+      // the customer's own code behind a signed URL — there is no prompt or
+      // model here to override — so accepting one would be a lie about what the
+      // run graded. The worker skips it defensively too (eval-run.processor).
+      const candidate = parsed.data.candidate;
+      if (candidate && agent.runtime !== 'managed') {
+        return reply.code(400).send({
+          error:
+            'candidate runs need a managed agent: a bridge agent’s brain is your own code, not a prompt',
+        });
+      }
+
       // The run row (status 'running') is the durable handle the poller reads;
-      // the job carries only its id. jobId = runId dedupes a double-submit.
+      // the job carries only its id — the candidate rides the ROW, so a retried
+      // job and the stored results can never disagree about what was graded.
       const run = await createRun({
         tenantId: req.tenant.id,
         agentId: agent.id,
         trigger: parsed.data.trigger ?? 'manual',
+        ...(candidate ? { candidate } : {}),
       });
       await getQueue(QUEUE.EVAL_RUN).add('eval-run', { runId: run.id }, { jobId: `eval-run-${run.id}` });
 

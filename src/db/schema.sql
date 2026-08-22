@@ -817,3 +817,11 @@ alter table conversations add column if not exists rolling_upto uuid;
 -- claim to be a person WITHOUT a new query or a fragile string-match on the
 -- summary text — the flag rides the conversation row already loaded per turn.
 alter table conversations add column if not exists had_human boolean not null default false;
+
+-- ---- Phase A4 Slice A: candidate (pre-save) eval runs ----
+-- The config a run GRADED, verbatim: {systemPrompt?, model?}. Set only when the
+-- run was started with an override (the dashboard's pre-save check runs the
+-- agent's evals against the EDITED prompt before it is committed), so every
+-- stored result is attributable to the config that produced it. NULL on every
+-- ordinary run — pre-A4 rows and plain runs keep their exact previous shape.
+alter table agent_eval_runs add column if not exists candidate jsonb;

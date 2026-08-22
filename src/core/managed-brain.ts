@@ -157,6 +157,21 @@ export interface BrainTurnResult {
   trace: TurnTrace;
 }
 
+/**
+ * Phase A4 — a CANDIDATE config for one turn: the agent row's `system_prompt`
+ * and/or `model` replaced at assembly time, nothing persisted. Owned here
+ * because the brain is what applies it (the eval repo, the eval-run processor
+ * and the conversation job all import this type rather than redeclare it).
+ *
+ * It reaches a turn ONLY through an eval run (pre-save check / A5 canary) — it
+ * is never accepted from the public message API. Everything else about the turn
+ * stays the agent's real config: tools, guards, knowledge, memory, budgets.
+ */
+export interface CandidateConfig {
+  systemPrompt?: string;
+  model?: string;
+}
+
 interface Subscriber {
   external_id: string;
   email: string | null;
@@ -247,12 +262,18 @@ export async function runManagedTurn(
   subscriber: Subscriber,
   history: ConversationMessage[],
   inbound: ConversationMessage,
-  hooks?: {
+  opts?: {
     onModelCall?: () => void;
     /** Fired BEFORE each tool executes — drives the plan card's per-step post. */
     onToolCall?: (tool: string, input: Record<string, unknown>) => void | Promise<void>;
     /** Fired AFTER each tool executes — closes that step (done/error). */
     onToolResult?: (tool: string, ok: boolean) => void | Promise<void>;
+    /**
+     * Phase A4: run this turn on a candidate system prompt and/or model INSTEAD
+     * of the agent row's. Set only by the eval-run driver (pre-save check);
+     * nothing is written back to the agent.
+     */
+    candidate?: CandidateConfig;
   },
 ): Promise<BrainTurnResult> {
   const client = await buildManagedClient(agent);
@@ -295,8 +316,13 @@ export async function runManagedTurn(
   // <customer_profile> section). Slice C will send these as two cache_control
   // blocks with the marker on `stable`; for now we send the plain concatenation
   // so behavior is unchanged except for the new profile section.
+  // A4: the candidate prompt is swapped in HERE, at assembly time — the agent
+  // row is never touched, so a bad prompt is never live. Note it necessarily
+  // busts the stable prompt-cache prefix below (a different prefix = a fresh
+  // cache entry); that is expected and fine for eval runs, and no caching code
+  // changes for it.
   const { stable, volatile } = buildSystem(
-    agent.system_prompt,
+    opts?.candidate?.systemPrompt ?? agent.system_prompt,
     retrieval,
     profile,
     conversation.rolling_summary,
@@ -411,9 +437,13 @@ export async function runManagedTurn(
 
   for (let call = 1; call <= MAX_MODEL_CALLS; call += 1) {
     // Pulse the "composing" indicator at the start of each model round.
-    hooks?.onModelCall?.();
+    opts?.onModelCall?.();
     let response: Anthropic.Message;
-    const model = agent.model ?? DEFAULT_MODEL;
+    // A4: a candidate model overrides the agent's for this turn only. It rides
+    // the agent's OWN client (creds + base URL are the agent's), so the
+    // candidate must be a model that endpoint serves — an unknown id comes back
+    // 400 and surfaces as a PermanentError, exactly like a bad agent.model.
+    const model = opts?.candidate?.model ?? agent.model ?? DEFAULT_MODEL;
     const callStart = Date.now();
     try {
       // D5: the model call rides an OTel span; withSpan is a no-op wrapper when
@@ -507,7 +537,7 @@ export async function runManagedTurn(
       for (const use of toolUses) {
         // Per-tool interleave (call → exec → result) so the plan card's
         // "close the last pending step" always lands on THIS tool's step.
-        await hooks?.onToolCall?.(use.name, use.input as Record<string, unknown>);
+        await opts?.onToolCall?.(use.name, use.input as Record<string, unknown>);
         const toolStart = Date.now();
         // D5: the tool execution rides an OTel span (no-op when OTEL is off).
         // executeTool never throws, but withSpan would rethrow if it did — so
@@ -535,7 +565,7 @@ export async function runManagedTurn(
           ok: !outcome.isError,
           ...(outcome.pausedToolName ? { paused: true as const } : {}),
         });
-        await hooks?.onToolResult?.(use.name, !outcome.isError);
+        await opts?.onToolResult?.(use.name, !outcome.isError);
         results.push({
           type: 'tool_result',
           tool_use_id: use.id,
