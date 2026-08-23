@@ -117,10 +117,19 @@ const CLASSIFY_MAX_TOKENS = 128;
  */
 export const IN_LANE = 'in_lane';
 
-/** Per-label and per-list bounds — a policy row must not blow the prompt. */
-const LABEL_MAX = 120;
-const LIST_MAX = 24;
-const REDIRECT_MAX = 2_000;
+/**
+ * Per-label and per-list bounds — a policy row must not blow the prompt.
+ *
+ * EXPORTED (slice C) so the API validates a SUBMITTED policy against the same
+ * numbers a STORED one is normalized against, the way core/reply-rules.ts
+ * already exports its own caps. Two copies of a bound is two bounds: the pair
+ * would drift the first time either moved, and the operator would meet the
+ * difference as a rule that saved fine and then silently stopped applying in
+ * full.
+ */
+export const LABEL_MAX = 120;
+export const LIST_MAX = 24;
+export const REDIRECT_MAX = 2_000;
 /** Per-row and whole-window caps on the transcript slice. */
 const ROW_MAX = 600;
 const MESSAGE_MAX = 4_000;

@@ -42,8 +42,18 @@ with the A2b blocking-mode rejection: never +2-4s on every reply).
       reasoned (fail-closed would mute an agent's whole traffic);
       candidate.topics absent = live gate applies (deliberately unlike
       routing: topics changes WHETHER anyone answers).
-- [ ] Slice B — reply rules (schema, checker, fallback + ops flag +
-      breadcrumb, candidate.moderation, tests).
+- [x] Slice B — DONE 2026-08-24 (commit e331dda, suite 876→949): pure
+      checker ("WHAT THIS GATE IS NOT" honesty — typed phrases, not
+      paraphrases); gate at the one point both reply paths converge;
+      buttons suppressed with a blocked reply; topic-redirect exempt
+      (circular); hourly ops alert carrying blockedPreviousHour, payload
+      OMITS the match/blocked text (forwarding the number we stopped
+      leaking would relocate the leak); phrases trimmed (invisible
+      trailing space must not disarm a rule — C copy says "be more
+      specific", never "add spaces"); phone boundary pinned (#1042/
+      dates/times don't match); fallback-honesty tension → C helper
+      copy ("a teammate will follow up" is safe; "I couldn't help" can
+      be a lie — tools already ran).
 - [ ] Slice C — surface (two Edit-tab cards, pre-save wiring, API/
       agentView/SDK + changeset).
 - [ ] Slice D — docs+close-out (guide §6 two-gates story, AGENT-TOOLS,

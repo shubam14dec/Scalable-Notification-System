@@ -74,7 +74,7 @@ export type ReplyRulesResult =
  */
 export const DENY_PHRASE_LIST_MAX = 100;
 export const DENY_PHRASE_MAX = 200;
-const FALLBACK_MAX = 2_000;
+export const FALLBACK_MAX = 2_000;
 
 // ---- config resolution ------------------------------------------------------
 

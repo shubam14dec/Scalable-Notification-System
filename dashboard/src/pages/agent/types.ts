@@ -43,6 +43,12 @@ export interface Agent {
    * Presence is the flag, same as `canary` above — managed agents only.
    */
   routing?: AgentRouting | null;
+  /**
+   * Phase A7: the topic gate and the reply rules, or null when never set up.
+   * Presence is the flag, same as `routing` above — managed agents only.
+   */
+  topics?: AgentTopics | null;
+  moderation?: AgentModeration | null;
   /** Phase 22 G2: per-agent daily token circuit breaker (null = off). */
   maxDailyTokens?: number | null;
   /**
@@ -81,6 +87,32 @@ export interface AgentRoutingStats {
   unroutedReplies: number;
 }
 
+/**
+ * Phase A7: the topic gate's policy. Mirrors `TopicsSchema` in
+ * src/api/routes/agents.ts (and `TopicsConfig` in the brain). `deny` beats
+ * `allow` wherever a label is in both, and a non-empty `allow` is EXHAUSTIVE:
+ * anything outside it is off-topic. `redirect` is what an off-topic message gets
+ * back, and the gate does not apply without it.
+ */
+export interface AgentTopics {
+  deny?: string[];
+  allow?: string[];
+  redirect: string;
+}
+
+/**
+ * Phase A7 slice B: the outbound reply rules. Mirrors `ModerationSchema` in
+ * src/api/routes/agents.ts. Phrases match case-insensitively as substrings;
+ * `blockPii` adds the two built-in patterns (email, phone) with the customer's
+ * OWN details always allowed. `fallback` is what ships instead of a blocked
+ * reply, and the rules do not apply without it.
+ */
+export interface AgentModeration {
+  denyPhrases?: string[];
+  blockPii?: boolean;
+  fallback: string;
+}
+
 /** An agent-speaks-first starter chip: the label plus the turn it sends. */
 export interface SuggestedPrompt {
   title: string;
@@ -108,6 +140,12 @@ export interface AgentBody {
    * not exist yet), same rule maxDailyTokens follows.
    */
   routing?: AgentRouting | null;
+  /**
+   * Phase A7: null switches a gate off and forgets its config, on exactly the
+   * terms `routing` above states — only ever sent on an EDIT.
+   */
+  topics?: AgentTopics | null;
+  moderation?: AgentModeration | null;
   llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
@@ -273,6 +311,14 @@ export interface EvalCandidate {
    * the key being ABSENT means the edit did not touch routing at all.
    */
   routing?: AgentRouting | null;
+  /**
+   * A7: the two gates to grade. Absent here means something DIFFERENT from
+   * routing's absent, deliberately: the agent's own gate applies to the run.
+   * `null` is the only way to say "grade it with this gate off" — which is what
+   * a save that switches a gate off is asking about.
+   */
+  topics?: AgentTopics | null;
+  moderation?: AgentModeration | null;
 }
 
 /** An eval run — an enqueued job; poll until status leaves 'running'. */
@@ -403,7 +449,43 @@ export function candidateLabel(candidate: EvalCandidate): string {
   // `in`, not `!== undefined`: an explicit null IS the edit (routing switched
   // off), and it is exactly the case a `!== undefined` test would hide.
   if ('routing' in candidate) parts.push('model routing');
+  // Same `in` test and the same reason: switching a gate OFF is an edit worth
+  // checking, and it travels as an explicit null.
+  if ('topics' in candidate) parts.push('topic rules');
+  if ('moderation' in candidate) parts.push('reply rules');
   return parts.join(' + ');
+}
+
+/**
+ * A7 — one list-entry box's text into the array the API stores.
+ *
+ * Entries are separated by NEWLINES OR COMMAS, so the operator can paste a list
+ * from anywhere and type it however they think of it. Each entry is trimmed
+ * (the server trims too, and a rule that quietly stops matching because of an
+ * invisible trailing space is the worst kind of guard), blanks are dropped, and
+ * duplicates are collapsed case-insensitively — both gates match
+ * case-insensitively, so two casings are one rule wherever they land.
+ *
+ * A comma inside a phrase is therefore not expressible, which is the deliberate
+ * trade: comma-splitting is what makes a pasted list work on the first try, and
+ * deny phrases earn their keep by being SHORT (see the reply-rules note on
+ * substring matching) — a phrase long enough to need punctuation is one that
+ * would over-match anyway.
+ */
+export function parseEntryList(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/[\n,]/)) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    if (out.some((e) => e.toLowerCase() === entry.toLowerCase())) continue;
+    out.push(entry);
+  }
+  return out;
+}
+
+/** The stored array back into box text — one entry per line, the readable way. */
+export function formatEntryList(list: string[] | undefined): string {
+  return (list ?? []).join('\n');
 }
 
 /**

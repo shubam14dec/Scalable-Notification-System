@@ -12,15 +12,20 @@ import { PreSaveCheck } from './PreSaveCheck';
 import {
   baselineRun,
   fmtInt,
+  formatEntryList,
+  parseEntryList,
   routingSummary,
   runAdvisory,
   runSummary,
+  TEXTAREA_CLS,
   type Agent,
   type AgentBody,
   type AgentEval,
   type AgentHealth,
+  type AgentModeration,
   type AgentRouting,
   type AgentRoutingStats,
+  type AgentTopics,
   type EvalCandidate,
   type SuggestedPrompt,
 } from './types';
@@ -121,12 +126,77 @@ export function AgentForm({
   const readRouting = (cheapModel: string): AgentRouting | null =>
     routingOn || cheapModel ? { enabled: routingOn, cheapModel } : null;
 
+  // ---- A7: the two gates ----
+  // Controlled, unlike the routing id: each list box drives its own live entry
+  // count, and the redirect/fallback fields become REQUIRED the moment their
+  // gate has something to match on — a policy that blocks with nothing to say
+  // is a mute button, and the form refuses to save one.
+  const [topicDeny, setTopicDeny] = useState(formatEntryList(initial?.topics?.deny));
+  const [topicAllow, setTopicAllow] = useState(formatEntryList(initial?.topics?.allow));
+  const [topicRedirect, setTopicRedirect] = useState(initial?.topics?.redirect ?? '');
+  const [denyPhrases, setDenyPhrases] = useState(
+    formatEntryList(initial?.moderation?.denyPhrases),
+  );
+  const [blockPii, setBlockPii] = useState(initial?.moderation?.blockPii ?? false);
+  const [replyFallback, setReplyFallback] = useState(initial?.moderation?.fallback ?? '');
+
+  const denyLabels = parseEntryList(topicDeny);
+  const allowLabels = parseEntryList(topicAllow);
+  const phraseList = parseEntryList(denyPhrases);
+  /** A gate with nothing to match on isn't configured, however much text is around it. */
+  const topicsArmed = denyLabels.length > 0 || allowLabels.length > 0;
+  const rulesArmed = phraseList.length > 0 || blockPii;
+
+  /** The topic policy this form would save, or null for "off and forgotten". */
+  const readTopics = (): AgentTopics | null =>
+    topicsArmed && topicRedirect.trim()
+      ? {
+          ...(denyLabels.length ? { deny: denyLabels } : {}),
+          ...(allowLabels.length ? { allow: allowLabels } : {}),
+          redirect: topicRedirect.trim(),
+        }
+      : null;
+
+  /** The reply rules this form would save, or null for "off and forgotten". */
+  const readModeration = (): AgentModeration | null =>
+    rulesArmed && replyFallback.trim()
+      ? {
+          ...(phraseList.length ? { denyPhrases: phraseList } : {}),
+          ...(blockPii ? { blockPii: true } : {}),
+          fallback: replyFallback.trim(),
+        }
+      : null;
+
+  // The one save this form refuses outright. `required` on the boxes catches an
+  // EMPTY redirect/fallback, but not a whitespace-only one — and that save is
+  // the dangerous shape: both gates trim, so a lone space reads as "no reply to
+  // send", the policy stops applying, and the operator would watch a boundary
+  // they still see on screen quietly stop existing. Stated in words next to the
+  // field rather than as a blocked button with no reason.
+  const topicsIncomplete = runtime === 'managed' && topicsArmed && !topicRedirect.trim();
+  const rulesIncomplete = runtime === 'managed' && rulesArmed && !replyFallback.trim();
+
+  // Field-by-field rather than JSON.stringify: key ORDER would make a
+  // re-typed-identical policy look like an edit and put the operator through a
+  // check that grades nothing new.
+  const sameTopics = (a: AgentTopics | null, b: AgentTopics | null) =>
+    (a?.deny ?? []).join(',') === (b?.deny ?? []).join(',') &&
+    (a?.allow ?? []).join(',') === (b?.allow ?? []).join(',') &&
+    (a?.redirect ?? '') === (b?.redirect ?? '');
+  const sameModeration = (a: AgentModeration | null, b: AgentModeration | null) =>
+    (a?.denyPhrases ?? []).join(',') === (b?.denyPhrases ?? []).join(',') &&
+    (a?.blockPii ?? false) === (b?.blockPii ?? false) &&
+    (a?.fallback ?? '') === (b?.fallback ?? '');
+
   return (
     <>
     <form
       className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault();
+        // A7: a gate with rules but nothing to say is never saved, in either
+        // direction — it would neither block nor keep blocking.
+        if (topicsIncomplete || rulesIncomplete) return;
         const form = new FormData(e.currentTarget);
         const str = (key: string) => String(form.get(key) ?? '').trim();
         const body: AgentBody = {
@@ -174,6 +244,22 @@ export function AgentForm({
             body.routing = nextRouting;
           } else if (editing && initial?.routing) {
             body.routing = null;
+          }
+          // A7: the two gates follow the identical rule. Emptying the last deny
+          // label of a configured gate is how you switch it OFF, and that has to
+          // reach the server as an explicit null — otherwise the boundary the
+          // operator just deleted stays in force on every message.
+          const nextTopics = readTopics();
+          if (nextTopics) {
+            body.topics = nextTopics;
+          } else if (editing && initial?.topics) {
+            body.topics = null;
+          }
+          const nextModeration = readModeration();
+          if (nextModeration) {
+            body.moderation = nextModeration;
+          } else if (editing && initial?.moderation) {
+            body.moderation = null;
           }
         }
         const arHours = Number.parseInt(str('autoResolveH'), 10);
@@ -227,10 +313,26 @@ export function AgentForm({
             (prev?.enabled ?? false) !== (nextRouting?.enabled ?? false) ||
             (prev?.cheapModel ?? '') !== (nextRouting?.cheapModel ?? '');
           if (changed) candidate.routing = nextRouting;
+          // A7: a gate edit is a behavior change of the bluntest kind — it
+          // decides whether a message is answered at all, and what ships when it
+          // is not. So it rides the same candidate, and the run really executes
+          // behind the edited gate: an eval whose message the NEW deny list
+          // catches meets the redirect, exactly as a customer would. Sent even
+          // when the new value is "off" (an explicit null), because "do the
+          // evals still pass without this boundary?" is the whole question a
+          // save that removes one is asking.
+          const nextTopics = readTopics();
+          if (!sameTopics(nextTopics, initial?.topics ?? null)) candidate.topics = nextTopics;
+          const nextModeration = readModeration();
+          if (!sameModeration(nextModeration, initial?.moderation ?? null)) {
+            candidate.moderation = nextModeration;
+          }
           if (
             candidate.systemPrompt !== undefined ||
             candidate.model !== undefined ||
-            'routing' in candidate
+            'routing' in candidate ||
+            'topics' in candidate ||
+            'moderation' in candidate
           ) {
             setPendingSave({ body, candidate });
             return;
@@ -437,6 +539,135 @@ export function AgentForm({
                   here.
                 </p>
               </div>
+            )}
+          </div>
+
+          {/* Phase A7 — the topic gate. Managed only, like routing above: it
+              lives inside this branch, so a bridge agent never sees it. */}
+          <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+            <div>
+              <span className="block text-[12px] font-medium text-t2">Topics</span>
+              <span className="mt-0.5 block text-[11px] text-t3">
+                Before the agent answers, a small model reads the customer's message and names what
+                it is about; anything you have ruled out gets your reply below instead of a
+                model-written one. That check costs one extra call to the cheap model on every
+                message — the price of not having to trust the prompt alone. Leave both lists empty
+                and nothing changes.
+              </span>
+            </div>
+            <Field
+              label="Topics this agent won't discuss"
+              hint="One per line, or separated by commas. Plain words — “medical advice”, “competitor pricing”, “legal questions”."
+            >
+              <textarea
+                name="topicDeny"
+                rows={3}
+                value={topicDeny}
+                onChange={(e) => setTopicDeny(e.target.value)}
+                placeholder={'medical advice\nlegal advice'}
+                className={TEXTAREA_CLS}
+              />
+            </Field>
+            <div className="-mt-2 text-right">
+              <Mono className="text-t3">{denyLabels.length} of 24</Mono>
+            </div>
+            <Field
+              label="Only discuss (optional)"
+              hint="Leave blank to allow everything except the list above. Fill it in and it becomes the COMPLETE list of what this agent handles — anything else is off-topic. A topic in both lists is blocked: “won't discuss” always wins."
+            >
+              <textarea
+                name="topicAllow"
+                rows={2}
+                value={topicAllow}
+                onChange={(e) => setTopicAllow(e.target.value)}
+                placeholder={'orders and delivery\nreturns'}
+                className={TEXTAREA_CLS}
+              />
+            </Field>
+            <div className="-mt-2 text-right">
+              <Mono className="text-t3">{allowLabels.length} of 24</Mono>
+            </div>
+            <Field
+              label="When asked something else, reply with:"
+              hint="Sent word for word, by us — the model never writes a reply on a blocked topic, so there is nothing for it to be talked out of. Required once either list has anything in it."
+            >
+              <textarea
+                name="topicRedirect"
+                rows={2}
+                required={topicsArmed}
+                maxLength={2000}
+                value={topicRedirect}
+                onChange={(e) => setTopicRedirect(e.target.value.slice(0, 2000))}
+                placeholder="I can only help with orders and returns here — for anything else, email support@acme.com."
+                className={TEXTAREA_CLS}
+              />
+            </Field>
+            {topicsIncomplete && (
+              <p className="-mt-2 text-[11px] text-err">
+                Add the reply to send, or clear the lists above — a topic rule with no reply would
+                leave the customer with silence.
+              </p>
+            )}
+          </div>
+
+          {/* Phase A7 slice B — the outbound gate. Managed only, same branch. */}
+          <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+            <div>
+              <span className="block text-[12px] font-medium text-t2">Reply rules</span>
+              <span className="mt-0.5 block text-[11px] text-t3">
+                Every reply the agent drafts is checked before it is sent; a reply that breaks a
+                rule never leaves, and the customer gets your fallback below instead. No model, no
+                extra call, no added wait. It matches the words you type, not paraphrases of them —
+                that is the honest limit of a check that costs nothing and can never be down.
+              </span>
+            </div>
+            <Field
+              label="Words a reply may never contain"
+              hint="One per line, or separated by commas. Matched anywhere inside a word and in any capitalization, so “guarantee” also catches “guaranteed”. Catching too much? Make the phrase MORE SPECIFIC — “a full refund” rather than “refund”. Padding it with spaces will not help: we trim what you type, on purpose, so a stray space can never quietly switch a rule off."
+            >
+              <textarea
+                name="denyPhrases"
+                rows={3}
+                value={denyPhrases}
+                onChange={(e) => setDenyPhrases(e.target.value)}
+                placeholder={'guarantee\nrisk-free'}
+                className={TEXTAREA_CLS}
+              />
+            </Field>
+            <div className="-mt-2 text-right">
+              <Mono className="text-t3">{phraseList.length} of 100</Mono>
+            </div>
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-[11px] text-t3">
+                Block other people's email addresses and phone numbers — the customer's own are
+                always allowed, so the agent can still confirm the address on their account.
+              </span>
+              <Toggle
+                checked={blockPii}
+                onChange={setBlockPii}
+                label="Block other people's contact details"
+              />
+            </div>
+            <Field
+              label="If a reply is blocked, send instead:"
+              hint="Write this carefully: by the time it sends, the turn's work has already happened — a refund may have been issued, a workflow may have fired. “A teammate will follow up shortly” is always true; “I wasn't able to help with that” can be a lie. Required once there is a rule to break."
+            >
+              <textarea
+                name="replyFallback"
+                rows={2}
+                required={rulesArmed}
+                maxLength={2000}
+                value={replyFallback}
+                onChange={(e) => setReplyFallback(e.target.value.slice(0, 2000))}
+                placeholder="Let me get a teammate to confirm this for you — someone will follow up shortly."
+                className={TEXTAREA_CLS}
+              />
+            </Field>
+            {rulesIncomplete && (
+              <p className="-mt-2 text-[11px] text-err">
+                Add the reply to send instead, or clear the rules above — a blocked reply with no
+                replacement would leave the customer with silence.
+              </p>
             )}
           </div>
 
@@ -712,6 +943,8 @@ export function EditTab({ agent }: { agent: Agent }) {
             maxDailyTokens: body.maxDailyTokens,
             context: body.context,
             routing: body.routing,
+            topics: body.topics,
+            moderation: body.moderation,
             llm: body.llm,
           })
         }

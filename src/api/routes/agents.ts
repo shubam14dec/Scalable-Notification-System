@@ -53,6 +53,16 @@ import {
 } from '../../db/agent-health.repo';
 import type { RoutingConfig } from '../../core/managed-brain';
 import {
+  LABEL_MAX as TOPIC_LABEL_MAX,
+  LIST_MAX as TOPIC_LIST_MAX,
+  REDIRECT_MAX as TOPIC_REDIRECT_MAX,
+} from '../../core/topic-gate';
+import {
+  DENY_PHRASE_LIST_MAX,
+  DENY_PHRASE_MAX,
+  FALLBACK_MAX,
+} from '../../core/reply-rules';
+import {
   listMemories,
   upsertMemory,
   deleteMemory,
@@ -179,6 +189,66 @@ export function routingConfig(r: z.infer<typeof RoutingSchema>): RoutingConfig {
   return { enabled: r.enabled, cheapModel: r.cheapModel ?? '' };
 }
 
+/**
+ * A7 — the TOPIC GATE's policy (the `agents.topics` jsonb). Bounds are IMPORTED
+ * from core/topic-gate.ts rather than retyped: that module normalizes a stored
+ * row against them, and a second copy here would be a second law — the day
+ * either moved, an operator would save a 30th label the gate then silently
+ * dropped. Shape owned by `TopicsConfig` in core/managed-brain.ts.
+ *
+ * The refine is the one structural rule: a policy needs something to match on.
+ * `redirect` is required and has no default — the whole gate is "send THIS
+ * instead", and there is no sentence to invent on an operator's behalf.
+ *
+ * Sending `topics: null` CLEARS it (back to never-configured). Exported so the
+ * eval-run route's candidate accepts THE SAME OBJECT: a pre-save check must
+ * grade the gate the operator is about to save, and two schemas for one wire
+ * shape is exactly how a check comes to grade something else.
+ */
+export const TopicsSchema = z
+  .object({
+    deny: z.array(z.string().min(1).max(TOPIC_LABEL_MAX)).max(TOPIC_LIST_MAX).optional(),
+    allow: z.array(z.string().min(1).max(TOPIC_LABEL_MAX)).max(TOPIC_LIST_MAX).optional(),
+    redirect: z.string().min(1).max(TOPIC_REDIRECT_MAX),
+  })
+  .refine((t) => (t.deny?.length ?? 0) > 0 || (t.allow?.length ?? 0) > 0, {
+    message: 'topics needs at least one deny or allow label',
+    path: ['deny'],
+  });
+
+/**
+ * A7 slice B — the REPLY RULES (the `agents.moderation` jsonb), on the same
+ * terms as TopicsSchema above: bounds imported from core/reply-rules.ts (which
+ * exported them for exactly this), one structural refine (rules need something
+ * that can match), a required `fallback` with no default, `null` clears, and the
+ * candidate reuses this very object. Shape owned by `ModerationConfig`.
+ */
+export const ModerationSchema = z
+  .object({
+    denyPhrases: z
+      .array(z.string().min(1).max(DENY_PHRASE_MAX))
+      .max(DENY_PHRASE_LIST_MAX)
+      .optional(),
+    blockPii: z.boolean().optional(),
+    fallback: z.string().min(1).max(FALLBACK_MAX),
+  })
+  .refine((m) => (m.denyPhrases?.length ?? 0) > 0 || m.blockPii === true, {
+    message: 'moderation needs at least one deny phrase or blockPii',
+    path: ['denyPhrases'],
+  });
+
+/**
+ * Both gates are MANAGED concepts, and the sentence says why in the operator's
+ * own terms rather than quoting a runtime enum at them. One constant per gate
+ * because the create refine, the patch guard and (for routing) the stats route
+ * all state the same law, and a law stated three times in three wordings is
+ * three laws to a reader of error messages.
+ */
+const TOPICS_MANAGED_ONLY =
+  'topic rules need a managed agent: a bridge agent’s brain is your own code, so what it will discuss is decided there';
+const MODERATION_MANAGED_ONLY =
+  'reply rules need a managed agent: a bridge agent’s replies are written by your own code, which is where to check them';
+
 const AgentSchema = z
   .object({
     identifier: z
@@ -202,6 +272,10 @@ const AgentSchema = z
     context: AgentContextSchema.optional(),
     /** A6 cheap-first routing. Managed only (refined below), absent = off. */
     routing: RoutingSchema.optional(),
+    /** A7 topic gate. Managed only (refined below), absent = off. */
+    topics: TopicsSchema.optional(),
+    /** A7 reply rules. Managed only (refined below), absent = off. */
+    moderation: ModerationSchema.optional(),
   })
   // A6: routing is a MANAGED concept — a bridge agent's brain is the customer's
   // own code behind a signed URL, and we never pick the model it runs on. Same
@@ -210,6 +284,17 @@ const AgentSchema = z
     message:
       'model routing needs a managed agent: a bridge agent’s brain is your own code, not a model we choose',
     path: ['routing'],
+  })
+  // A7: both gates are managed concepts for the same reason and enforce it in
+  // the same place — the turn path applies them inside the managed branch only,
+  // so accepting one on a bridge agent would store a policy nothing reads.
+  .refine((a) => a.topics === undefined || a.runtime === 'managed', {
+    message: TOPICS_MANAGED_ONLY,
+    path: ['topics'],
+  })
+  .refine((a) => a.moderation === undefined || a.runtime === 'managed', {
+    message: MODERATION_MANAGED_ONLY,
+    path: ['moderation'],
   })
   .refine((a) => a.runtime !== 'bridge' || Boolean(a.bridgeUrl), {
     message: 'bridgeUrl is required for the bridge runtime',
@@ -239,6 +324,10 @@ const AgentPatchSchema = z.object({
   context: AgentContextSchema.optional(),
   /** A6: null switches the router off and forgets the config; absent leaves it. */
   routing: RoutingSchema.nullable().optional(),
+  /** A7: null switches the topic gate off and forgets it; absent leaves it. */
+  topics: TopicsSchema.nullable().optional(),
+  /** A7: null switches the reply rules off and forgets them; absent leaves them. */
+  moderation: ModerationSchema.nullable().optional(),
 });
 
 const InboundMessageSchema = z.object({
@@ -339,6 +428,12 @@ function agentView(agent: Agent) {
     // object rather than interpreting an enabled flag on a config that isn't
     // there. Managed-only; a bridge agent can never have one.
     routing: agent.routing ?? null,
+    // A7: the two gates, or null when never configured — the same "presence of a
+    // config is the flag" shape as routing and canary above, so the editor tests
+    // the object rather than reading an enabled flag off a config that is not
+    // there. Managed-only; a bridge agent can never have either.
+    topics: agent.topics ?? null,
+    moderation: agent.moderation ?? null,
     status: agent.status,
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
@@ -416,6 +511,11 @@ export function registerAgentRoutes(app: FastifyInstance) {
       suggestedPrompts: parsed.data.suggestedPrompts,
       context: parsed.data.context,
       routing: parsed.data.routing ? routingConfig(parsed.data.routing) : undefined,
+      // A7: no wire->stored conversion for these two — unlike routing (whose
+      // optional cheapModel becomes ''), the validated shape IS the stored
+      // shape, so a converter would only be a place for the two to diverge.
+      topics: parsed.data.topics,
+      moderation: parsed.data.moderation,
     });
     if (!agent) {
       return reply.code(409).send({ error: `agent "${parsed.data.identifier}" already exists` });
@@ -531,6 +631,17 @@ export function registerAgentRoutes(app: FastifyInstance) {
             'model routing needs a managed agent: a bridge agent’s brain is your own code, not a model we choose',
         });
       }
+      // A7: the two gates take routing's guard verbatim, including its exemption
+      // — `!= null` lets a CLEAR through on a managed→bridge conversion, and
+      // switching a gate off is never the wrong answer for an agent that cannot
+      // run it. Judged against nextRuntime, so the test is what the agent will
+      // BE after this patch rather than what it was.
+      if (parsed.data.topics != null && nextRuntime !== 'managed') {
+        return reply.code(400).send({ error: TOPICS_MANAGED_ONLY });
+      }
+      if (parsed.data.moderation != null && nextRuntime !== 'managed') {
+        return reply.code(400).send({ error: MODERATION_MANAGED_ONLY });
+      }
       const unsafe = await unsafeUrlError({
         bridgeUrl: parsed.data.bridgeUrl,
         llmBaseUrl: parsed.data.llm?.baseUrl,
@@ -561,6 +672,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
             : parsed.data.routing === null
               ? null
               : routingConfig(parsed.data.routing),
+        // A7: absent leaves the stored policy alone, null clears it, an object
+        // REPLACES it whole. No merge on purpose — a half-updated deny list is a
+        // guard nobody can reason about, and "which entries did I just remove?"
+        // is not a question a safety surface should be able to raise.
+        topics: parsed.data.topics,
+        moderation: parsed.data.moderation,
       });
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };

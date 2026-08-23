@@ -242,6 +242,40 @@ An eval run can grade the router before you save it — pass `routing` inside
 `candidate` and the run really executes through it (`null` grades the agent with
 routing off).
 
+### Topic rules and reply rules
+
+`agents.update(id, { topics })` decides **what a managed agent will discuss**:
+one small classifier call in front of the brain names the topic of each message,
+and anything you denied (or anything outside `allow`, when you fill it in) gets
+your `redirect` sent back word for word, without the brain ever running.
+`agents.update(id, { moderation })` decides **what may ship**: every drafted
+reply is checked in-process — no model, no latency — against `denyPhrases`
+(case-insensitive substrings) and, with `blockPii`, against emails and phone
+numbers that are not the customer's own; a blocked reply is replaced by your
+`fallback`. Write that fallback carefully: the turn's tools have already run by
+then, so "a teammate will follow up" is safe where "I couldn't help" may be
+false. `null` switches either off. Managed agents only; a bridge agent answers
+`400`.
+
+```ts
+await asyncify.agents.update('acme-support', {
+  topics: {
+    deny: ['medical advice', 'legal advice'],
+    redirect: 'I can only help with orders and returns here.',
+  },
+  moderation: {
+    denyPhrases: ['guarantee', 'risk-free'],
+    blockPii: true,
+    fallback: 'Let me get a teammate to confirm that — someone will follow up shortly.',
+  },
+});
+```
+
+Both gates take `candidate` overrides on an eval run, with one difference from
+`routing` worth knowing: **omitting** them leaves the agent's own gates in force
+for the run (a check grades the agent you have, boundaries included), so `null`
+is how you ask "do these still pass with the gate off?".
+
 ## API surface
 
 | Method | Purpose |

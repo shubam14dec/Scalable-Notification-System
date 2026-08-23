@@ -4,7 +4,7 @@ import { authenticate } from '../auth';
 import { getAgent } from '../../db/conversations.repo';
 import { getQueue, QUEUE } from '../../shared/queues';
 import { validateScenario } from '../../core/eval-runner';
-import { RoutingSchema, routingConfig } from './agents';
+import { ModerationSchema, RoutingSchema, TopicsSchema, routingConfig } from './agents';
 import type { CandidateConfig } from '../../core/managed-brain';
 import {
   createEval,
@@ -76,51 +76,16 @@ const UpdateEvalSchema = z
  * make (an empty object is a caller bug, not "use the agent's config").
  */
 /**
- * A7 slice A: the topic policy a run may be asked to grade. Bounds mirror
- * core/topic-gate.ts's own caps (which are what a stored row is normalized
- * against), and the refine states the one structural rule: a policy needs
- * something to match on. `redirect` has no default — the whole gate is "send
- * THIS instead", and there is no sensible sentence to invent on an operator's
- * behalf.
+ * A7 slice C: the two gate schemas now live beside RoutingSchema in
+ * routes/agents.ts (slices A and B parked them here only because there was no
+ * agent-facing surface to own them yet) and are IMPORTED, never re-declared.
  *
- * Declared here rather than imported from routes/agents.ts because slice A ships
- * no agent-facing topics surface yet; slice C adds one and this moves beside
- * RoutingSchema, its sibling.
+ * That import is the point rather than tidiness: the candidate below is how a
+ * pre-save check grades the very policy the operator is about to save, and if
+ * the two shapes were separate objects, the first edit to either would let the
+ * check grade a policy the save would then reject — or, worse, accept.
  */
-const TopicsSchema = z
-  .object({
-    deny: z.array(z.string().min(1).max(120)).max(24).optional(),
-    allow: z.array(z.string().min(1).max(120)).max(24).optional(),
-    redirect: z.string().min(1).max(2_000),
-  })
-  .refine((t) => (t.deny?.length ?? 0) > 0 || (t.allow?.length ?? 0) > 0, {
-    message: 'topics needs at least one deny or allow label',
-    path: ['deny'],
-  });
-
-/**
- * A7 slice B: the reply rules a run may be asked to grade. Bounds mirror
- * core/reply-rules.ts's own caps (which are what a stored row is normalized
- * against), and the refine states the one structural rule: rules need something
- * that can match. `fallback` has no default for the same reason `redirect` has
- * none — the whole gate is "send THIS instead".
- *
- * Declared here rather than imported from routes/agents.ts because slice B ships
- * no agent-facing moderation surface yet; slice C adds one and this moves beside
- * RoutingSchema and TopicsSchema, its siblings.
- */
-const ModerationSchema = z
-  .object({
-    denyPhrases: z.array(z.string().min(1).max(200)).max(100).optional(),
-    blockPii: z.boolean().optional(),
-    fallback: z.string().min(1).max(2_000),
-  })
-  .refine((m) => (m.denyPhrases?.length ?? 0) > 0 || m.blockPii === true, {
-    message: 'moderation needs at least one deny phrase or blockPii',
-    path: ['denyPhrases'],
-  });
-
-const CandidateSchema = z
+export const CandidateSchema = z
   .object({
     systemPrompt: z.string().min(1).max(100_000).optional(),
     model: z.string().min(1).max(255).optional(),

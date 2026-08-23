@@ -93,6 +93,66 @@ export interface AgentRouting {
   cheapModel: string;
 }
 
+/**
+ * The TOPIC GATE for a MANAGED agent. Before the brain runs, one small
+ * classifier call names what the customer's message is about; a message that
+ * lands on a denied topic — or, when `allow` is non-empty, outside it — never
+ * reaches the brain at all, and `redirect` is sent back verbatim instead. The
+ * classifier is never told which topics are denied: it names the topic, and the
+ * policy decides, so there is nothing in the prompt to argue with.
+ *
+ * `deny` beats `allow` wherever a label is in both, a non-empty `allow` is
+ * EXHAUSTIVE, and the gate applies only when at least one list is non-empty AND
+ * `redirect` is set — a policy that blocks with nothing to say would be a mute
+ * button. The check costs one call on the agent's cheap model (see
+ * `AgentRouting`) or its main model when it has no cheap one; if that call
+ * fails, the gate is SKIPPED and the turn runs, because fail-closed would mute
+ * an agent's whole traffic behind one canned sentence.
+ *
+ * HAND-KEPT COPY of the server's `TopicsSchema` / `agentView.topics`
+ * (src/api/routes/agents.ts); this package ships standalone and cannot import
+ * server types.
+ */
+export interface AgentTopics {
+  /** Up to 24 labels, 1–120 chars each. Beats `allow` on a label in both. */
+  deny?: string[];
+  /** Up to 24 labels, 1–120 chars each. Non-empty = the ONLY topics handled. */
+  allow?: string[];
+  /** 1–2000 chars, required: the canned reply an off-topic message gets. */
+  redirect: string;
+}
+
+/**
+ * The REPLY RULES for a MANAGED agent — a word check over every reply the agent
+ * drafts, in-process: no model, no extra call, no added latency. A reply that
+ * breaks a rule is never sent; `fallback` ships in its place, with any buttons
+ * or card drafted alongside it suppressed, and the blocked text is preserved on
+ * a system note so the block can be triaged.
+ *
+ * `denyPhrases` match case-insensitively as SUBSTRINGS (`guarantee` catches
+ * `guaranteed`), and they are trimmed — the fix for an over-broad phrase is a
+ * longer one, never padding. `blockPii` adds two built-in patterns (email
+ * addresses and phone numbers) with the subscriber's OWN contact details
+ * excluded. The rules apply only when `fallback` is set AND something can match.
+ *
+ * WHAT THIS IS NOT: it matches typed phrases, not paraphrases — the honest price
+ * of a check that costs nothing and cannot be down. And write the fallback with
+ * care: by the time it ships, the turn's tools have ALREADY RUN, so "a teammate
+ * will follow up" is safe where "I couldn't help" may be false.
+ *
+ * HAND-KEPT COPY of the server's `ModerationSchema` / `agentView.moderation`
+ * (src/api/routes/agents.ts); this package ships standalone and cannot import
+ * server types.
+ */
+export interface AgentModeration {
+  /** Up to 100 phrases, 1–200 chars each. Case-insensitive substring match. */
+  denyPhrases?: string[];
+  /** Block an email/phone in a reply that is not the subscriber's own. */
+  blockPii?: boolean;
+  /** 1–2000 chars, required: the canned reply a blocked turn ships instead. */
+  fallback: string;
+}
+
 /** An agent as the API returns it — secrets (signing, LLM key) never included. */
 export interface Agent {
   identifier: string;
@@ -116,6 +176,10 @@ export interface Agent {
   canary: AgentCanary | null;
   /** Cheap-first model routing, or null when it was never set up. Managed only. */
   routing: AgentRouting | null;
+  /** The topic gate's policy, or null when it was never set up. Managed only. */
+  topics: AgentTopics | null;
+  /** The outbound reply rules, or null when never set up. Managed only. */
+  moderation: AgentModeration | null;
   status: 'active' | 'disabled';
   createdAt: string;
   updatedAt: string;
@@ -138,6 +202,10 @@ export interface CreateAgentOptions {
   llm?: { apiKey?: string; baseUrl?: string };
   /** Cheap-first model routing. Managed only — a bridge agent answers 400. */
   routing?: AgentRouting;
+  /** The topic gate. Managed only — a bridge agent answers 400. */
+  topics?: AgentTopics;
+  /** The outbound reply rules. Managed only — a bridge agent answers 400. */
+  moderation?: AgentModeration;
 }
 
 export interface ConversationSummary {
@@ -301,6 +369,15 @@ export interface EvalRunCandidate {
    * steps aside for it as it always did.
    */
   routing?: AgentRouting | null;
+  /**
+   * The topic gate and reply rules to grade. Absent means something DIFFERENT
+   * from `routing` above, deliberately: the AGENT'S OWN gate applies to the run,
+   * because a check grades this agent, and an edit that sails past a boundary
+   * the real agent has would be checking an agent that does not exist. `null` is
+   * the only way to say "grade it with this gate off".
+   */
+  topics?: AgentTopics | null;
+  moderation?: AgentModeration | null;
 }
 
 /** An eval run — created 'running', finalized by the worker. */
@@ -569,15 +646,24 @@ export class AsyncifyClient {
     get: (identifier: string) =>
       this.request<{ agent: Agent }>('GET', `/v1/agents/${encodeURIComponent(identifier)}`),
     /**
-     * Patch any subset; `autoResolveMinutes: null` switches the backstop off and
-     * `routing: null` switches model routing off and forgets its config.
+     * Patch any subset; `autoResolveMinutes: null` switches the backstop off,
+     * and `routing`/`topics`/`moderation: null` each switch that feature off and
+     * forget its config. A provided object REPLACES the whole config — the lists
+     * are never merged, so removing one entry is an ordinary edit.
      */
     update: (
       identifier: string,
-      patch: Partial<Omit<CreateAgentOptions, 'identifier' | 'autoResolveMinutes' | 'routing'>> & {
+      patch: Partial<
+        Omit<
+          CreateAgentOptions,
+          'identifier' | 'autoResolveMinutes' | 'routing' | 'topics' | 'moderation'
+        >
+      > & {
         status?: 'active' | 'disabled';
         autoResolveMinutes?: number | null;
         routing?: AgentRouting | null;
+        topics?: AgentTopics | null;
+        moderation?: AgentModeration | null;
       },
     ) =>
       this.request<{ agent: Agent }>(

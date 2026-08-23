@@ -178,6 +178,10 @@ export async function createAgent(a: {
   context?: AgentContext;
   /** A6: cheap-first routing, or absent = off (what every agent is born as). */
   routing?: RoutingConfig;
+  /** A7: the topic gate's policy, or absent = off (what every agent is born as). */
+  topics?: TopicsConfig;
+  /** A7: the outbound reply rules, or absent = off (ditto). */
+  moderation?: ModerationConfig;
 }): Promise<Agent | null> {
   const client = await pool.connect();
   try {
@@ -187,9 +191,9 @@ export async function createAgent(a: {
        (tenant_id, identifier, name, description, runtime, bridge_url,
         signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
         auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens, context,
-        routing)
+        routing, topics, moderation)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-             coalesce($17::jsonb, '{}'::jsonb), $18::jsonb)
+             coalesce($17::jsonb, '{}'::jsonb), $18::jsonb, $19::jsonb, $20::jsonb)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
       [
@@ -211,6 +215,8 @@ export async function createAgent(a: {
         a.maxDailyTokens ?? null,
         a.context ? JSON.stringify(a.context) : null,
         a.routing ? JSON.stringify(a.routing) : null,
+        a.topics ? JSON.stringify(a.topics) : null,
+        a.moderation ? JSON.stringify(a.moderation) : null,
       ],
     );
     const agent: Agent | undefined = rows[0];
@@ -292,6 +298,15 @@ export async function updateAgent(
      * the whole config — it is two fields, so a merge would only buy ambiguity.
      */
     routing?: RoutingConfig | null;
+    /**
+     * A7: null switches the topic gate OFF and forgets the policy (jsonb 'null'
+     * is the wire sentinel); undefined leaves it untouched. A provided object
+     * REPLACES the whole policy — merging two deny lists would leave an operator
+     * unable to remove a label, which is the one edit a guard must never refuse.
+     */
+    topics?: TopicsConfig | null;
+    /** A7: the reply rules, on exactly the terms `topics` above states. */
+    moderation?: ModerationConfig | null;
   },
 ): Promise<Agent | null> {
   const client = await pool.connect();
@@ -341,6 +356,11 @@ export async function updateAgent(
        -- A6: jsonb 'null' sentinel clears the router; null param leaves it
        routing         = case when $18::jsonb = 'null'::jsonb then null
                               else coalesce($18::jsonb, routing) end,
+       -- A7: same jsonb 'null' clear sentinel for both gates
+       topics          = case when $19::jsonb = 'null'::jsonb then null
+                              else coalesce($19::jsonb, topics) end,
+       moderation      = case when $20::jsonb = 'null'::jsonb then null
+                              else coalesce($20::jsonb, moderation) end,
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -371,6 +391,16 @@ export async function updateAgent(
           : patch.routing === undefined
             ? null
             : JSON.stringify(patch.routing),
+        patch.topics === null
+          ? 'null'
+          : patch.topics === undefined
+            ? null
+            : JSON.stringify(patch.topics),
+        patch.moderation === null
+          ? 'null'
+          : patch.moderation === undefined
+            ? null
+            : JSON.stringify(patch.moderation),
       ],
     );
     let agent: Agent = rows[0];
