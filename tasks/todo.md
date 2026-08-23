@@ -6,8 +6,26 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A7 — guardrails completion: topic gate + reply rules (plan
-approved 2026-08-24)
+### Phase A7 — SHIPPED 2026-08-24 (review)
+All 4 slices done (commits 7a95e86, e331dda, a61c6d1, +docs), suite
+827→967 (+140), root+dashboard+sdk tsc clean throughout. What shipped:
+the topic gate (classifier names the topic from a closed enum and is
+NEVER told the policy — deny/allow lives in decide(); canned redirect;
+blocked turns cheaper than answered ones; degrade-never-block) and the
+reply rules (pure zero-latency checker, "typed phrases not paraphrases"
+honesty, PII with own-contact exemption, fallback + suppressed buttons,
+hourly ops alert that OMITS the leak, blocked text preserved in the
+breadcrumb), both off-by-default/managed-only/pre-save-tripping via
+candidate.{topics,moderation} with absent = live-gate-applies
+(deliberately unlike routing). Review notes: (1) raw.action replay
+hazard caught (a topic_gate action row would teach a phantom tool);
+(2) caps single-sourced — core exports, API imports, schema IDENTITY
+asserted; (3) whitespace-only redirect/fallback refused (a lone space
+would silently disarm a visible boundary); (4) user vetoes honored: no
+webhook checker, no built-in LLM moderation; (5) prod delta: NONE.
+Guardrails pillar complete: five knobs. Remaining quality rung: A2b.
+
+### (original A7 plan, kept for the record — plan approved 2026-08-24)
 Two gates, per-agent, managed-only, OFF by default. VERIFIED at
 planning: rate caps (agent_tool_defs.guard incl. maxCallsPerHour) and
 budgets (agents.max_daily_tokens) already shipped P22 — A7 = the two
@@ -54,10 +72,17 @@ with the A2b blocking-mode rejection: never +2-4s on every reply).
       dates/times don't match); fallback-honesty tension → C helper
       copy ("a teammate will follow up" is safe; "I couldn't help" can
       be a lie — tools already ran).
-- [ ] Slice C — surface (two Edit-tab cards, pre-save wiring, API/
-      agentView/SDK + changeset).
-- [ ] Slice D — docs+close-out (guide §6 two-gates story, AGENT-TOOLS,
-      gap docs, todo review).
+- [x] Slice C — DONE 2026-08-24 (commit a61c6d1, suite 949→967): caps
+      aligned to CORE over the brief (no-drift wins; constants exported
+      so one number validates AND normalizes); schema IDENTITY asserted
+      between candidate and save; whitespace-only redirect/fallback
+      refused inline (a lone space would silently switch off a visible
+      boundary); required copy verbatim; repo write paths added (A/B
+      had columns, no writes).
+- [x] Slice D — DONE 2026-08-24: guide §6 "Two more gates" (five knobs,
+      diagram, all honesty lines) + §1/§2/§10/§13/checklist; AGENT-TOOLS
+      full reference w/ code-verified caps; gap docs dated + novu claim
+      honestly scoped; two adjacent stale claims fixed.
 
 ### Phase A6 — SHIPPED 2026-08-23 (review)
 All 3 slices done (commits 0a316de, f102d1c, +docs), suite 799→827,
@@ -361,8 +386,7 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       P22: "Save as eval" on the conversation page.)
 - [x] A5. Prompt versioning + canary — SHIPPED 2026-08-23, review above.
 - [x] A6. Model routing — SHIPPED 2026-08-23, review above.
-- (IN PROGRESS above) A7. Guardrails completion — rate caps + budgets
-      verified already shipped (P22); scope = topic gate + reply rules.
+- [x] A7. Guardrails completion — SHIPPED 2026-08-24, review above.
 - [ ] A8. Security hardening: PII redaction in logs/breadcrumbs;
       per-tenant retention auto-purge; per-END-USER rate limits; RAG
       docs AND tool results AND inbound channel content treated as

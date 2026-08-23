@@ -141,6 +141,39 @@ now have, and how to sell it honestly:
   and we have found no per-agent routing surface on their side at all.
   Ours is a lever a BYO-LLM brain makes possible in the first place.
 
+- **2026-08-24 — enforcement, not instruction (A7): the topic gate + reply
+  rules.** The ladder is about knowing an agent is good; these two are
+  about the boundaries that must hold even when it isn't. A managed agent
+  can carry a **topic gate**: one small forced-tool classifier call before
+  the brain names what the customer's message is about from a closed list,
+  and the **code** then applies the policy — deny beats allow, a filled
+  allow list is exhaustive — shipping the operator's canned redirect
+  without the brain ever running. The design worth stating in a sales
+  room is what the classifier is **not** told: it never sees which topics
+  are denied, never sees the redirect, and is never asked whether to
+  answer, so the half a persuasive customer can talk to doesn't know what
+  is at stake and the half that decides isn't a model. It degrades the
+  safe way (a classifier that can't answer skips the gate — failing closed
+  would mute an agent's whole traffic behind one sentence), and a blocked
+  turn is *cheaper* than an answered one. The second gate, **reply rules**,
+  is the outbound half: typed deny phrases plus other people's emails and
+  phone numbers, checked in-process on every drafted reply — zero LLM
+  calls, zero added latency (the A2b decision restated: never +2–4s on
+  every reply) — with a configured fallback shipping bare when one fires.
+  Both are managed-only, off until configured, and both ride the A4
+  candidate knob into the pre-save check, with `absent` deliberately
+  meaning "the agent's LIVE gate applies" rather than routing's "step
+  aside". Honest on both sides: ours is **not** a content-safety
+  classifier — phrases, not paraphrases — and we don't claim it is. And on
+  theirs, only as far as our own evidence goes: three rounds of reading
+  their docs turned up **no per-agent topic or reply-content surface at
+  all**. What they do have is adjacent and real — tool approval cards with
+  per-agent tool trust (an *action* guard, our §1 row) and open-vs-
+  restricted subscriber access (*who* may talk to the agent, a Tier-B gap
+  of ours, still open). Neither answers "what may this agent discuss" or
+  "what may it say"; absence of a doc page is not proof of absence, so the
+  claim stays "we found none", not "they have none".
+
 Sales framing: "prompt edits are deploys — and we're the platform that
 treats them that way." A/B-testing a prompt on real traffic, with the
 judge grading both arms, is the rung above that: promotion answers "is it

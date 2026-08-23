@@ -171,8 +171,19 @@ architecture — we started where they're heading.
   on rides the A4 candidate knob (`candidate.routing`, absent/null/
   object) straight into the pre-save check. Their agents are
   managed-Claude only, so there is no second tier to route between.
-  Still worth copying from them: **mock-tape speed** for pure-prompt
-  iteration.
+  **2026-08-24 (A7)** hung two enforcement gates off the same knob:
+  a per-agent **topic gate** (one forced-tool classifier call before the
+  brain, whose prompt deliberately omits the policy — the model names the
+  topic, `decide()` applies deny-beats-allow, so there is nothing in the
+  classifier's context to argue with; every failure path skips the gate
+  rather than muting the agent) and in-process **reply rules** over the
+  drafted reply (typed phrases + non-own email/phone, pure function, zero
+  LLM calls — the checker-1 shape our A2b latency decision already
+  argued for). Both ride `candidate` into the pre-save check, with
+  `absent` meaning *the live gate applies* rather than routing's *step
+  aside*, because they decide whether anyone answers rather than who
+  does. Still worth copying from them: **mock-tape speed** for
+  pure-prompt iteration.
 
 ## 6. Honest scorecard
 

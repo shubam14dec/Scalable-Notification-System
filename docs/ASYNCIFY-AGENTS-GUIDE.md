@@ -60,8 +60,10 @@ run before a save commits, and in our own CI before a merge lands.
 
 **Guardrails (§6)** — daily token budgets (a circuit breaker, not a hope),
 repeat-action limits ("3rd refund for the same customer this month → needs
-a human"), and approval gates on dangerous tools. Enforced in the
-executor, outside the model — a prompt can be argued with; a gate cannot.
+a human"), approval gates on dangerous tools, and two gates around the
+brain itself: one that decides whether a question is this agent's to answer
+at all, one that reads every drafted reply before it ships. Enforced in
+code, outside the model — a prompt can be argued with; a gate cannot.
 
 **Knowledge with citations (§8)** — the agent answers from *your*
 documents and names its source, and says "I don't know" otherwise. In
@@ -172,6 +174,9 @@ deploy to Maya — so there is a loop for that, and it pays off in this order:
    before it becomes everyone's agent (§10).
 4. **Turn on model routing once traffic grows.** The easy turns get answered on
    a cheaper model; anything consequential re-runs on the main one (§9).
+5. **Stop arguing with the prompt.** When a boundary has to hold *every* time —
+   what the agent will discuss, what a reply may never say — move it out of the
+   prompt and into a gate the model isn't part of (§6).
 
 None of it is required to go live — the agent works without any of it. It's
 what keeps the agent good after the twentieth prompt edit. It's also a *prompt*
@@ -291,11 +296,13 @@ prompt edit is checked against this exact case before it reaches Maya
 
 Approval (section 5) is one hand on the brake — a human's. **Guardrails** are the
 other: limits Acme sets once, that the platform then enforces on its own,
-deterministically, before the model or Acme's endpoint is ever touched. Three
-knobs, each **off by default**.
+deterministically, in code rather than in the prompt. **Five knobs, each off by
+default.** The first four stop something before the model or Acme's endpoint is
+ever touched; the fifth reads what the agent wrote before Maya can.
 
-Priya sets the first two **on a tool** (dashboard → the agent → **Tools**); Priya
-or Sam sets the third **on the agent**.
+Priya sets the first two **on a tool** (dashboard → the agent → **Tools**); the
+other three sit **on the agent** (dashboard → the agent → **Edit**), where Priya
+or Sam can reach them.
 
 **1. Repeat-action rule** *(per tool)* — *"auto-approve at most N of this action
 per customer per window."* Priya caps `refund_customer` at **1 refund per 30
@@ -346,6 +353,140 @@ drift slightly under retries; the exact record always lives in the dashboard's
 audit trail. The guardrail's only job is to decide, in the moment, whether to pump
 the brakes. Full field reference (the `guard` shape, the frozen card format):
 `docs/AGENT-TOOLS.md`.
+
+### Two more gates: what the agent will discuss, and what it may say
+
+Knobs 1–3 sit around the agent's *actions*. The last two sit around the
+*conversation* — one in front of the brain, one behind it:
+
+```
+   Maya's message
+         │
+         ▼
+  ┌───────────────────┐   off-topic   ┌──────────────────────────────┐
+  │  4. TOPIC GATE    ├──────────────▶│ Priya's redirect, word for   │
+  │  one small model  │               │ word — the brain never runs  │
+  │  call, no brain   │               └──────────────────────────────┘
+  └────────┬──────────┘
+           │ in lane
+           ▼
+   THE BRAIN — prompt, tools, knowledge, memory
+           │ the drafted reply
+           ▼
+  ┌───────────────────┐  breaks a rule  ┌─────────────────────────────┐
+  │  5. REPLY RULES   ├────────────────▶│ Priya's fallback, and it    │
+  │  word rules, no   │                 │ ships bare — no buttons     │
+  │  model, no wait   │                 └─────────────────────────────┘
+  └────────┬──────────┘
+           │ clean
+           ▼
+         Maya
+```
+
+**4. Topic gate** *(per agent)* — *"this is not what this agent is for."* Priya
+lists the topics her support agent **won't discuss** ("medical advice", "legal
+questions"), and — optionally — an **only discuss** list, which when filled is
+the *complete* list of what this agent handles. A topic in both lists is blocked:
+won't-discuss always wins. She writes one sentence for the customer to get
+instead:
+
+> I can only help with orders and returns here — for anything else, email
+> support@acme.com.
+
+Before the brain runs, a small model reads Maya's latest message — plus the last
+three exchanges, so *"will it interact with my prescription?"* is still readable
+as a follow-up — and names **one** topic from a closed list. If that topic is
+ruled out, Priya's sentence ships word for word and **the brain never runs**.
+
+**The classifier is never told which topics are denied.** It doesn't see the
+redirect, isn't asked whether to answer, and doesn't know what its answer will be
+used for — it is asked a question of fact and nothing else. The *policy* — deny
+beats allow, a filled allow list is exhaustive — is applied afterwards, in code.
+This is the whole design, and it is why *"be helpful, just this once"* has nowhere
+to land: the half of the gate a persuasive message can talk to has no idea what is
+at stake, and the half that decides isn't a model.
+
+**A blocked turn is cheaper than an answered one.** The gate costs one extra call
+per message, on your cheap model when routing is on (§9) and otherwise on the
+agent's own — a one-word classification against a short prompt. When it blocks, it
+replaces an entire model turn — the long system prompt, the tool menu, the
+knowledge lookups — with that one call. The safety property and the cost property
+are the same property.
+
+**If the gate breaks, it gets out of the way.** No credentials, a timeout, an
+answer the platform can't use twice running — every one of those logs a warning,
+skips the gate, and lets the turn run exactly as it would have without it. Failing
+the other way would be worse: a broken classifier that blocks by default would mute
+Acme's whole agent behind one canned sentence, and nothing in the transcript would
+say why. A gate that is down is a gate that is off.
+
+**5. Reply rules** *(per agent)* — *"the agent may not say that."* The topic gate
+is a rule about the *question*; this one is about the *answer*, and there are
+failures only the answer can show: an in-lane question whose reply wanders into a
+promise Acme never made, or a tool result that hands the model a colleague's mobile
+number and a helpful model that passes it straight on. Priya types **words a reply
+may never contain** — matched anywhere inside a word and in any capitalization, so
+`guarantee` also catches `guaranteed` — and can switch on **block other people's
+contact details**, which stops email addresses and phone numbers that aren't
+Maya's own. Hers are exempt on purpose, so the agent can still confirm the address
+on her account.
+
+This gate is **word rules in process: no model, no extra call, no added wait.**
+Every reply of every agent that has it runs through it, and the cost is
+indistinguishable from zero. Catching too much? Make the phrase *more specific* —
+`a full refund` rather than `refund`. Padding it with spaces won't help: we trim
+what Priya types, deliberately, so a stray space can never quietly switch a rule
+off.
+
+When a reply is blocked, Priya's fallback ships **bare** — the buttons and cards
+drafted in the same breath as the blocked sentence go with it, because "Yes, refund
+it" under a fallback that no longer offers a refund is worse than no buttons at
+all. And here is the part worth writing the fallback around: **by the time it
+sends, the turn's work has already happened.** If the model issued the refund and
+*then* wrote a sentence that tripped a rule, the refund happened; suppressing the
+sentence cannot un-issue it, and inventing one about it would be exactly the model
+freestyle this gate exists to prevent. So: *"A teammate will follow up shortly"* is
+always true. *"I wasn't able to help with that"* can be a lie. (The topic gate's
+redirect is exempt from this check — running Priya's own canned sentence against
+Priya's own phrases is circular, and the only thing it could produce is a redirect
+that blocks itself.)
+
+**What Sam sees, and what the alert deliberately doesn't carry.** Either gate
+leaves a breadcrumb on the conversation — `off-topic: classified "medical advice"
+(deny list) — sent the configured redirect, no model reply`, or `reply blocked by
+the pii rule (…) — sent the configured fallback`. That breadcrumb row also
+preserves, on the record, **what the agent had actually written**, because a
+fallback with no trace of what it replaced is untriageable: Sam can't tell a leak
+he was saved from apart from a rule that's too broad, and those need opposite
+fixes. The **ops alert** — same
+`agent-approvals` audience as approvals and the budget breaker, at most once an
+hour per agent — carries the agent, which rule fired, the conversation, and how
+many replies were blocked in the *previous* hour (the number that separates one bad
+sentence from a prompt that has been failing since midnight). It does **not** carry
+the matched text. That alert is delivered by Acme's own workflow, which can email or
+SMS it anywhere: forwarding the phone number we just stopped leaking to one
+customer would relocate the leak, not stop it. The blocked text stays in the
+dashboard, where it started.
+
+***What these two gates are not.*** Reply rules are **not** a content-safety
+classifier and shouldn't be sold to your legal team as one. They match phrases
+Priya typed and two contact-detail shapes — they cannot catch a paraphrase, and an
+operator who blocks `guarantee` has not thereby blocked *"you have my word."* That
+limit is the honest price of a check that costs nothing and can never be down. The
+topic gate does use a model, so it reads meaning rather than spelling — but it is a
+classifier naming a topic, not a moderator, and what happens to that topic is
+decided by Priya's lists.
+
+**Both are off until configured, both are managed-only, and both are graded before
+they save.** A bridge agent's brain is Acme's own code and its replies are Acme's
+own words — that's where to put these checks, not between Acme and their own
+service. And because a gate edit is a behavior change of the bluntest kind — it
+decides whether a message is answered at all, and what ships when it isn't — Save
+runs it through the pre-save check like a prompt edit (§10): the scenarios really
+execute behind the edited gate, so a scenario the new deny list catches meets the
+redirect exactly as Maya would. That runs when a gate is switched **off**, too,
+because *"do the evals still pass without this boundary?"* is the whole question
+that save is asking. Full field reference: `docs/AGENT-TOOLS.md`.
 
 ### Where the alerts go — setting up ops notifications
 
@@ -934,8 +1075,9 @@ she just wrote, before the edit commits.
 Priya rewrites the refund paragraph to be friendlier. She hits **Save**. Instead
 of saving, Asyncify runs her enabled scenarios against the **edited** prompt —
 the real agent through the real pipeline, real tools, guards, knowledge and
-judge; only the prompt (and the model, if she changed that too) swapped in for
-the duration of the run. Nothing is written yet. Maya, mid-conversation right
+judge; only the thing she just edited — the prompt, and the model, the router
+(§9) or either gate (§6) if she touched those — swapped in for the duration of
+the run. Nothing is written yet. Maya, mid-conversation right
 now, is still talking to the old prompt — a candidate config is never live, not
 even for a second.
 
@@ -1230,8 +1372,13 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
   routing is paying for itself on this agent's traffic, and tokens-used-today
   in **Health** (section 6), which is what you size the circuit breaker from.
 - **Guardrails (section 6) are always on when set** — the repeat-action rule and
-  hourly rate cap ride each tool, the daily token budget rides the agent; the
-  platform enforces them without a human in the loop.
+  hourly rate cap ride each tool; the daily token budget and the two conversation
+  gates ride the agent; the platform enforces them without a human in the loop.
+  Both gates announce themselves in the transcript when they fire — which topic
+  was classified and which list caught it, or which reply rule fired and what the
+  agent had written — and a blocked reply also pages the ops audience at most once
+  an hour per agent, with the rule and the previous hour's count but never the
+  text it matched.
 - **Safety properties you get for free**: every side-effecting call is
   idempotent under retries; approval decisions are single-winner across all
   surfaces; the agent's transcript can't contain fabricated tool results —
@@ -1261,7 +1408,7 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 | Actions | custom tool registry, signed HTTP execution, idempotent, 16KB results |
 | Approvals | dashboard + Slack channel + Telegram taps; atomic; per-tap identity; in-place card outcomes; 24h expiry; audit trail |
 | Handoff | `handoff_to_human` built-in; live "waiting for human" queue + operator reply box; teammate label to the customer; attributed summary on handback; reused `approvals` ops audience |
-| Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker |
+| Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker; per-agent **topic gate** — one small classifier call before the brain names the topic, the deny/allow policy is applied in code and the classifier is never told which topics are denied; a broken classifier skips rather than mutes — and per-agent **reply rules** — typed phrases plus other people's emails/phones checked on every drafted reply, zero model calls and zero added latency, blocked replies ship a configured fallback bare. Both managed-only, off until configured, graded by the pre-save check |
 | Notifications | workflows/digests/delays from agent tools, proactive pushes, resolve webhooks, approval pings |
 | Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); pre-save check — a prompt edit is graded before it saves, warn never block; one-click eval from a real conversation; append-only prompt versions (restore publishes, never rewinds); prompt canary — a version trials on a % of real conversations, sticky per conversation, with a per-arm comparison (counters + judged averages sampled from both arms at the same rate) behind Promote; a config-as-code fixture agent gated by a required CI check (a regression fails the build, not just a warning); anti-fabrication transcripts |
 | Ops | connections re-pointable with history; `asyncify dev` local loop |

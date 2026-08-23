@@ -572,6 +572,13 @@ reserved `agent-approvals` / `approvals` convention as **Opt-in approval
 notifications** above — wiring steps are in that guide's *Where the alerts go*
 subsection.
 
+**Two more guardrails sit on the agent, not on a tool**: the **topic gate**
+(*whether this agent should answer this message at all*) and **reply rules**
+(*whether what it wrote may ship*). They guard the conversation rather than an
+action, so they have their own field reference at *Topic gate and reply rules*,
+at the end of this page; the customer-facing story is section 6 of
+[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).
+
 ## Evals: test your prompt like you test your code
 
 The eval harness proves your **real configured LLM**, given your **real
@@ -660,7 +667,7 @@ curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
 | Field | Rules |
 |---|---|
 | `trigger` | `manual` (default) or `pre_save` — recorded on the run, so the history says *why* it ran. |
-| `candidate` | `{ systemPrompt?, model?, routing? }` — grade **this** config instead of the agent's live one. At least one of the three keys (an empty object is a **400**, not "use the agent's config"). `systemPrompt` 1–100,000 chars, `model` 1–255 — the same caps the agent-create route enforces, because a candidate must be something the agent could actually be saved with. `routing` takes the agent field's own `{enabled, cheapModel}` shape (*Model routing*, below) or `null`. |
+| `candidate` | `{ systemPrompt?, model?, routing?, topics?, moderation? }` — grade **this** config instead of the agent's live one. At least one of the five keys (an empty object is a **400**, not "use the agent's config"). `systemPrompt` 1–100,000 chars, `model` 1–255 — the same caps the agent-create route enforces, because a candidate must be something the agent could actually be saved with. `routing` takes the agent field's own `{enabled, cheapModel}` shape (*Model routing*, below) or `null`; `topics` and `moderation` take theirs (*Topic gate and reply rules*, below) or `null` — the **same** schema objects the agent routes validate against, not copies of them. |
 
 **`candidate.routing` has three states, and the difference between them is the
 contract.** Turning the router on is a behavior change like a prompt edit — the
@@ -674,6 +681,15 @@ model would grade the one config you are *not* about to ship:
   router?* is a real question to ask of a save that switches routing off.
 - **an object** — route this run with **this** config, not the agent's. The run
   really executes through it: cheap model first, safe-tool law, escalation.
+
+**`candidate.topics` and `candidate.moderation` have the same three states and a
+deliberately different `absent`.** Absent means **the agent's live gate applies to
+the run** — not "step aside". The difference from `routing` is the design, not an
+oversight: routing decides *who answers*, so an unopinionated candidate must not be
+rerouted onto a model nobody asked to grade; the two gates decide *whether anyone
+answers* and *what may ship*, and a check that quietly ran without them would pass
+an agent that doesn't exist. `null` is the only way to say "grade it with this gate
+off", which is a real thing to ask of a save that removes one.
 
 **`candidate` is managed-only.** A bridge agent's brain is your own code behind a
 signed URL — there is no prompt or model here to override — so a candidate on a
@@ -972,3 +988,218 @@ never offered it, and counting it would silently depress the cheap share.
 **400** on a bridge agent, **404** on an unknown one.
 
 Typed wrappers are in `@asyncify-hq/node` (`client.agents.update(id, {routing})`).
+
+## Topic gate and reply rules: the two agent-level gates
+
+The guards above ride a **tool**. These two ride the **agent** and guard the
+conversation itself: `topics` decides whether the agent should be answering this
+message at all, `moderation` decides whether what it wrote may ship. Both are
+plain fields on the agent, both are **managed-only**, and both are **off until
+configured** — which is what every agent was before they existed. The
+customer-facing story is section 6 of
+[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).
+
+### `topics` — the inbound gate
+
+```bash
+curl -X PATCH -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/support-bot \
+  -d '{ "topics": {
+        "deny": ["medical advice", "legal questions"],
+        "allow": ["orders and delivery", "returns"],
+        "redirect": "I can only help with orders and returns here — for anything else, email support@acme.com."
+      } }'
+# → 200 { "agent": { …, "topics": { "deny": [...], "allow": [...], "redirect": "…" } } }
+```
+
+| Field | Rules |
+|---|---|
+| `deny` | optional array, **≤24** entries, each **1–120** chars. Topics the agent must never engage with. |
+| `allow` | optional array, same bounds. When non-empty it is **exhaustive** — anything the classifier can't place inside it is off-topic, including "none of these". |
+| `redirect` | **required**, **1–2,000** chars. The canned reply a blocked message gets, sent word for word. There is no default: a policy that blocks without saying anything is a mute button, not a boundary. |
+
+At least one of `deny` / `allow` must be non-empty, or the request is a **400**
+(`topics needs at least one deny or allow label`) — there is nothing to classify
+against otherwise. **Deny beats allow**: a label in both lists is dropped from
+`allow`, so an operator who contradicts themselves gets the safer half. The caps
+are the same constants the runtime normalizes a *stored* policy against, imported
+rather than retyped — two copies of a bound is two bounds, and the day either
+moved you would save a 25th label the gate then silently dropped.
+
+**How a turn is decided.** Before the brain — and therefore before the router, so
+one classification governs the turn whichever model would have served it — a single
+model call is forced through a `classify_topic` tool with a **closed enum**:
+`deny + allow + in_lane`. It sees the inbound message plus the last **6** user/agent
+rows (enough to resolve *"will it interact with my prescription?"*; tool
+breadcrumbs and deleted rows excluded), fenced between sentinel markers as
+untrusted data. The label comes back; then `deny` → blocked, or `allow` non-empty
+and the label isn't in it → blocked. `in_lane` falls in that second branch on
+purpose: an exhaustive allow list doesn't cover "nothing in particular" either.
+
+**The classifier is never told which labels are denied**, never sees the redirect,
+and is never asked whether to answer. Policy is applied afterwards, in code, where
+it is deterministic and cannot be talked out of — a model told "this one is
+forbidden" starts hedging toward the safe-looking label instead of the true one,
+and the true one is the only thing the code can act on.
+
+**Which model runs it.** The routing cheap model when routing applies to the turn
+(*Model routing*, above — same precedence, so the routing decision that governs the
+turn governs the classifier in front of it), otherwise the model that would have
+served the turn. A closed-label, one-word answer is the archetypal cheap-model job.
+The call's tokens are folded into the agent's **daily token budget** like any other
+spend, so a gated agent's cheapest turns are not the only ones its breaker can't
+feel.
+
+**When it blocks:** the `redirect` ships through the ordinary reply path (same
+insert, same delivery), the brain never runs, and the reply is tagged
+platform-authored so it is never replayed to the model as an assistant turn. A
+breadcrumb row records the label, the list, the model and the call's usage. Nothing
+is written when a message is in lane — a receipt on every ordinary turn would be a
+row per turn to record that nothing happened.
+
+**When it can't decide, it steps aside.** Unusable output buys exactly one re-ask
+naming what was wrong; a second unusable answer ends the gate's involvement. Every
+failure mode — no usable client, a call that throws, a timeout, unusable twice —
+logs a warning, returns `skipped`, and the turn runs **ungated**. Failing the other
+way would mute an agent's entire traffic behind one canned sentence with nothing in
+the transcript to say why: a gate that is down is a gate that is off.
+
+**Storage is jsonb and it is normalized on read**, because a column can hold
+whatever a migration or a hand-run `UPDATE` left there: entries are trimmed, capped,
+and deduped, and the reserved label `in_lane` is dropped from an operator's own
+lists (a deny list containing it would block every message on earth; an allow list
+containing it would allow every one). A row that fails the structural requirements
+is not an error raised at a customer — it is an agent with no gate.
+
+### `moderation` — the outbound gate
+
+```bash
+curl -X PATCH -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/support-bot \
+  -d '{ "moderation": {
+        "denyPhrases": ["guarantee", "risk-free"],
+        "blockPii": true,
+        "fallback": "Let me get a teammate to confirm this for you — someone will follow up shortly."
+      } }'
+```
+
+| Field | Rules |
+|---|---|
+| `denyPhrases` | optional array, **≤100** entries, each **1–200** chars. Matched **case-insensitively as substrings**, so `guarantee` also catches `guaranteed`/`guarantees`. |
+| `blockPii` | optional boolean, default false. Blocks email addresses and phone numbers that are not **this subscriber's own**. |
+| `fallback` | **required**, **1–2,000** chars. What ships instead of a blocked reply. No default, for the same reason `redirect` has none. |
+
+At least one deny phrase **or** `blockPii: true`, else **400**
+(`moderation needs at least one deny phrase or blockPii`) — a policy that matches
+nothing would make every reply pay a scan to reach the answer it would have reached
+anyway. Phrases are trimmed and deduped case-insensitively.
+
+**Zero model calls, zero added latency.** This is a pure in-process check over a few
+kilobytes — no I/O, no clock, no config reads — which is why it can run on every
+reply of every agent that has it without the operator trading reply speed for it.
+
+**Substring, not word boundary, and that is a decision.** An operator who has to
+enumerate `guarantee`, `guaranteed`, `guarantees`, `guaranteeing` will miss one, and
+a guard that lets all three through while looking like it works is the worst
+property a guard can have. The cost is over-matching inside unrelated words (`cure`
+in `secure`), and the fix for an over-broad phrase is a **longer** one — `a cure
+for` rather than `cure`. Padding with spaces is deliberately *not* an escape hatch:
+phrases are trimmed, so a stray trailing space can never quietly disarm a rule.
+
+**The PII rule's boundary, stated exactly**, because an order number that trips a
+privacy guard is a support bug. Emails match what an address looks like in prose.
+A phone candidate is a run of digits and phone separators bounded by
+non-alphanumerics; it is a phone number when it carries **7–15 digits** *and* wears
+one of four shapes: a leading `+` or `(`; a single unbroken run; 10+ digits with
+every group after the first ≥3 digits; or exactly 3-separator-4. Deliberately
+**not** matched: `#1042`, `1042-2024`, `2026-08-24`, `1,234,567.89`, `12:30`,
+`1Z999AA10123456784` (`,` and `:` are not separators, which is what keeps money and
+times out). Knowingly **over**-matched: a bare 7–15-digit run with no `#` and no
+separators is indistinguishable from a local number by shape alone — an opt-in
+privacy guard errs toward blocking.
+
+**The subscriber's own details are exempt**, or the agent couldn't confirm the
+address on their own account. Email is compared as the **exact** address, normalized
+for case and surrounding punctuation — never the domain, since excluding
+`@acme.com` wholesale would wave through `someone-else@acme.com`, which is exactly
+the leak the rule exists for. Phones compare on **digits only**, with a suffix
+allowance floored at 7 digits so a stored `+1 555 123 4567` matches `5551234567`
+without making every number ending in `4567` "their own".
+
+**Phrases are checked before PII**, and the order is reported as well as executed: a
+deny phrase is a rule the operator *wrote*, so when both would fire, naming theirs
+beats naming a built-in they can't edit. An empty or whitespace-only reply passes —
+there is nothing in it to leak.
+
+**When it blocks:** the `fallback` replaces the reply and ships **bare** — buttons
+and cards drafted in the same breath are dropped, because "Yes, refund it" under a
+fallback that no longer offers a refund is worse than no buttons. Nothing is rolled
+back: **the turn's tools have already run**, a resolve stays resolved, and the
+breadcrumbs stay. That tension has one mitigation and it is editorial — write the
+fallback knowing actions may have completed (*"a teammate will follow up"* is always
+true; *"I wasn't able to help"* can be a lie). The platform-authored fallback is
+tagged like the redirect, so the model never learns to imitate it.
+
+**What is exempt from this check:** the topic gate's redirect and the budget-pause
+note. Both are platform-shipped canned text set before the brain branch — checking
+an operator's own redirect against their own deny phrases is circular, and the only
+outcome it could produce is a redirect that blocks itself into a second canned
+sentence. This gate exists to check what the **model** wrote.
+
+**The breadcrumb and the ops alert.** A blocked reply writes a breadcrumb row
+carrying the rule, the match (the configured *phrase* for a phrase hit; the matched
+address itself for a PII hit, since there is no configured value to name) and **the
+blocked text**, which is the only place it survives — without it an operator can't
+tell a leak they were saved from apart from a rule that is too broad, and those need
+opposite fixes. It also raises the reserved `agent-approvals` ops alert (same
+audience as approvals and the budget breaker) — when that workflow and the
+`approvals` subscriber both exist; when they don't, nothing is sent and no hour is
+spent. Debounced to **once per agent per UTC hour**, it carries:
+
+```jsonc
+{ "agentIdentifier": "support-bot", "rule": "pii",
+  "conversationId": "…", "blockedPreviousHour": 14 }
+```
+
+`blockedPreviousHour` is what makes the alert worth reading: the alert fires on the
+first block of an hour, so its own hour's count is always 1, while the hour *before*
+separates "the agent said something it shouldn't have, once" from "a broken prompt
+has been blocking every turn since midnight". **The payload deliberately omits the
+match and the blocked text.** This alert is delivered by a workflow the *tenant*
+wrote, whose steps can email or SMS it anywhere; forwarding the phone number we just
+stopped leaking to one customer would relocate the leak rather than stop it. The
+text stays in Postgres.
+
+### Shared rules for both gates
+
+**`null` clears, absent leaves it alone, an object replaces it whole.** On `PATCH`,
+omitting the field changes nothing, `null` puts the agent back to never-configured,
+and an object **replaces** the stored policy — there is no merge, on purpose: a
+half-updated deny list is a guard nobody can reason about. On create
+(`POST /v1/agents`) `null` is a **400** — there is nothing to clear yet. The agent
+object always carries both fields, `null` when never configured.
+
+**Managed only.** `topics` or `moderation` on a bridge agent is a **400** — a bridge
+agent's brain is your own code, so what it will discuss is decided there, and its
+replies are written by your own code, which is where to check them. As with
+`routing`, `PATCH` judges the runtime the agent will **be** after the patch, and
+clearing is exempt: `"moderation": null` alongside `"runtime": "bridge"` is allowed,
+because switching a gate off is never the wrong answer for an agent that cannot run
+it.
+
+**Both trip the pre-save check.** A gate edit is a behavior change of the bluntest
+kind, so the dashboard sends it as a `candidate` and the scenarios really execute
+behind the edited gate (*Running evals from the API*, above) — including when the
+new value is "off", because *does it still pass without this boundary?* is the whole
+question that save is asking.
+
+**What these gates are not.** `moderation` is **not** a content-safety classifier
+and must never be described as one: it matches phrases an operator typed and two
+built-in contact-detail shapes, so it cannot catch a paraphrase — blocking
+`guarantee` has not blocked *"you have my word"*. That limit is the honest price of a
+check that costs nothing and can never be down. `topics` does read meaning rather
+than spelling, but it is a classifier naming a topic against a closed list, not a
+moderator: what happens to that topic is the operator's lists, applied in code.
+
+Typed wrappers are in `@asyncify-hq/node`
+(`client.agents.update(id, { topics, moderation })`).
