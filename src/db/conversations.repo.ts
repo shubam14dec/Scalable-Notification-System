@@ -1,6 +1,6 @@
 import { pool } from './pool';
 import { emitTenantEvent } from '../core/tenant-events';
-import type { RoutingConfig, TopicsConfig } from '../core/managed-brain';
+import type { ModerationConfig, RoutingConfig, TopicsConfig } from '../core/managed-brain';
 
 /**
  * Agents + conversations repository. An agent is a customer-registered
@@ -70,6 +70,14 @@ export interface Agent {
    * is a description of the intent, never a guarantee about the row.
    */
   topics: TopicsConfig | null;
+  /**
+   * A7 slice B: the outbound reply rules, or null = off (the default, and what
+   * every pre-A7 row holds). Same type-only import and the same caveat as
+   * `topics` above — the column is jsonb, so this type states the intent and
+   * `resolveModeration` in core/reply-rules.ts decides at read time whether a
+   * stored row is coherent enough to gate a reply.
+   */
+  moderation: ModerationConfig | null;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;

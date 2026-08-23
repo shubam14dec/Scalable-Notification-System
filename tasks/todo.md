@@ -33,8 +33,15 @@ with the A2b blocking-mode rejection: never +2-4s on every reply).
 - Frontend: two bordered cards on the Edit tab (Topics / Reply rules,
   routing-section idiom, labels-rule copy); no new pages; breadcrumbs
   in Turn Inspector; bridge agents see neither.
-- [ ] Slice A — topic gate (schema, classifier, short-circuit,
-      breadcrumb, candidate.topics, wire-capture tests).
+- [x] Slice A — DONE 2026-08-24 (commit 7a95e86, suite 827→876): the
+      classifier is never told which labels are denied (names the topic
+      from a closed enum; policy lives in decide() — un-arguable);
+      breadcrumb raw.topicGate NOT raw.action (action rows replay as
+      tool calls — a phantom tool); redirect platformNote-tagged;
+      classifier tokens folded into the day budget; degrade-never-block
+      reasoned (fail-closed would mute an agent's whole traffic);
+      candidate.topics absent = live gate applies (deliberately unlike
+      routing: topics changes WHETHER anyone answers).
 - [ ] Slice B — reply rules (schema, checker, fallback + ops flag +
       breadcrumb, candidate.moderation, tests).
 - [ ] Slice C — surface (two Edit-tab cards, pre-save wiring, API/

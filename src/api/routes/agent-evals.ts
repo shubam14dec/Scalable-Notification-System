@@ -98,6 +98,28 @@ const TopicsSchema = z
     path: ['deny'],
   });
 
+/**
+ * A7 slice B: the reply rules a run may be asked to grade. Bounds mirror
+ * core/reply-rules.ts's own caps (which are what a stored row is normalized
+ * against), and the refine states the one structural rule: rules need something
+ * that can match. `fallback` has no default for the same reason `redirect` has
+ * none — the whole gate is "send THIS instead".
+ *
+ * Declared here rather than imported from routes/agents.ts because slice B ships
+ * no agent-facing moderation surface yet; slice C adds one and this moves beside
+ * RoutingSchema and TopicsSchema, its siblings.
+ */
+const ModerationSchema = z
+  .object({
+    denyPhrases: z.array(z.string().min(1).max(200)).max(100).optional(),
+    blockPii: z.boolean().optional(),
+    fallback: z.string().min(1).max(2_000),
+  })
+  .refine((m) => (m.denyPhrases?.length ?? 0) > 0 || m.blockPii === true, {
+    message: 'moderation needs at least one deny phrase or blockPii',
+    path: ['denyPhrases'],
+  });
+
 const CandidateSchema = z
   .object({
     systemPrompt: z.string().min(1).max(100_000).optional(),
@@ -121,14 +143,23 @@ const CandidateSchema = z
      * really has. See CandidateConfig.topics in core/managed-brain.ts.
      */
     topics: TopicsSchema.nullable().optional(),
+    /**
+     * A7 slice B: the REPLY RULES to grade. `null` means "grade it with the
+     * rules OFF", and it is the only way to say that, because ABSENT means the
+     * AGENT'S OWN rules apply — topics' semantics, not routing's. Moderation
+     * changes what may ship, and a prompt edit is graded AS THIS AGENT, behind
+     * the boundary the agent really has. See CandidateConfig.moderation.
+     */
+    moderation: ModerationSchema.nullable().optional(),
   })
   .refine(
     (c) =>
       c.systemPrompt !== undefined ||
       c.model !== undefined ||
       c.routing !== undefined ||
-      c.topics !== undefined,
-    { message: 'candidate needs systemPrompt, model, routing and/or topics' },
+      c.topics !== undefined ||
+      c.moderation !== undefined,
+    { message: 'candidate needs systemPrompt, model, routing, topics and/or moderation' },
   );
 
 const RunEvalSchema = z.object({
@@ -249,6 +280,10 @@ export function registerAgentEvalRoutes(app: FastifyInstance) {
         // schema's note). The wire shape already IS the stored shape (three
         // plain fields, no sentinels), so there is nothing to normalize.
         ...('topics' in raw ? { topics: raw.topics ?? null } : {}),
+        // A7 slice B: same absent-vs-null preservation, same meaning for absent
+        // as topics — no key here leaves the AGENT'S rules in force for the run.
+        // The wire shape already IS the stored shape, so nothing to normalize.
+        ...('moderation' in raw ? { moderation: raw.moderation ?? null } : {}),
       };
       if (candidate && agent.runtime !== 'managed') {
         return reply.code(400).send({

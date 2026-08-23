@@ -959,3 +959,20 @@ alter table agents add column if not exists routing jsonb;
 -- The redirect is CANNED text, never model freestyle: the whole point of the
 -- gate is that an off-topic turn never reaches a model that could answer it.
 alter table agents add column if not exists topics jsonb;
+
+-- ---- Phase A7 slice B: reply rules (the outbound gate) ----
+-- Per-agent word rules over the agent's OWN drafted reply, or null = off (the
+-- default; an agent born without it behaves exactly as it did before A7). Shape
+-- is owned by `ModerationConfig` in src/core/managed-brain.ts, beside
+-- TopicsConfig, because the turn path is what applies it:
+--   { "denyPhrases": ["guarantee"], "blockPii": true,
+--     "fallback": "Let me get a teammate to follow up on this." }
+-- The rules apply only when the row is coherent: a fallback to send AND
+-- something that can match (at least one deny phrase, or blockPii true).
+-- Enforced in code (resolveModeration), never assumed, because jsonb can hold
+-- anything. A fallback with nothing to match is a scan that always passes; deny
+-- phrases with no fallback is a mute button.
+-- ZERO model calls: substring matching plus two built-in PII patterns, on every
+-- reply, at no measurable latency. There is no LLM moderation here by decision,
+-- not by omission.
+alter table agents add column if not exists moderation jsonb;

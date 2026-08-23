@@ -35,7 +35,13 @@ import {
   getToolDef,
   finishToolCall,
 } from '../../db/agent-tools.repo';
-import { getDayTokens, incrDayTokens, claimBudgetNotify } from '../../shared/agent-counters';
+import {
+  getDayTokens,
+  incrDayTokens,
+  claimBudgetNotify,
+  incrReplyBlockCount,
+  claimReplyRulesNotify,
+} from '../../shared/agent-counters';
 import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
 import { emitTenantEvent } from '../../core/tenant-events';
@@ -46,6 +52,7 @@ import {
   topicGateModel,
   topicsForTurn,
 } from '../../core/topic-gate';
+import { checkReply, moderationForTurn, resolveModeration } from '../../core/reply-rules';
 import { PermanentError, TransientError } from '../../shared/errors';
 import { fetch as safeFetch } from 'undici';
 import {
@@ -476,17 +483,143 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       turnTrace = turn.trace;
       turnRouting = turn.routing;
       replyPlatformNote = turn.platformNote ?? false;
+
+      // ---- Phase A7 slice B: REPLY RULES, the outbound gate ----
+      // RIGHT HERE, and the position is the design: this is the one point where
+      // BOTH reply paths still converge. Below, the turn forks — a posted plan
+      // card finalizes into its own row, everything else falls through to the
+      // insert further down — and a check on either fork alone would leave the
+      // other shipping unchecked. Nothing between the brain returning and this
+      // line can send anything to a customer.
+      //
+      // It reads `reply`/`buttons`/`card`, the locals just assigned from `turn`,
+      // and REWRITES them on a block, so both forks below carry the fallback
+      // without either needing to know a gate exists (the finalize call was
+      // switched from `turn.*` to these locals for exactly that reason).
+      //
+      // Off unless the agent (or the candidate under grading) carries coherent
+      // rules, which is every pre-A7 agent. Managed only, like every other A7
+      // gate: a bridge agent's reply is the customer's own code talking, and we
+      // do not edit their words on their way out.
+      const rules = resolveModeration(moderationForTurn(agent.moderation, turnCandidate));
+      const verdict =
+        rules && reply
+          ? checkReply(reply, rules, { email: subscriber.email, phone: subscriber.phone })
+          : { blocked: false as const };
+      if (rules && verdict.blocked) {
+        // NOT the topic-gate redirect, and not the budget note: both are set
+        // before the brain branch and short-circuit past it, so platform-authored
+        // canned text never reaches this check. That exemption is deliberate and
+        // worth naming — running an operator's own redirect against their own
+        // deny phrases is circular, and the one outcome it can produce is an
+        // operator whose redirect blocks itself into a second canned sentence.
+        // The gate exists to check what the MODEL wrote.
+        reply = rules.fallback;
+        // Platform-authored, so tagged exactly like the redirect: buildHistory
+        // must never replay it as an assistant turn, or the agent learns to
+        // imitate its own fallback (the budget-note parroting lesson, §13).
+        replyPlatformNote = true;
+        // THE BUTTONS AND THE CARD GO WITH IT. They were drafted in the same
+        // breath as the blocked sentence and are answers to it — "Yes, refund
+        // it" under a fallback that no longer offers a refund is worse than no
+        // buttons at all. The fallback ships BARE.
+        buttons = undefined;
+        card = undefined;
+        // THE HONEST TENSION, stated where the code makes the trade: the turn's
+        // tools have ALREADY RUN by now. If the model issued a refund and then
+        // wrote a sentence that tripped a rule, the refund happened and the
+        // customer is about to be told something static that cannot mention it.
+        // Suppressing the reply cannot un-issue it, and inventing a sentence
+        // about it would be the model freestyle this gate exists to prevent.
+        // So the fallback ships as written, and the ONE mitigation is editorial:
+        // an operator's fallback must be written knowing actions may have
+        // completed. "A teammate will follow up on this" is safe; "I wasn't able
+        // to help with that" can be a lie. Slice C's helper copy says so at the
+        // point the operator types it. For the same reason nothing here rolls
+        // back `turn.resolved` or the tool breadcrumbs: what happened, happened.
+        const tally = await incrReplyBlockCount(agent.id);
+        // The receipt, and the ONLY place the blocked text survives. Same idiom
+        // as the topic gate: a named key on a system row, NOT `raw.action` —
+        // action rows replay to the model as tool calls, and a reply_rules
+        // action would teach the agent a phantom tool. A string signal index
+        // because 0 is the turn-note slot and a managed turn can carry both.
+        await systemNote(
+          conversation,
+          messageId,
+          'reply-rules',
+          `reply blocked by the ${verdict.rule} rule (${verdict.match}) — sent the configured fallback`,
+          {
+            replyRules: {
+              rule: verdict.rule,
+              match: verdict.match,
+              // What the model actually wrote. Kept because a fallback with no
+              // record of what it replaced is untriageable: the operator cannot
+              // tell a leak they were saved from apart from a rule that is too
+              // broad, and those need opposite fixes.
+              blockedText: turn.reply,
+              blocked: true,
+            },
+          },
+        );
+        logExec({
+          tenantId,
+          transactionId: `conv-${conversationId}`,
+          level: 'warn',
+          detail: `agent ${agent.identifier} reply blocked by reply rules (${verdict.rule}) — fallback sent`,
+        });
+        // Reserved ops alert, the P22 idiom exactly (Phase 18 lookup-first: both
+        // halves of the reserved pair must exist BEFORE the claim is spent, or a
+        // tenant who has not created the workflow silently burns the window).
+        // Debounced per agent per HOUR, not per day like the budget alert —
+        // see claimReplyRulesNotify for why the two windows differ.
+        const opsApprover = await getApprovalsSubscriber(tenantId);
+        const opsWorkflow = opsApprover && (await getWorkflow(tenantId, 'agent-approvals'));
+        if (opsApprover && opsWorkflow && (await claimReplyRulesNotify(agent.id))) {
+          await internalTrigger({
+            tenantId,
+            workflowKey: 'agent-approvals',
+            to: [
+              {
+                subscriberId: opsApprover.external_id,
+                email: opsApprover.email ?? undefined,
+                phone: opsApprover.phone ?? undefined,
+                pushToken: opsApprover.push_token ?? undefined,
+              },
+            ],
+            // A POINTER, NOT THE PAYLOAD. `match` and the blocked text stay in
+            // Postgres. This alert is delivered by a workflow the TENANT wrote,
+            // whose steps can email or SMS it anywhere; forwarding the matched
+            // address would take the phone number we just stopped leaking to one
+            // customer and post it somewhere we do not control. Ops gets the
+            // rule, the conversation, and how bad the hour before was.
+            payload: {
+              agentIdentifier: agent.identifier,
+              rule: verdict.rule,
+              conversationId,
+              blockedPreviousHour: tally.previousHour,
+            },
+            transactionId: `reply-rules-alert-${messageId}`,
+            source: `managed agent ${agent.identifier} reply rules`,
+          }).catch((err) => {
+            // A notification hiccup must not fail a turn whose customer is
+            // already getting a safe answer.
+            logger.warn({ err: (err as Error).message }, 'reply-rules ops notification failed');
+          });
+        }
+      }
+
       // If a plan card was posted, its row IS the reply row — finalize it now
-      // (the final edit becomes the reply). turn.reply carries the extras; a
-      // no-reply turn (note/refusal/empty) finalizes to the same note string.
+      // (the final edit becomes the reply). The locals (post-gate) carry the
+      // extras; a no-reply turn (note/refusal/empty) finalizes to the same note
+      // string.
       if (planCard?.posted) {
-        if (turn.reply) {
-          await planCard.finalize(turn.reply, {
-            buttons: turn.buttons,
-            card: turn.card,
+        if (reply) {
+          await planCard.finalize(reply, {
+            buttons,
+            card,
             usage: turn.usage,
             trace: turn.trace,
-            platformNote: turn.platformNote,
+            platformNote: replyPlatformNote,
             canaryVersion: servedCanaryVersion,
             routing: turn.routing,
           });
@@ -1765,7 +1898,15 @@ async function getApprovalsSubscriber(
 async function systemNote(
   conversation: Conversation,
   messageId: string,
-  signalIndex: number,
+  /**
+   * The dedupe slot this breadcrumb occupies within the turn. Numeric for the
+   * original two families — 0 is the turn-note slot, 1..n are the signals — and
+   * a STRING for a breadcrumb that belongs to neither and must not collide with
+   * either (A7 slice B's 'reply-rules': a managed turn can carry a turn note AND
+   * a blocked reply, and sharing slot 0 would silently drop the second one to
+   * the dedupe key).
+   */
+  signalIndex: number | string,
   content: string,
   raw?: unknown,
 ): Promise<void> {

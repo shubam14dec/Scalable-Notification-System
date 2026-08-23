@@ -84,3 +84,63 @@ export async function claimBudgetNotify(agentId: string): Promise<boolean> {
   const res = await redis.set(key, '1', 'EX', DAY_TOKENS_TTL_S, 'NX');
   return res === 'OK';
 }
+
+/**
+ * Phase A7 slice B — the REPLY-RULES block tally, one bucket per agent per UTC
+ * hour. 3h TTL so the CURRENT hour and the PREVIOUS one are both readable (the
+ * alert reports the previous window; see below) with an hour of slack.
+ */
+const REPLY_BLOCK_TTL_S = 3 * 60 * 60;
+
+/** The Redis key holding an agent's reply-rules blocks for one UTC hour. */
+export function replyBlockKey(agentId: string, d = new Date()): string {
+  return `replyblocks:${agentId}:${utcHourStamp(d)}`;
+}
+
+/**
+ * Count one blocked reply and report the neighbourhood: the running total for
+ * this UTC hour (including this block) and the FINAL total for the previous one.
+ *
+ * The previous-hour figure is what makes the ops alert worth reading. The alert
+ * fires on the first block of an hour, so its own hour count is always 1 and
+ * says nothing; the hour BEFORE it separates "an agent said something it
+ * shouldn't have, once" from "a broken prompt has been blocking every turn since
+ * midnight". Two reads instead of one, on a path that only runs when a reply was
+ * already blocked.
+ */
+export async function incrReplyBlockCount(
+  agentId: string,
+): Promise<{ thisHour: number; previousHour: number }> {
+  const now = new Date();
+  const key = replyBlockKey(agentId, now);
+  const thisHour = await redis.incr(key);
+  await redis.expire(key, REPLY_BLOCK_TTL_S);
+  const prev = await redis.get(replyBlockKey(agentId, new Date(now.getTime() - 60 * 60 * 1000)));
+  return { thisHour, previousHour: prev ? Number(prev) : 0 };
+}
+
+/**
+ * Claim the once-per-UTC-HOUR reply-rules ops alert for an agent. Same atomic
+ * SET NX EX debounce as `claimBudgetNotify`, at a DELIBERATELY tighter window,
+ * and the difference is the point:
+ *
+ * A budget alert says the same thing all day — the agent is over its cap and
+ * will stay over it until midnight — so once a day is the whole story. A blocked
+ * reply is a discrete event, and EACH ONE MATTERS: it is a specific thing an
+ * agent tried to say to a specific customer. The honest posture is therefore
+ * neither of the two easy answers. Alerting per block invites a storm (a broken
+ * prompt can block every turn, and an ops channel that cries wolf a thousand
+ * times before lunch is an ops channel nobody reads); alerting once a day would
+ * make the second incident of the morning invisible.
+ *
+ * So: one alert per agent per hour, carrying the previous hour's count so a
+ * storm is legible from the alert itself rather than only from the transcript.
+ * Nothing is lost by the debounce — EVERY block writes its own durable
+ * `raw.replyRules` breadcrumb on the conversation, which is the record; the
+ * alert is the nudge to go and read it.
+ */
+export async function claimReplyRulesNotify(agentId: string): Promise<boolean> {
+  const key = `replyrules-notified:${agentId}:${utcHourStamp()}`;
+  const res = await redis.set(key, '1', 'EX', REPLY_BLOCK_TTL_S, 'NX');
+  return res === 'OK';
+}

@@ -225,6 +225,21 @@ export interface CandidateConfig {
    * "the agent as configured", and an eval experiences the gate by default.
    */
   topics?: TopicsConfig | null;
+  /**
+   * Phase A7 slice B — the candidate REPLY RULES, with TOPICS' semantics rather
+   * than routing's, for the identical reason:
+   *
+   *   absent      — the AGENT'S OWN rules apply (every canary turn, every
+   *                 prompt-only pre-save check).
+   *   null        — "reply rules OFF for this turn", explicitly graded.
+   *   an object   — check this turn's reply against THESE rules.
+   *
+   * Moderation changes WHAT MAY SHIP. A pre-save check grades a prompt edit AS
+   * THIS AGENT: if the live rules would replace a scenario's reply with the
+   * fallback, the candidate's run has to meet that too, or the check passes an
+   * agent that does not exist. See `moderationForTurn` in core/reply-rules.ts.
+   */
+  moderation?: ModerationConfig | null;
 }
 
 /**
@@ -274,6 +289,37 @@ export interface TopicsConfig {
   allow?: string[];
   /** The canned reply an off-topic message gets. Never model freestyle. */
   redirect: string;
+}
+
+/**
+ * Phase A7 slice B — the per-agent REPLY RULES (the `agents.moderation` jsonb).
+ * Owned here beside TopicsConfig for the same reason: the turn path applies it.
+ *
+ * The two gates are deliberately different KINDS of check. Topics is a model
+ * classifying the customer's question; this is word rules over the agent's own
+ * drafted reply — no model, no call, no latency. There is no built-in LLM
+ * moderation and there is not going to be: the A2b decision (never +2-4s on
+ * every reply) applies to a guard just as much as to a judge.
+ *
+ * `denyPhrases` are matched case-insensitively as SUBSTRINGS, and `blockPii`
+ * turns on two built-in patterns (email addresses and phone numbers) with the
+ * subscriber's OWN details excluded. `fallback` is the canned reply a blocked
+ * turn ships instead, and it is required — a rule that blocks without saying
+ * anything is a mute button. The rules apply only when the fallback exists AND
+ * something can match; `resolveModeration` in core/reply-rules.ts is the only
+ * reader that decides that, because the column is jsonb and can hold anything.
+ *
+ * WRITING THE FALLBACK IS A REAL DESIGN JOB, not boilerplate: by the time it
+ * ships, the turn's tools have ALREADY RUN. See the gate in
+ * conversation.processor.ts for the full statement of that tension.
+ */
+export interface ModerationConfig {
+  /** Phrases the reply must not contain. Case-insensitive substring match. */
+  denyPhrases?: string[];
+  /** Block replies containing an email/phone that is not the subscriber's own. */
+  blockPii?: boolean;
+  /** The canned reply a blocked turn ships. Required; never model freestyle. */
+  fallback: string;
 }
 
 /**
