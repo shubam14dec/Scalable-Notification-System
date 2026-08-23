@@ -6,6 +6,42 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A7 — guardrails completion: topic gate + reply rules (plan
+approved 2026-08-24)
+Two gates, per-agent, managed-only, OFF by default. VERIFIED at
+planning: rate caps (agent_tool_defs.guard incl. maxCallsPerHour) and
+budgets (agents.max_daily_tokens) already shipped P22 — A7 = the two
+missing pieces only. USER VETO: no webhook checker (checker-1 word
+rules are enough; enterprise BYO-checker = additive later if ever
+asked — the veto also dissolves the fail-open/closed question, an
+in-process check can't be down). NO built-in LLM moderation (consistent
+with the A2b blocking-mode rejection: never +2-4s on every reply).
+- Gate 1 topics: agents.topics jsonb {allow?, deny?, redirect};
+  deny>allow; redirect = canned text, never model freestyle. Detection
+  = ONE small structured classifier call before the brain (forced
+  tool, closed labels from the lists + in_lane, temp 0 predicate,
+  recent-turn context), on routing.cheapModel ?? agent model; off-topic
+  short-circuits the brain (cheaper AND safer). Breadcrumbed for the
+  Turn Inspector. candidate.topics trips pre-save (A6 absent/null/
+  object pattern).
+- Gate 2 reply rules: agents.moderation jsonb {denyPhrases, blockPii?,
+  fallback}; in-process check on every drafted reply (deny-phrase hit
+  or non-own email/phone when blockPii) → configured fallback ships,
+  ops flag via P22 alert machinery, blocked text preserved in the
+  breadcrumb. Zero LLM calls, zero latency. candidate.moderation trips
+  pre-save.
+- Frontend: two bordered cards on the Edit tab (Topics / Reply rules,
+  routing-section idiom, labels-rule copy); no new pages; breadcrumbs
+  in Turn Inspector; bridge agents see neither.
+- [ ] Slice A — topic gate (schema, classifier, short-circuit,
+      breadcrumb, candidate.topics, wire-capture tests).
+- [ ] Slice B — reply rules (schema, checker, fallback + ops flag +
+      breadcrumb, candidate.moderation, tests).
+- [ ] Slice C — surface (two Edit-tab cards, pre-save wiring, API/
+      agentView/SDK + changeset).
+- [ ] Slice D — docs+close-out (guide §6 two-gates story, AGENT-TOOLS,
+      gap docs, todo review).
+
 ### Phase A6 — SHIPPED 2026-08-23 (review)
 All 3 slices done (commits 0a316de, f102d1c, +docs), suite 799→827,
 root+dashboard+sdk tsc clean. What shipped: cheap-first routing with
@@ -308,9 +344,8 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       P22: "Save as eval" on the conversation page.)
 - [x] A5. Prompt versioning + canary — SHIPPED 2026-08-23, review above.
 - [x] A6. Model routing — SHIPPED 2026-08-23, review above.
-- [ ] A7. Guardrails completion (P22 later bucket rest): tool-call rate
-      caps; per-agent token/spend budgets (pause, not surprise-bill);
-      topic allow/deny; output moderation hook.
+- (IN PROGRESS above) A7. Guardrails completion — rate caps + budgets
+      verified already shipped (P22); scope = topic gate + reply rules.
 - [ ] A8. Security hardening: PII redaction in logs/breadcrumbs;
       per-tenant retention auto-purge; per-END-USER rate limits; RAG
       docs AND tool results AND inbound channel content treated as

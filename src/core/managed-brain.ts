@@ -206,6 +206,25 @@ export interface CandidateConfig {
    *   an object   — route this turn with THIS config, not the agent's.
    */
   routing?: RoutingConfig | null;
+  /**
+   * Phase A7 slice A — the candidate TOPIC GATE, with the same three states as
+   * `routing` above but a DELIBERATELY DIFFERENT meaning for the absent one:
+   *
+   *   absent      — the AGENT'S OWN gate applies (this is every canary turn and
+   *                 every prompt-only pre-save check).
+   *   null        — "topic gate OFF for this turn", explicitly graded.
+   *   an object   — gate this turn with THIS policy, not the agent's.
+   *
+   * Absent differs from routing's absent (where the router steps aside) because
+   * the two knobs answer different questions: ROUTING changes WHO answers, and
+   * grading an edit on a model nobody asked about corrupts the score — so an
+   * unopinionated candidate must not be rerouted. TOPICS changes WHETHER ANYONE
+   * answers, and a prompt edit is being graded AS THE AGENT: if the live gate
+   * would redirect a scenario's message, the edit's run must meet that redirect
+   * too, or the check grades an agent that does not exist. So silence here means
+   * "the agent as configured", and an eval experiences the gate by default.
+   */
+  topics?: TopicsConfig | null;
 }
 
 /**
@@ -230,6 +249,55 @@ export interface CandidateConfig {
 export interface RoutingConfig {
   enabled: boolean;
   cheapModel: string;
+}
+
+/**
+ * Phase A7 — the per-agent TOPIC POLICY (the `agents.topics` jsonb). Owned here
+ * beside RoutingConfig for the same reason: the turn path is what applies it.
+ *
+ * `deny` names topics this agent must never engage with; `allow`, when it is
+ * non-empty, is EXHAUSTIVE — anything a classifier cannot place inside it is
+ * off-topic. `redirect` is the canned sentence the customer gets instead, and it
+ * is required: a policy that blocks without saying anything is a mute button.
+ *
+ * The gate applies only when at least one list is non-empty AND a redirect
+ * exists — see `resolveTopics` in core/topic-gate.ts, which is the only reader
+ * that decides that, because the column is jsonb and can hold anything.
+ *
+ * NOT a per-turn A/B knob the way `model` is: see CandidateConfig.topics above
+ * for why an eval meets the agent's gate unless it explicitly says otherwise.
+ */
+export interface TopicsConfig {
+  /** Topics that are off-limits. Beats `allow` when a label appears in both. */
+  deny?: string[];
+  /** When non-empty, the ONLY topics this agent handles. */
+  allow?: string[];
+  /** The canned reply an off-topic message gets. Never model freestyle. */
+  redirect: string;
+}
+
+/**
+ * The cheap model that applies to ONE turn, or '' when routing does not apply
+ * to it. Extracted (A7) because two callers need the SAME precedence and a
+ * second copy would be a second law: the router below, and the A7 topic gate,
+ * which classifies on the cheap model whenever the turn has one.
+ *
+ * Every clause is a real guard, not a formality: the column is jsonb, so a row
+ * can hold anything, and an ENABLED router with no cheap model has nothing to
+ * route to. ABSENT vs null is the whole candidate distinction, so this is an
+ * `in` test rather than a `?? agentRouting`: an explicit null means "grade it
+ * with routing OFF", which must not silently fall back to the agent's router.
+ */
+export function cheapModelFor(
+  agentRouting: RoutingConfig | null,
+  candidate: CandidateConfig | undefined,
+): string {
+  const candidateNamesRouting = Boolean(candidate && 'routing' in candidate);
+  const routingCfg = candidateNamesRouting ? (candidate!.routing ?? null) : agentRouting;
+  const routerApplies = !candidate || candidateNamesRouting;
+  return routerApplies && routingCfg?.enabled === true && typeof routingCfg.cheapModel === 'string'
+    ? routingCfg.cheapModel.trim()
+    : '';
 }
 
 /**
@@ -643,19 +711,10 @@ export async function runManagedTurn(
   // rule is the same one it always was, applied to one more field: an eval
   // grades the config it was GIVEN.
   const strongModel = opts?.candidate?.model ?? agent.model ?? DEFAULT_MODEL;
-  // ABSENT vs null is the whole distinction, so this is an `in` test rather
-  // than a `?? agent.routing`: an explicit null means "grade it with routing
-  // OFF", which must not silently fall back to the agent's own router.
-  const candidateNamesRouting = Boolean(opts?.candidate && 'routing' in opts.candidate);
-  const routingCfg = candidateNamesRouting ? (opts!.candidate!.routing ?? null) : agent.routing;
-  // Every clause is a real guard, not a formality: the column is jsonb, so a row
-  // can hold anything, and an ENABLED router with no cheap model has nothing to
-  // route to. '' means "routing does not apply", which is exactly today's path.
-  const routerApplies = !opts?.candidate || candidateNamesRouting;
-  const cheapModel =
-    routerApplies && routingCfg?.enabled === true && typeof routingCfg.cheapModel === 'string'
-      ? routingCfg.cheapModel.trim()
-      : '';
+  // The absent/null/object precedence lives in cheapModelFor (above), shared
+  // with A7's topic gate so the two can never drift; '' means "routing does not
+  // apply to this turn", which is exactly today's path.
+  const cheapModel = cheapModelFor(agent.routing, opts?.candidate);
 
   if (cheapModel.length === 0) {
     // Routing off / misconfigured / overridden: byte-identical to pre-A6 — one

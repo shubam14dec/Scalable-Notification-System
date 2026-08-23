@@ -1,6 +1,6 @@
 import { pool } from './pool';
 import { emitTenantEvent } from '../core/tenant-events';
-import type { RoutingConfig } from '../core/managed-brain';
+import type { RoutingConfig, TopicsConfig } from '../core/managed-brain';
 
 /**
  * Agents + conversations repository. An agent is a customer-registered
@@ -61,6 +61,15 @@ export interface Agent {
    * from the repo layer onto core/.
    */
   routing: RoutingConfig | null;
+  /**
+   * A7: the topic gate's policy, or null = off (the default, and what every
+   * pre-A7 row holds). Shape owned by the brain beside RoutingConfig, for the
+   * same reason and on the same type-only import. Whether a stored policy is
+   * COHERENT enough to gate a turn is decided at read time by
+   * core/topic-gate.ts's resolveTopics — the column is jsonb, so the type here
+   * is a description of the intent, never a guarantee about the row.
+   */
+  topics: TopicsConfig | null;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;

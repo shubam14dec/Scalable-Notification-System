@@ -185,8 +185,13 @@ export function judgeTemperatureFor(model: string): number | null {
  * attacker-influenced text; without this, a user message containing the closing
  * marker could end the DATA section early and have its remainder read as judge
  * instructions.
+ *
+ * EXPORTED (A7) so the topic-gate classifier fences its input with the SAME
+ * implementation instead of a lookalike regex — the pattern covers the whole
+ * `<<<BEGIN|END_UNTRUSTED_*>>>` family, so a new caller's new sentinels are
+ * neutralized by it for free, and there is one place to fix if it is ever wrong.
  */
-function neutralizeSentinels(s: string): string {
+export function neutralizeSentinels(s: string): string {
   return s.replace(/<<<(?:BEGIN|END)_UNTRUSTED_[A-Z_]*>>>/g, '[marker removed]');
 }
 

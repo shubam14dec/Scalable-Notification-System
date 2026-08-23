@@ -75,6 +75,29 @@ const UpdateEvalSchema = z
  * could actually be saved with. At least one key, or there is no override to
  * make (an empty object is a caller bug, not "use the agent's config").
  */
+/**
+ * A7 slice A: the topic policy a run may be asked to grade. Bounds mirror
+ * core/topic-gate.ts's own caps (which are what a stored row is normalized
+ * against), and the refine states the one structural rule: a policy needs
+ * something to match on. `redirect` has no default — the whole gate is "send
+ * THIS instead", and there is no sensible sentence to invent on an operator's
+ * behalf.
+ *
+ * Declared here rather than imported from routes/agents.ts because slice A ships
+ * no agent-facing topics surface yet; slice C adds one and this moves beside
+ * RoutingSchema, its sibling.
+ */
+const TopicsSchema = z
+  .object({
+    deny: z.array(z.string().min(1).max(120)).max(24).optional(),
+    allow: z.array(z.string().min(1).max(120)).max(24).optional(),
+    redirect: z.string().min(1).max(2_000),
+  })
+  .refine((t) => (t.deny?.length ?? 0) > 0 || (t.allow?.length ?? 0) > 0, {
+    message: 'topics needs at least one deny or allow label',
+    path: ['deny'],
+  });
+
 const CandidateSchema = z
   .object({
     systemPrompt: z.string().min(1).max(100_000).optional(),
@@ -88,10 +111,24 @@ const CandidateSchema = z
      * it did before this field existed.
      */
     routing: RoutingSchema.nullable().optional(),
+    /**
+     * A7 slice A: the TOPIC POLICY to grade. `null` means "grade it with the
+     * gate OFF" — a real thing to ask for, and the only way to say it, because
+     * ABSENT deliberately means the AGENT'S OWN gate applies (unlike `routing`
+     * above, where absent means the router steps aside). The asymmetry is the
+     * design: routing changes who answers, topics changes whether anyone does,
+     * and a prompt edit is graded AS THIS AGENT — behind the boundary the agent
+     * really has. See CandidateConfig.topics in core/managed-brain.ts.
+     */
+    topics: TopicsSchema.nullable().optional(),
   })
   .refine(
-    (c) => c.systemPrompt !== undefined || c.model !== undefined || c.routing !== undefined,
-    { message: 'candidate needs systemPrompt, model and/or routing' },
+    (c) =>
+      c.systemPrompt !== undefined ||
+      c.model !== undefined ||
+      c.routing !== undefined ||
+      c.topics !== undefined,
+    { message: 'candidate needs systemPrompt, model, routing and/or topics' },
   );
 
 const RunEvalSchema = z.object({
@@ -207,6 +244,11 @@ export function registerAgentEvalRoutes(app: FastifyInstance) {
         ...('routing' in raw
           ? { routing: raw.routing ? routingConfig(raw.routing) : null }
           : {}),
+        // A7: same absent-vs-null preservation, opposite meaning for absent —
+        // no key here leaves the AGENT'S gate in force for the run (see the
+        // schema's note). The wire shape already IS the stored shape (three
+        // plain fields, no sentinels), so there is nothing to normalize.
+        ...('topics' in raw ? { topics: raw.topics ?? null } : {}),
       };
       if (candidate && agent.runtime !== 'managed') {
         return reply.code(400).send({

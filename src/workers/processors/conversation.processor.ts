@@ -40,6 +40,12 @@ import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
 import { emitTenantEvent } from '../../core/tenant-events';
 import { judgeTurnIfSampled } from '../../core/turn-judge';
+import {
+  resolveTopics,
+  runTopicGate,
+  topicGateModel,
+  topicsForTurn,
+} from '../../core/topic-gate';
 import { PermanentError, TransientError } from '../../shared/errors';
 import { fetch as safeFetch } from 'undici';
 import {
@@ -292,18 +298,13 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     }
   }
 
+  // ---- A5 slice B: canary injection ----
+  // HOISTED (A7) out of the managed branch below, because the topic gate runs
+  // BEFORE the brain and has to know which config governs this turn: a candidate
+  // may carry its own topic policy. The guard is the branch's own, so a
+  // budget-exhausted or bridge turn still resolves nothing and reads nothing.
+  let turnCandidate: CandidateConfig | undefined;
   if (agent.runtime === 'managed' && !budgetExhausted) {
-    planCard =
-      conversation.channel !== 'email'
-        ? createPlanCard({
-            conversation,
-            agent,
-            subscriberExternalId: subscriber.external_id,
-            inboundMessageId: messageId,
-            inboundRow: message,
-          })
-        : undefined;
-    // ---- A5 slice B: canary injection ----
     // A canary is not a second override mechanism: it is the A4 candidate knob
     // aimed at real traffic. The arm was decided once when the conversation
     // opened; all that happens per turn is one PK read of the snapshot.
@@ -341,9 +342,108 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     // was asked to grade — a trial silently overriding it would corrupt the
     // scores. Never merged field-by-field: a half-canary/half-candidate prompt
     // is a config that no one chose and no one could reproduce.
-    const turnCandidate = data.evalCandidate ?? canaryCandidate;
+    turnCandidate = data.evalCandidate ?? canaryCandidate;
     if (data.evalCandidate) servedCanaryVersion = undefined;
+  }
 
+  // ---- Phase A7 slice A: THE TOPIC GATE ----
+  // One small classifier call, BEFORE the brain — and therefore before A6's
+  // router, so a single classification governs the turn no matter which model
+  // would then have served it. Off unless the agent (or the candidate under
+  // grading) carries a coherent policy, which is every pre-A7 agent.
+  //
+  // A blocked turn ships the operator's CANNED redirect through the ordinary
+  // reply path below — same insert, same dedupe key, same deliverReply, same WS
+  // and channel behavior — so nothing downstream needs to know a gate exists.
+  // The brain never runs, which is the safety property AND the cost one.
+  //
+  // Managed only: a bridge agent's brain is the customer's own code behind a
+  // signed URL, and we do not stand between them and their own service (the
+  // same law routing, versions and canaries state at their own surfaces).
+  let topicBlocked = false;
+  if (agent.runtime === 'managed' && !budgetExhausted) {
+    const gate = resolveTopics(topicsForTurn(agent.topics, turnCandidate));
+    if (gate) {
+      const model = topicGateModel(agent, turnCandidate);
+      // `history` is the user/agent window already loaded for this turn — the
+      // gate adds no query. It never throws: a classifier that cannot answer
+      // returns 'skipped' and the turn proceeds ungated (see topic-gate.ts).
+      const result = await runTopicGate({
+        agent,
+        gate,
+        model,
+        message: message.content,
+        history,
+      });
+      if (result.verdict !== 'skipped') {
+        // The gate spent the customer's tokens like anything else does; G2's
+        // day counter must see them, or a gated agent's cheapest turns would be
+        // the only ones its budget cannot feel.
+        await incrDayTokens(agent.id, result.usage.inputTokens + result.usage.outputTokens);
+      }
+      if (result.verdict === 'blocked') {
+        topicBlocked = true;
+        reply = gate.redirect;
+        // The redirect is PLATFORM-authored, not the model's words: tagged
+        // platformNote on the row below so buildHistory never replays it as an
+        // assistant turn. Un-tagged, it is exactly the imitable prose that got
+        // the budget note parroted back verbatim (lesson §13).
+        replyPlatformNote = true;
+        // WHY this customer got a canned sentence, for the Turn Inspector. NOT
+        // written as `raw.action`: that is the TOOL-breadcrumb shape, and the
+        // brain replays action rows to the model as tool calls — a topic_gate
+        // action would teach the agent it has a tool it does not have. So the
+        // budget-note idiom instead: a named key of its own on a system row,
+        // which replay correctly ignores.
+        await systemNote(
+          conversation,
+          messageId,
+          0,
+          `off-topic: classified "${result.label}" (${result.list} list) — sent the configured redirect, no model reply`,
+          {
+            topicGate: {
+              label: result.label,
+              list: result.list,
+              model: result.model,
+              blocked: true,
+            },
+            // One model call happened even though the brain never ran; the row
+            // that records the skip is the row that carries its cost.
+            usage: {
+              inputTokens: result.usage.inputTokens,
+              outputTokens: result.usage.outputTokens,
+              modelCalls: 1,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+          },
+        );
+        logExec({
+          tenantId,
+          transactionId: `conv-${conversationId}`,
+          level: 'info',
+          detail: `topic gate: "${result.label}" (${result.list} list) — redirect sent, brain skipped`,
+        });
+      }
+      // AND NOTHING IS WRITTEN WHEN THE MESSAGE IS IN LANE. The asymmetry is
+      // deliberate: a blocked turn needs a receipt because the customer got a
+      // reply nobody wrote, while an in-lane turn is just a normal turn — and a
+      // breadcrumb on every one of those, forever, is a row per turn of storage
+      // and a line of noise in every transcript to record that nothing happened.
+    }
+  }
+
+  if (agent.runtime === 'managed' && !budgetExhausted && !topicBlocked) {
+    planCard =
+      conversation.channel !== 'email'
+        ? createPlanCard({
+            conversation,
+            agent,
+            subscriberExternalId: subscriber.external_id,
+            inboundMessageId: messageId,
+            inboundRow: message,
+          })
+        : undefined;
     try {
       // Richer history (incl. tool-action breadcrumbs) — the brain folds
       // them in so past tool-backed replies don't look like bare claims. D8:

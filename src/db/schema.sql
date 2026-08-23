@@ -943,3 +943,19 @@ create index if not exists agent_turn_judgments_report_idx
 -- 400 on every turn — i.e. a 100% escalation rate. jsonb rather than two
 -- columns so tiers can grow later without another migration.
 alter table agents add column if not exists routing jsonb;
+
+-- ---- Phase A7 slice A: the topic gate ----
+-- Per-agent topic policy, or null = off (the overwhelming majority of rows —
+-- the gate is opt-in, and an agent born without it behaves exactly as it did
+-- before A7). Shape is owned by `TopicsConfig` in src/core/managed-brain.ts,
+-- beside RoutingConfig, because the turn path is what applies it:
+--   { "deny": ["medical advice"], "allow": [], "redirect": "I can only help with orders." }
+-- THREE fields, and the gate applies only when the row is coherent: at least
+-- one of the two lists non-empty AND a redirect to send. A deny list with no
+-- redirect is not a policy, it is a mute button — enforced in code
+-- (resolveTopics), never assumed, because jsonb can hold anything.
+-- deny BEATS allow: a label named in both is denied, so the safer list wins the
+-- one case where an operator contradicts themselves.
+-- The redirect is CANNED text, never model freestyle: the whole point of the
+-- gate is that an off-topic turn never reaches a model that could answer it.
+alter table agents add column if not exists topics jsonb;
