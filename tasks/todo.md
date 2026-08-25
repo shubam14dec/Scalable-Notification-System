@@ -6,6 +6,43 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A8 — per-customer message limits (plan approved 2026-08-25;
+RESCOPED by user: ONLY per-end-user rate limits — PII redaction,
+retention purge, and the untrusted-input pack REMOVED from the backlog
+at his instruction, not parked)
+One flooding customer throttled individually, politely, cheaply —
+without muting the agent for anyone else or leaning on the day budget
+as the only defense. Design: agents.subscriber_rate jsonb {maxMessages,
+windowMinutes, notice} OFF by default; ONE Redis fixed-window counter
+per (agent, subscriber) at ingress (agent-counters pattern reused),
+checked BEFORE anything expensive; over-limit → messages still land in
+the transcript (the record stays truthful) but no turn runs; the canned
+notice ships ONCE per window; breadcrumb + hourly-deduped ops flag
+("subscriber X throttled — N suppressed"); BOTH runtimes (ingress
+protection, not brain config); eval driver explicit bypass (noCanary
+precedent); deliberately does NOT trip pre-save (changes whether a
+turn runs for floods, not what replies say — an eval would throttle
+itself; stated in docs). Scale: one INCR per inbound message; a
+throttled flood is the cheapest thing the platform does.
+- [x] Slice A — DONE 2026-08-25 (suite 967→1012, +45). ARCHITECTURE
+      RULING mid-slice (agent escalated a real spec conflict — no
+      shared inbound helper exists, 9+ independent enqueue sites): the
+      check lives at the TOP OF processTurn, not ingress — structurally
+      unbypassable (every customer turn IS a turn job; operator/
+      proactive are kind:'deliver' and never enter; future channels
+      inherit protection by construction). Accepted cost: one no-op
+      job per throttled message (a few Redis ops). Null config = zero
+      extra Redis ops. Placed AFTER the D2 human-pen gate (the notice
+      is a platform reply — must not ship into an operator-owned
+      thread). Out-of-bounds config reads OFF, never clamped; alert
+      debounce per (agent,subscriber) — agent-wide would hide the
+      hour's second offender; windowMinutes in the Redis key (retuning
+      starts a fresh series); subscriber_rate deliberately NOT in
+      CandidateConfig.
+- [ ] Slice B — surface: "Message limits" Edit-tab card (labels rule),
+      API/agentView/SDK + changeset.
+- [ ] Slice C — docs: guide §6 sixth knob, AGENT-TOOLS, close-out.
+
 ### Phase A7 — SHIPPED 2026-08-24 (review)
 All 4 slices done (commits 7a95e86, e331dda, a61c6d1, +docs), suite
 827→967 (+140), root+dashboard+sdk tsc clean throughout. What shipped:
@@ -387,11 +424,8 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A5. Prompt versioning + canary — SHIPPED 2026-08-23, review above.
 - [x] A6. Model routing — SHIPPED 2026-08-23, review above.
 - [x] A7. Guardrails completion — SHIPPED 2026-08-24, review above.
-- [ ] A8. Security hardening: PII redaction in logs/breadcrumbs;
-      per-tenant retention auto-purge; per-END-USER rate limits; RAG
-      docs AND tool results AND inbound channel content treated as
-      untrusted input (+ injection eval pack) [tool-results scope added
-      2026-08-21].
+- (IN PROGRESS above) A8. Per-customer message limits — rescoped by
+      user 2026-08-25 to this single item.
 - [ ] A9. LLM scaling: provider-aware LLM concurrency + LLM failover
       chain mirroring the channel failover.
 - [ ] A10. NEW (2026-08-21) production-readiness set:

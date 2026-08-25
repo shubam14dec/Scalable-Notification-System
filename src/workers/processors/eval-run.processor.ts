@@ -106,6 +106,19 @@ function inProcessDriver(
           // message route builds its payload from this same explicit field
           // list, so `evalCandidate` can only ever originate from an eval run.
           ...(candidate ? { evalCandidate: candidate } : {}),
+          // A8: this run's turns are exempt from the per-customer message limit.
+          // A scenario is a burst from one synthetic subscriber by construction —
+          // several turns in the same second, always the same threadKey — so a
+          // limited agent would throttle its own eval run and grade the limiter
+          // instead of the prompt, silently, as a wall of canned notices in the
+          // middle of a scored transcript. UNCONDITIONAL, unlike `evalCandidate`
+          // above: a prompt-less run (no candidate) is just as much an eval as a
+          // pre-save one, and half the runs being throttleable would be worse
+          // than either answer. Explicitly stated rather than inferred from the
+          // caller's shape — the `noCanary` precedent two fields up in this same
+          // driver, and for the same reason: a driver opting out of a
+          // platform-wide protection should have to say so.
+          noRateLimit: true,
         },
         { jobId: `conv-${message.id}`, attempts: 5 },
       );

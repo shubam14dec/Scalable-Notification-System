@@ -41,7 +41,12 @@ import {
   claimBudgetNotify,
   incrReplyBlockCount,
   claimReplyRulesNotify,
+  incrSubscriberInbound,
+  incrSubscriberSuppressed,
+  claimSubscriberRateNotice,
+  claimSubscriberRateNotify,
 } from '../../shared/agent-counters';
+import { resolveSubscriberRate } from '../../core/subscriber-rate';
 import { CardSchema, type Card } from '../../shared/cards';
 import { publishConversationEvent } from '../../core/conversation-events';
 import { emitTenantEvent } from '../../core/tenant-events';
@@ -112,6 +117,25 @@ export interface ConversationJobData {
    * never a spread of the request body, so a caller cannot inject this.
    */
   evalCandidate?: CandidateConfig;
+  /**
+   * INTERNAL (Phase A8) — never accepted from a request body, for the same
+   * reason and by the same construction as `evalCandidate` above: every public
+   * enqueue site builds its payload from an explicit field list.
+   *
+   * Exempts this turn from the per-customer message limit. Stamped ONLY by the
+   * eval-run driver, whose scenario turns are a burst from one synthetic
+   * subscriber by construction — an eval run that could throttle itself would
+   * grade the limiter instead of the prompt, and would do it silently, as a
+   * mysterious wall of canned notices in the middle of a scored transcript.
+   *
+   * An EXPLICIT FLAG rather than inferring it from `evalCandidate`, `channel`,
+   * or the caller's shape — the `noCanary` precedent (conversations.repo.ts): a
+   * driver that wants out of a platform-wide protection should have to say so,
+   * not inherit it by accident. `evalCandidate` in particular would have been
+   * the wrong proxy: a prompt-less eval run carries no candidate at all, so half
+   * the runs would have been throttleable and half not.
+   */
+  noRateLimit?: boolean;
 }
 
 const BRIDGE_TIMEOUT_MS = 10_000;
@@ -210,12 +234,223 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     return;
   }
 
-  const history = await conversationHistoryBefore(conversationId, messageId);
+  // ---- Phase A8: THE PER-CUSTOMER MESSAGE LIMIT ----
+  //
+  // WHY HERE, and it is the whole design decision of the phase.
+  //
+  // The obvious place for a rate limit is ingress — refuse the message at the
+  // route, before a job is ever enqueued. That is what the plan originally said,
+  // and it is wrong for THIS codebase, because there is no ingress. There are
+  // NINE independent enqueue sites (the widget's /messages and /actions, Slack's
+  // message and interactivity webhooks, three Telegram paths, Postmark inbound,
+  // and the eval driver), each hand-rolling the same
+  // open→insert→enqueue ritual, and no shared helper between them. Adding one
+  // would make the limit A RULE EVERY CALL SITE MUST REMEMBER — including every
+  // channel added after today, whose author has never heard of this file. That
+  // is precisely the failure the A5 canary lesson warns about, in the comment
+  // above CANARY_ARM_SQL: "not a rule to remember at each call site, but the
+  // shape of the statement."
+  //
+  // So the check rides the shape of the system instead. EVERY customer turn, on
+  // EVERY channel, in EITHER runtime, IS a default-kind job on QUEUE.CONVERSATION
+  // and therefore arrives HERE. Not by convention — by construction: a channel
+  // that does not enqueue a turn job is a channel whose agent never answers, so
+  // there is no way for a new inbound path to exist and miss this. A helper can
+  // be forgotten; processTurn cannot be bypassed.
+  //
+  // The same shape excludes what must not be limited, for free and structurally
+  // rather than by a list someone has to maintain:
+  //   • OPERATOR replies and PROACTIVE/send-agent-reply pushes are kind:'deliver'
+  //     jobs. They are routed to processDeliver at the top of processConversation
+  //     and never reach this function at all. This limit is on the CUSTOMER's
+  //     inbound and nothing else; an operator answering a throttled customer is
+  //     unaffected, which matters because throttling is exactly when a human
+  //     tends to step in.
+  //   • the approval-decision follow-up turn (processToolDecision) enqueues a
+  //     real turn job, but its inbound row is role:'system'. The role test below
+  //     is what keeps the platform's own follow-ups from being counted against
+  //     the customer who is about to receive them.
+  //
+  // THE COST THIS ACCEPTS, stated plainly: a throttled message still costs one
+  // enqueue and one dequeue that an ingress check would have saved. What it does
+  // NOT cost is the turn — no brain, no classifier, no tools, no model call, no
+  // history read, no typing pulse. A suppressed message is a row insert, a job
+  // that returns in a few Redis ops, and nothing else, which keeps the phase's
+  // scale claim intact: a throttled flood remains the cheapest thing the
+  // platform does.
+  //
+  // FIRST-THING AND FREE WHEN OFF: the `subscriber_rate !== null` test comes
+  // before everything, and the agent row is already in hand, so an unlimited
+  // agent — which is every pre-A8 agent and the overwhelming majority of rows —
+  // pays one null comparison and not a single Redis round trip. Only a limited
+  // agent pays the INCR.
+  let rateLimited = false;
+  /** The notice to ship, or '' — non-empty ONLY on the first block of a window. */
+  let rateNotice = '';
+  if (
+    agent.subscriber_rate !== null &&
+    // Subscriber-authored inbound only. A button/card tap is a user row too (it
+    // carries raw.action), and it counts: a tap flood enqueues turns exactly
+    // like a typed flood and costs exactly as much, so exempting it would leave
+    // the cheapest way to abuse an agent as the only unlimited one.
+    message.role === 'user' &&
+    !data.noRateLimit
+  ) {
+    const rate = resolveSubscriberRate(agent.subscriber_rate);
+    if (rate) {
+      let overCount = 0;
+      let suppressedPreviousHour = 0;
+      try {
+        const count = await incrSubscriberInbound(
+          agent.id,
+          conversation.subscriber_id,
+          rate.windowMinutes,
+        );
+        if (count > rate.maxMessages) {
+          rateLimited = true;
+          overCount = count;
+          // Every suppressed message feeds the hourly tally, not just the first
+          // — the alert's whole job is to say HOW BAD, and a tally that only
+          // counted the messages that produced a notice would report the number
+          // of windows rather than the number of messages.
+          suppressedPreviousHour = (
+            await incrSubscriberSuppressed(agent.id, conversation.subscriber_id)
+          ).previousHour;
+          // Exactly one caller per window wins this, so the customer is told
+          // once no matter how many messages they push into a closed window.
+          if (await claimSubscriberRateNotice(agent.id, conversation.subscriber_id, rate.windowMinutes)) {
+            rateNotice = rate.notice;
+          }
+        }
+      } catch (err) {
+        // DEGRADE NEVER BLOCK — the same doctrine as the A7 gates, and worth
+        // naming because the asymmetry runs the OPPOSITE way here. A gate that
+        // fails open lets an unchecked reply through; a LIMITER that fails open
+        // simply does not limit, which is what every agent did before A8. The
+        // alternative is genuinely worse than the outage: a broken Redis that
+        // throttled instead of skipping would mute every customer of every
+        // limited agent, turning a counter's hiccup into a platform outage. A
+        // limiter must never be the reason someone cannot talk to support.
+        rateLimited = false;
+        rateNotice = '';
+        logger.warn(
+          { err: (err as Error).message, agent: agent.identifier },
+          'subscriber rate check unavailable — turn allowed through unlimited',
+        );
+      }
+
+      if (rateLimited) {
+        logExec({
+          tenantId,
+          transactionId: `conv-${conversationId}`,
+          level: 'warn',
+          detail: `subscriber ${subscriber.external_id} over the message limit for agent ${agent.identifier} (${overCount}/${rate.maxMessages} in ${rate.windowMinutes}m) — message stored, no turn run`,
+        });
+      }
+
+      // The receipt and the ops flag, ONCE PER WINDOW (they ride the notice
+      // claim). The 2nd..kth suppressed messages of a window deliberately write
+      // nothing: their row in the transcript already IS the record that they
+      // arrived, and a breadcrumb per message would turn a flood in the
+      // conversation into the same flood in the Turn Inspector.
+      if (rateNotice) {
+        // Same idiom as the topic gate and reply rules: a NAMED KEY on a system
+        // row, never `raw.action`. Action rows replay to the model as tool
+        // calls, and a rate_limit action would teach the agent a phantom tool.
+        // Its own string dedupe slot for the same reason 'reply-rules' has one.
+        await systemNote(
+          conversation,
+          messageId,
+          'rate-limit',
+          `message limit reached: ${overCount} messages in ${rate.windowMinutes}m (limit ${rate.maxMessages}) — sent the configured notice, no turn ran`,
+          {
+            rateLimit: {
+              maxMessages: rate.maxMessages,
+              windowMinutes: rate.windowMinutes,
+              count: overCount,
+              blocked: true,
+            },
+          },
+        );
+
+        // Reserved ops alert, the P22 lookup-first idiom exactly: BOTH halves of
+        // the reserved pair must exist before the hourly claim is spent, or a
+        // tenant who never created the workflow silently burns the window.
+        const opsApprover = await getApprovalsSubscriber(tenantId);
+        const opsWorkflow = opsApprover && (await getWorkflow(tenantId, 'agent-approvals'));
+        if (
+          opsApprover &&
+          opsWorkflow &&
+          (await claimSubscriberRateNotify(agent.id, conversation.subscriber_id))
+        ) {
+          await internalTrigger({
+            tenantId,
+            workflowKey: 'agent-approvals',
+            to: [
+              {
+                subscriberId: opsApprover.external_id,
+                email: opsApprover.email ?? undefined,
+                phone: opsApprover.phone ?? undefined,
+                pushToken: opsApprover.push_token ?? undefined,
+              },
+            ],
+            // WHO AND HOW MUCH — NEVER WHAT. Not one character of the customer's
+            // messages travels in this payload, and that is not squeamishness:
+            // this alert is delivered by a workflow the TENANT wrote, whose steps
+            // can email or SMS it anywhere. The reply-rules alert omits the
+            // matched text for that reason; the argument is stronger here,
+            // because a flood is often someone upset, and the thing they are
+            // flooding an agent with is frequently the most sensitive thing they
+            // have said. Ops gets the person, the conversation, the configured
+            // limit, and the size of the last hour — everything needed to decide
+            // whether to act, and nothing needed to be indiscreet. The content is
+            // in Postgres, where it was already.
+            payload: {
+              agentIdentifier: agent.identifier,
+              subscriberExternalId: subscriber.external_id,
+              conversationId,
+              maxMessages: rate.maxMessages,
+              windowMinutes: rate.windowMinutes,
+              // The PREVIOUS hour, for the reason spelled out in
+              // incrSubscriberSuppressed: this hour's count is 1 at the moment
+              // the alert fires and says nothing at all.
+              suppressedPreviousHour,
+            },
+            transactionId: `subscriber-rate-alert-${messageId}`,
+            source: `agent ${agent.identifier} subscriber rate limit`,
+          }).catch((err) => {
+            // A notification hiccup must not fail a turn that is already
+            // finished doing anything a customer can see.
+            logger.warn({ err: (err as Error).message }, 'subscriber-rate ops notification failed');
+          });
+        }
+      }
+    }
+  }
+
+  // THE FLOOD'S EXIT. From the second suppressed message of a window onward
+  // there is nothing left to do: the row landed (the transcript stays truthful),
+  // the customer has already been told once, and the breadcrumb already exists.
+  // Return before the history read and the typing pulse — this is the cheap path
+  // a flood spends almost all of its messages on.
+  //
+  // The FIRST suppressed message does NOT return here. It falls through with the
+  // notice in hand so the notice ships on THE ORDINARY REPLY PATH below — same
+  // insert, same dedupe key, same deliverReply, same WS and channel behavior —
+  // exactly like the topic gate's redirect and the budget note. Nothing
+  // downstream needs to know a limiter exists, and no channel needs a special
+  // case to deliver a throttle notice.
+  if (rateLimited && !rateNotice) return;
+
+  // Skipped for a throttled turn: the notice is canned platform text that needs
+  // no history to write, and a "composing" pulse would promise a reply the
+  // limiter has already decided not to produce.
+  const history = rateLimited ? [] : await conversationHistoryBefore(conversationId, messageId);
 
   // Turn-start "composing" pulse for both runtimes; the managed branch pulses
   // again on each model call via the onModelCall hook.
   const emitTyping = typingEmitter(conversation, subscriber.external_id, agent);
-  emitTyping();
+  if (!rateLimited) emitTyping();
 
   // The brain branch: who answers this turn. Everything after (reply row,
   // channel delivery, signals, breadcrumbs) is identical for both runtimes.
@@ -229,6 +464,17 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // reasoning-leak fallback note) — tagged raw.platformNote on the stored row so
   // buildHistory excludes it from replay, exactly like the budget-pause note.
   let replyPlatformNote = false;
+  // A8: the throttle notice rides the ordinary reply path from here. Tagged
+  // platformNote for the same reason the redirect and the budget note are: it is
+  // canned platform prose, not the model's words, so buildHistory must never
+  // replay it as an assistant turn — un-tagged, it is exactly the imitable text
+  // that got the budget note parroted back verbatim (lesson §13). The tag matters
+  // more here than anywhere: an agent that learned to imitate its own throttle
+  // notice would start telling unthrottled customers to slow down.
+  if (rateNotice) {
+    reply = rateNotice;
+    replyPlatformNote = true;
+  }
   // A5 slice B: the canary version that actually served this turn (undefined =
   // the live config did). Declared out here beside replyPlatformNote because
   // the reply row is written below, outside the managed branch that sets it.
@@ -248,7 +494,11 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // a deterministic note through the normal reply path (one job = one finalize).
   // The Redis counter is fast+approximate; Postgres raw.usage stays the truth.
   let budgetExhausted = false;
-  if (agent.runtime === 'managed' && agent.max_daily_tokens != null) {
+  // A8: `!rateLimited` on every stage from here down. A throttled turn has
+  // already decided nothing will run; reading the budget, the canary snapshot or
+  // the topic classifier for it would spend queries (and, for the gate, tokens)
+  // to reach an answer that cannot change the outcome.
+  if (agent.runtime === 'managed' && !rateLimited && agent.max_daily_tokens != null) {
     const used = await getDayTokens(agent.id);
     if (used >= agent.max_daily_tokens) {
       budgetExhausted = true;
@@ -311,7 +561,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // may carry its own topic policy. The guard is the branch's own, so a
   // budget-exhausted or bridge turn still resolves nothing and reads nothing.
   let turnCandidate: CandidateConfig | undefined;
-  if (agent.runtime === 'managed' && !budgetExhausted) {
+  if (agent.runtime === 'managed' && !budgetExhausted && !rateLimited) {
     // A canary is not a second override mechanism: it is the A4 candidate knob
     // aimed at real traffic. The arm was decided once when the conversation
     // opened; all that happens per turn is one PK read of the snapshot.
@@ -368,7 +618,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // signed URL, and we do not stand between them and their own service (the
   // same law routing, versions and canaries state at their own surfaces).
   let topicBlocked = false;
-  if (agent.runtime === 'managed' && !budgetExhausted) {
+  if (agent.runtime === 'managed' && !budgetExhausted && !rateLimited) {
     const gate = resolveTopics(topicsForTurn(agent.topics, turnCandidate));
     if (gate) {
       const model = topicGateModel(agent, turnCandidate);
@@ -440,7 +690,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     }
   }
 
-  if (agent.runtime === 'managed' && !budgetExhausted && !topicBlocked) {
+  if (agent.runtime === 'managed' && !budgetExhausted && !topicBlocked && !rateLimited) {
     planCard =
       conversation.channel !== 'email'
         ? createPlanCard({
@@ -699,7 +949,11 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       }
       throw err;
     }
-  } else if (agent.runtime === 'bridge') {
+    // A8: the limit is INGRESS protection, not brain config, so it applies to a
+    // bridge agent too — the one A5-A7-era knob that does. A flood costs the
+    // customer's own service its compute and its bill; declining to protect it
+    // because the brain is theirs would be a courtesy nobody asked for.
+  } else if (agent.runtime === 'bridge' && !rateLimited) {
     try {
       const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
       reply = dispatched.reply;

@@ -1,6 +1,11 @@
 import { pool } from './pool';
 import { emitTenantEvent } from '../core/tenant-events';
-import type { ModerationConfig, RoutingConfig, TopicsConfig } from '../core/managed-brain';
+import type {
+  ModerationConfig,
+  RoutingConfig,
+  SubscriberRateConfig,
+  TopicsConfig,
+} from '../core/managed-brain';
 
 /**
  * Agents + conversations repository. An agent is a customer-registered
@@ -78,6 +83,18 @@ export interface Agent {
    * stored row is coherent enough to gate a reply.
    */
   moderation: ModerationConfig | null;
+  /**
+   * A8: the per-customer inbound message limit, or null = off (the default, and
+   * what every pre-A8 row holds). Same type-only import and the same jsonb
+   * caveat as `topics`/`moderation` above — `resolveSubscriberRate` in
+   * core/subscriber-rate.ts decides at read time whether a stored row is
+   * coherent enough to limit anyone.
+   *
+   * The odd one out of the four: routing, topics and moderation are all managed
+   * -runtime brain config, while this is ingress protection that applies to
+   * BRIDGE AGENTS TOO. See SubscriberRateConfig for why.
+   */
+  subscriber_rate: SubscriberRateConfig | null;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;

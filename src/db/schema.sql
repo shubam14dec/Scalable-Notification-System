@@ -976,3 +976,25 @@ alter table agents add column if not exists topics jsonb;
 -- reply, at no measurable latency. There is no LLM moderation here by decision,
 -- not by omission.
 alter table agents add column if not exists moderation jsonb;
+
+-- ---- Phase A8: per-customer message limits ----
+-- Per-agent INBOUND rate limit for ONE end user, or null = off (the default,
+-- and what every pre-A8 row holds). Shape is owned by `SubscriberRateConfig` in
+-- src/core/managed-brain.ts, beside TopicsConfig/ModerationConfig, so every
+-- per-agent config keeps one home:
+--   { "maxMessages": 20, "windowMinutes": 5,
+--     "notice": "You're sending messages faster than I can answer..." }
+-- READ THE RUNTIME NOTE IN THAT FILE: unlike topics and moderation, this is NOT
+-- brain config. It is ingress protection and applies to BOTH runtimes — a
+-- flooding customer costs a bridge agent its own compute just as surely as it
+-- costs a managed agent tokens.
+-- ALL THREE FIELDS ARE REQUIRED and each is a real guard: a cap with no window
+-- is not a rate, a window with no cap is not a limit, and a limit with no notice
+-- is a customer talking to a wall. Enforced in code (resolveSubscriberRate in
+-- core/subscriber-rate.ts), never assumed, because jsonb can hold anything —
+-- and an out-of-bounds row reads as OFF rather than clamped, because clamping
+-- would silently throttle at a number the operator never chose.
+-- Over the limit the message STILL LANDS in the transcript (the record stays
+-- truthful) — only the turn is skipped. One Redis INCR per inbound message on a
+-- limited agent; zero for everyone else.
+alter table agents add column if not exists subscriber_rate jsonb;

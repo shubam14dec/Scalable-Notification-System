@@ -323,6 +323,48 @@ export interface ModerationConfig {
 }
 
 /**
+ * Phase A8 — the per-agent PER-CUSTOMER MESSAGE LIMIT (the `agents.subscriber_rate`
+ * jsonb). Owned here beside TopicsConfig and ModerationConfig so every per-agent
+ * config keeps one home — but with a caveat the other two do not carry, and it
+ * is the most important sentence in this block:
+ *
+ * THIS IS NOT BRAIN CONFIG. Topics and moderation are things the brain applies;
+ * this one the brain never sees. It is INGRESS PROTECTION, enforced in
+ * conversation.processor.ts above the managed/bridge fork, and it therefore
+ * applies to BOTH RUNTIMES — deliberately unlike every other A5-A7 knob, which
+ * are managed-only because they stand between a bridge customer and their own
+ * code. Nothing here stands between them: a flood costs a bridge agent its own
+ * compute and its own bill just as surely as it costs a managed agent tokens,
+ * and declining to protect it would be a courtesy nobody asked for. The type
+ * lives here for tidiness, not because the brain owns the behavior.
+ *
+ * ALL THREE FIELDS ARE REQUIRED, and each one is a real guard rather than a
+ * formality: a cap with no window is not a rate, a window with no cap is not a
+ * limit, and a limit with no notice is a customer talking to a wall — the same
+ * mute-button argument that makes `redirect` and `fallback` required above.
+ * `resolveSubscriberRate` in core/subscriber-rate.ts is the only reader that
+ * decides whether a stored row is coherent, because the column is jsonb and can
+ * hold anything.
+ *
+ * DELIBERATELY ABSENT FROM CandidateConfig, unlike topics and moderation. Those
+ * change what an agent SAYS, so a prompt edit must be graded against them or the
+ * check grades an agent that does not exist. This changes whether a FLOOD gets
+ * answered, and an eval driver's scenario turns are a burst of messages from one
+ * synthetic subscriber by construction — an eval that could throttle itself
+ * would grade the limiter instead of the prompt. The driver opts out explicitly
+ * (`noRateLimit` on the conversation job), the same stated-intent precedent as
+ * `noCanary`; there is no per-turn override to reach for.
+ */
+export interface SubscriberRateConfig {
+  /** Inbound messages ONE subscriber may send this agent per window. */
+  maxMessages: number;
+  /** The fixed window's length in minutes. */
+  windowMinutes: number;
+  /** The canned reply the first over-limit message gets. Never model freestyle. */
+  notice: string;
+}
+
+/**
  * The cheap model that applies to ONE turn, or '' when routing does not apply
  * to it. Extracted (A7) because two callers need the SAME precedence and a
  * second copy would be a second law: the router below, and the A7 topic gate,

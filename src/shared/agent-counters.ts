@@ -144,3 +144,142 @@ export async function claimReplyRulesNotify(agentId: string): Promise<boolean> {
   const res = await redis.set(key, '1', 'EX', REPLY_BLOCK_TTL_S, 'NX');
   return res === 'OK';
 }
+
+/* ---------------- Phase A8: per-subscriber inbound rate ---------------- */
+
+/**
+ * Phase A8 — THE INBOUND TALLY for one (agent, subscriber) pair, in a FIXED
+ * window whose length the operator chooses.
+ *
+ * A fixed window rather than a sliding one, deliberately. A sliding window is
+ * more precise at the boundary (a fixed window lets 2×max through across the
+ * seam of two adjacent buckets) and costs a sorted set per subscriber, a ZADD
+ * and a ZREMRANGEBYSCORE per message, and a memory footprint proportional to
+ * traffic rather than to subscribers. This is a circuit breaker for a flood, not
+ * a billing meter: the number it has to get right is "is this person hammering
+ * us", and 2×max in the worst-aligned minute is still bounded, still cheap, and
+ * still stops the flood. One INCR and one EXPIRE, the same shape as every other
+ * counter in this file, is worth far more than boundary precision here.
+ *
+ * `windowMinutes` IS PART OF THE KEY. An operator who retunes 60 → 5 starts a
+ * fresh series instead of inheriting an hour-sized bucket's count into a
+ * five-minute window and throttling everyone in it for the rest of the hour.
+ * Changing the setting means what an operator expects it to mean: from now on.
+ */
+const RATE_WINDOWS_KEPT = 3;
+
+/** The Redis key holding one subscriber's inbound count for the current window. */
+export function subscriberRateKey(
+  agentId: string,
+  subscriberId: string,
+  windowMinutes: number,
+  d = new Date(),
+): string {
+  // Epoch-aligned buckets: floor(now / window). Independent of local time and of
+  // when the agent was configured, so two processes always agree on the bucket.
+  const bucket = Math.floor(d.getTime() / (windowMinutes * 60_000));
+  return `subrate:${agentId}:${subscriberId}:${windowMinutes}:${bucket}`;
+}
+
+/**
+ * Count one inbound message from this subscriber and return the running total
+ * for the current window (including this message). The caller compares it
+ * against the configured cap: `total > maxMessages` is over the limit, so
+ * exactly `maxMessages` messages pass per window.
+ *
+ * TTL covers three windows so a bucket self-evicts without a sweep, the same
+ * self-eviction property as every counter above.
+ */
+export async function incrSubscriberInbound(
+  agentId: string,
+  subscriberId: string,
+  windowMinutes: number,
+): Promise<number> {
+  const key = subscriberRateKey(agentId, subscriberId, windowMinutes);
+  const total = await redis.incr(key);
+  await redis.expire(key, windowMinutes * 60 * RATE_WINDOWS_KEPT);
+  return total;
+}
+
+/**
+ * Claim the ONCE-PER-WINDOW notice for this (agent, subscriber). Atomic SET NX
+ * EX returns true for exactly the first over-limit message of a window and false
+ * for every one after it, so a customer who sends two hundred messages into a
+ * closed window is told once — not two hundred times.
+ *
+ * This is the difference between a polite limit and a second flood pointed back
+ * at the customer, and it MUST be the atomic claim rather than "notice if
+ * total === maxMessages + 1": the conversation worker runs at concurrency 10,
+ * and a burst arriving together would otherwise race two workers into two
+ * notices. Same doctrine as claimBudgetNotify, at the window's own cadence.
+ *
+ * Keyed on the SAME window bucket as the counter, so the notice and the
+ * suppression begin and end together — a customer who waits out the window gets
+ * both a fresh allowance and, if they flood again, a fresh explanation.
+ */
+export async function claimSubscriberRateNotice(
+  agentId: string,
+  subscriberId: string,
+  windowMinutes: number,
+): Promise<boolean> {
+  const key = `subrate-notice:${subscriberRateKey(agentId, subscriberId, windowMinutes)}`;
+  const res = await redis.set(key, '1', 'EX', windowMinutes * 60 * RATE_WINDOWS_KEPT, 'NX');
+  return res === 'OK';
+}
+
+/**
+ * Count one SUPPRESSED turn for this (agent, subscriber) in the current UTC
+ * HOUR, and report the final total for the previous one.
+ *
+ * Why an hour when the operator configured minutes: this counter exists only to
+ * fill the ops alert, and the alert is debounced hourly (see below). A count and
+ * an alert cadence in different units would be a number ops has to convert
+ * before it means anything — "4 suppressed" reads very differently over five
+ * minutes than over sixty, and the alert would not say which.
+ *
+ * The PREVIOUS hour is the figure worth reading, for exactly the reason spelled
+ * out in incrReplyBlockCount: the alert fires on the first suppression of an
+ * hour, so its own hour count is always 1 and says nothing. The hour before
+ * separates "somebody double-tapped send" from "this subscriber has been
+ * hammering the agent since midnight" — which are the two cases ops would take
+ * completely different actions on.
+ */
+export async function incrSubscriberSuppressed(
+  agentId: string,
+  subscriberId: string,
+): Promise<{ thisHour: number; previousHour: number }> {
+  const now = new Date();
+  const key = (d: Date) => `subrate-suppressed:${agentId}:${subscriberId}:${utcHourStamp(d)}`;
+  const thisHour = await redis.incr(key(now));
+  await redis.expire(key(now), REPLY_BLOCK_TTL_S);
+  const prev = await redis.get(key(new Date(now.getTime() - 60 * 60 * 1000)));
+  return { thisHour, previousHour: prev ? Number(prev) : 0 };
+}
+
+/**
+ * Claim the once-per-UTC-HOUR ops alert for ONE (agent, subscriber) pair.
+ *
+ * PER SUBSCRIBER, not per agent, and that is the one place this deliberately
+ * departs from claimReplyRulesNotify. A reply-rules alert is about the AGENT —
+ * it said something it shouldn't have, and which customer heard it is a detail
+ * ops looks up. This alert names a specific end user as the source of a flood,
+ * so an agent-wide debounce would make the second and third offender of the hour
+ * invisible behind the first — and "which customer" is the entire actionable
+ * content of the notification.
+ *
+ * HOURLY rather than per-window, even when the window is five minutes: the
+ * window is tuned for the CUSTOMER's experience of being slowed down, while this
+ * cadence is tuned for an ops channel staying readable. A one-minute window with
+ * per-window alerting would post sixty times an hour about one person. Nothing
+ * is lost to the debounce — every window's first suppression writes its own
+ * durable `raw.rateLimit` breadcrumb on the conversation, which is the record;
+ * the alert is only the nudge to go and read it.
+ */
+export async function claimSubscriberRateNotify(
+  agentId: string,
+  subscriberId: string,
+): Promise<boolean> {
+  const key = `subrate-notified:${agentId}:${subscriberId}:${utcHourStamp()}`;
+  const res = await redis.set(key, '1', 'EX', REPLY_BLOCK_TTL_S, 'NX');
+  return res === 'OK';
+}
