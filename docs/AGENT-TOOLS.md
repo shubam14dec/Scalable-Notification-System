@@ -1203,3 +1203,128 @@ moderator: what happens to that topic is the operator's lists, applied in code.
 
 Typed wrappers are in `@asyncify-hq/node`
 (`client.agents.update(id, { topics, moderation })`).
+
+## `subscriberRate` — the per-customer message limit
+
+The two gates above decide what an agent will discuss and what it may say. This
+field decides **how often one end user gets to ask**, per agent, in a window the
+operator chooses. It is **off until configured**, and it is the one agent-level
+policy that is **not** managed-only. The customer-facing story is section 6 of
+[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).
+
+```bash
+curl -X PATCH -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/support-bot \
+  -d '{ "subscriberRate": {
+        "maxMessages": 20,
+        "windowMinutes": 5,
+        "notice": "Thanks — that is faster than I can answer. I will pick this back up shortly."
+      } }'
+# → 200 { "agent": { …, "subscriberRate": { "maxMessages": 20, "windowMinutes": 5, "notice": "…" } } }
+```
+
+| Field | Rules |
+|---|---|
+| `maxMessages` | **required**, integer **1–1,000**. Messages from one subscriber that pass per window; the `maxMessages + 1`-th is suppressed. `1` is a real (if brutal) setting for an abusive subscriber; past 1,000 in a window the limit stops being a limit and the daily token budget is the honest tool. |
+| `windowMinutes` | **required**, integer **1–1,440**. One minute is the tightest burst window worth expressing; 1,440 is one day, past which a fixed window stops resembling anything a customer experiences as "slow down". |
+| `notice` | **required**, **1–2,000** chars, **trimmed**. What a throttled customer is told, once per window. No default, for the same reason `redirect` and `fallback` have none. |
+
+All three are required and each is a real guard: a cap with no window is not a
+rate, a window with no cap is not a limit, and a limit with no notice is a
+customer talking to a wall — their messages still land in the transcript, so they
+would reasonably send more, and a silent limit manufactures the flood it exists
+to stop. The bounds are the same constants the runtime validates a *stored*
+policy against, imported rather than retyped.
+
+**A whitespace-only `notice` is a 400**, which is one step stricter than
+`redirect`/`fallback`, where the same shape is caught in the dashboard form
+alone. The SDK does not go through the form, and the runtime trims the notice and
+reads an empty one as **no limit at all** — so a lone space accepted here would
+store a limit that silently does nothing while the operator reads it back from
+this API and believes it is armed.
+
+**`null` clears, absent leaves it alone, an object replaces it whole** — the same
+`PATCH` semantics as the two gates, and `null` on create (`POST /v1/agents`) is a
+**400** because there is nothing to clear yet. The agent object always carries
+the field, `null` when never configured.
+
+**Both runtimes, and that is the design.** `topics` or `moderation` on a bridge
+agent is a **400**; `subscriberRate` on a bridge agent is a **200**. The gates are
+brain config — they stand between a bridge customer and their own code, so storing
+one would store a policy nothing reads. This is **ingress protection**, applied
+above the managed/bridge fork: a flooding customer costs a bridge agent its own
+compute and its own bill just as surely as it costs a managed agent tokens.
+A limit therefore also survives a managed → bridge conversion.
+
+**Where the check runs, stated honestly.** Not at ingress — there is no ingress in
+this system to put it at (nine independent enqueue sites, no shared helper, and a
+helper would be a rule every future channel's author has to remember), so it runs
+at **the top of the turn job**, which every customer message on every channel in
+either runtime reaches by construction. The accepted cost is one enqueue and one
+immediately-returning job per suppressed message that a route-level check would
+have saved; what it does not cost is the turn — no brain, no classifier, no tools,
+no model call, no history read, no typing pulse. Operator replies and proactive
+pushes are a different job kind and never enter; the platform's own follow-up
+turns are `system` rows and are not counted against the customer. An agent with
+`subscriberRate: null` pays a single null comparison and no Redis round trip.
+
+**Counting is a fixed window, and `windowMinutes` is part of the key.** One `INCR`
+plus one `EXPIRE` per inbound message on an epoch-aligned bucket — not a sliding
+window, which would cost a sorted set per subscriber and a memory footprint
+proportional to traffic. The price is boundary precision: a burst straddling two
+adjacent buckets can pass up to 2 × `maxMessages`. This is a circuit breaker for a
+flood, not a billing meter. Because the window length is *in* the key, retuning
+`60` → `5` starts a **fresh series** rather than inheriting an hour-sized count
+into a five-minute window and throttling everyone in it for the rest of the hour.
+Button and card taps count: a tap flood enqueues turns exactly like a typed one.
+
+**When it trips:** the message row still lands (the transcript stays truthful) and
+no turn runs. The `notice` is claimed **once per window** by an atomic `SET NX`, so
+a customer who pushes two hundred messages into a closed window is told once, not
+two hundred times — it ships through the ordinary reply path, tagged
+platform-authored so the model never learns to imitate it. The window's first
+suppression also writes a breadcrumb row (`raw.rateLimit`: the configured cap, the
+window, the count — a named key, never `raw.action`, which would replay to the
+model as a phantom tool) and raises the reserved `agent-approvals` ops alert when
+that workflow and the `approvals` subscriber both exist. Debounced to **once per
+UTC hour per (agent, subscriber)** — deliberately unlike the reply-rules alert's
+per-agent debounce, because this alert's whole actionable content is *which*
+customer, and an agent-wide window would hide the hour's second offender behind
+its first:
+
+```jsonc
+{ "agentIdentifier": "support-bot", "subscriberExternalId": "…",
+  "conversationId": "…", "maxMessages": 20, "windowMinutes": 5,
+  "suppressedPreviousHour": 312 }
+```
+
+`suppressedPreviousHour` counts every suppressed message, not just the ones that
+produced a notice, and reports the **previous** hour for the same reason
+`blockedPreviousHour` does: the alert fires on the hour's first suppression, so
+its own hour's count is always 1. **The payload carries who and how much, never
+what.** Not one character of the customer's messages travels in it — the alert is
+delivered by a workflow the tenant wrote, whose steps can email or SMS it
+anywhere, and a flood is often someone upset about the most sensitive thing they
+have to say. The content stays in Postgres.
+
+**Storage is jsonb and out-of-range reads as OFF, never clamped.** A stored
+`maxMessages: 100000` (a migration, a hand-run `UPDATE`, a future SDK) switches
+the limit off rather than throttling at 1,000: a limiter that silently invents its
+own threshold leaves the operator's mental model wrong, while reading it as off is
+exactly the behavior every agent had before this existed. **If Redis is
+unavailable the check is skipped with a warning and the turn runs unlimited** —
+the asymmetry runs the opposite way to a gate here, because a limiter that failed
+*closed* would mute every customer of every limited agent, turning a counter's
+hiccup into a platform outage.
+
+**It does not trip the pre-save check**, and there is no `candidate.subscriberRate`
+to send it in — deliberately, and it is the only agent-level policy that skips it.
+The gates change what the agent *says*, so an edit to one must be graded; a message
+limit changes whether a *flood* is answered, and an eval run's scenario turns are a
+burst from one synthetic subscriber by construction, so a gradeable limit would
+throttle the check itself and report the limiter's behavior as the prompt's. The
+eval driver carries an **explicit** exemption flag for the same reason (never
+inferred from the run's shape, and never accepted from a request body).
+
+Typed wrapper: `client.agents.update(id, { subscriberRate })` in
+`@asyncify-hq/node` (`AgentSubscriberRate`).

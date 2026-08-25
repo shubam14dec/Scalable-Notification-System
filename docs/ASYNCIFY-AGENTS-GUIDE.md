@@ -60,10 +60,12 @@ run before a save commits, and in our own CI before a merge lands.
 
 **Guardrails (§6)** — daily token budgets (a circuit breaker, not a hope),
 repeat-action limits ("3rd refund for the same customer this month → needs
-a human"), approval gates on dangerous tools, and two gates around the
-brain itself: one that decides whether a question is this agent's to answer
-at all, one that reads every drafted reply before it ships. Enforced in
-code, outside the model — a prompt can be argued with; a gate cannot.
+a human"), approval gates on dangerous tools, a per-customer message limit
+so one person flooding the agent is slowed down *alone* instead of taking
+it down for everyone, and two gates around the brain itself: one that
+decides whether a question is this agent's to answer at all, one that reads
+every drafted reply before it ships. Enforced in code, outside the model —
+a prompt can be argued with; a gate cannot.
 
 **Knowledge with citations (§8)** — the agent answers from *your*
 documents and names its source, and says "I don't know" otherwise. In
@@ -296,12 +298,12 @@ prompt edit is checked against this exact case before it reaches Maya
 
 Approval (section 5) is one hand on the brake — a human's. **Guardrails** are the
 other: limits Acme sets once, that the platform then enforces on its own,
-deterministically, in code rather than in the prompt. **Five knobs, each off by
-default.** The first four stop something before the model or Acme's endpoint is
+deterministically, in code rather than in the prompt. **Six knobs, each off by
+default.** All but one stop something before the model or Acme's endpoint is
 ever touched; the fifth reads what the agent wrote before Maya can.
 
 Priya sets the first two **on a tool** (dashboard → the agent → **Tools**); the
-other three sit **on the agent** (dashboard → the agent → **Edit**), where Priya
+other four sit **on the agent** (dashboard → the agent → **Edit**), where Priya
 or Sam can reach them.
 
 **1. Repeat-action rule** *(per tool)* — *"auto-approve at most N of this action
@@ -356,7 +358,7 @@ the brakes. Full field reference (the `guard` shape, the frozen card format):
 
 ### Two more gates: what the agent will discuss, and what it may say
 
-Knobs 1–3 sit around the agent's *actions*. The last two sit around the
+Knobs 1–3 sit around the agent's *actions*. The next two sit around the
 *conversation* — one in front of the brain, one behind it:
 
 ```
@@ -488,6 +490,94 @@ redirect exactly as Maya would. That runs when a gate is switched **off**, too,
 because *"do the evals still pass without this boundary?"* is the whole question
 that save is asking. Full field reference: `docs/AGENT-TOOLS.md`.
 
+### One customer's flood: the sixth knob
+
+**6. Per-customer message limit** *(per agent — and the one knob a bridge agent
+gets too)* — *"at most N messages from one customer per window."*
+
+Someone sends four hundred messages in ten minutes. Maybe they're furious; maybe
+it's a script somebody pointed at the widget. Before this knob, Acme had exactly
+one defense, and the way it works is the problem: the **daily token budget**
+(knob 3) protects Acme's *wallet* by tripping the breaker and taking the agent
+quietly unavailable **for every customer at once** — the flooder, Maya, and
+everyone else — until Priya raises the limit or the day rolls over. One person's
+bad ten minutes becomes everybody's outage. The message limit fixes the *scope*
+rather than the ceiling: **the one flooder is throttled, and nobody else can tell
+anything happened.** The two aren't rivals — the budget still bounds the worst
+day; this bounds any one person's share of it.
+
+Priya fills in three fields on the **Edit** tab:
+
+> **Max messages per customer** `20`  **in a window of (minutes)** `5`
+> **When the limit is hit, reply once with:** *"You're sending messages faster
+> than I can answer — I'll pick this up again shortly."*
+
+All three are required, and each one is a real guard: a cap with no window isn't
+a rate, a window with no cap isn't a limit, and a limit with no notice leaves a
+customer talking to a wall — their messages look delivered, so they'd reasonably
+send more, and the limit would manufacture the flood it's trying to stop. Leave
+the card empty and the agent limits nobody, which is what every agent did before
+this shipped.
+
+**The notice ships once per *window*, not once per message.** Message 21 gets
+Priya's sentence; messages 22 through 400 get silence. That's the whole
+difference between a polite limit and a second flood pointed back at the
+customer. (It's tagged platform-authored, like the topic gate's redirect, so the
+agent never learns to imitate it and start telling *unthrottled* customers to
+slow down.)
+
+**The messages still land.** Every one of them is stored and appears in Sam's
+transcript — they simply go unanswered. A guardrail never edits the record of
+what a customer actually sent, so when Sam opens the thread to find out what set
+them off, it's all there.
+
+**Why a bridge agent gets this one.** Knobs 4 and 5 are managed-only because a
+bridge agent's brain and replies are Acme's own code — that's where those checks
+belong. This one isn't brain config; it's the door. A flood costs a bridge agent
+its own servers and its own bill exactly as surely as it costs a managed agent
+tokens, and declining to protect it would be a courtesy nobody asked for. The
+limit also survives a runtime switch: convert a managed agent to bridge and it's
+still enforced.
+
+**What Sam sees.** The first suppressed message of a window leaves a breadcrumb
+on the conversation —
+
+> message limit reached: 21 messages in 5m (limit 20) — sent the configured
+> notice, no turn ran
+
+— and pages the ops audience (the same `agent-approvals` workflow as approvals
+and the budget breaker) at most once an hour **per customer**, not per agent:
+*which* customer is the entire actionable content here, and an agent-wide
+debounce would hide the hour's second offender behind its first. The alert names
+who, the conversation, the configured limit, and how many messages were
+suppressed in the **previous** hour — the number that separates a double-tapped
+send button from someone who's been hammering the agent since midnight. It
+carries **no message text at all.** Acme's own workflow delivers that alert and
+its steps can email or SMS it anywhere; a flood is usually someone upset, and
+what they're flooding an agent with is frequently the most sensitive thing
+they've said. The content stays in the dashboard, where it already was.
+
+**A throttled flood is the cheapest thing the platform does.** No brain, no topic
+classifier, no tools, no model call — not even a history read or a "composing"
+pulse. A suppressed message costs a row insert and a counter bump, and that's
+the path a flood spends nearly all of its messages on. An agent with no limit
+configured pays nothing at all: not one extra lookup on any turn.
+
+*Two honest boundaries.* Windows are **fixed, not sliding**, so a burst straddling
+the seam of two of them can push through up to twice the cap in the worst-aligned
+moment — this is a circuit breaker for a flood, not a billing meter, and twice-the-cap
+is still bounded, still cheap, and still stops the flood. And **retuning starts
+fresh**: change 60 minutes to 5 and counting begins now, instead of dragging an
+hour-sized tally into a five-minute window and throttling everyone caught in it.
+
+**This is the one agent-level knob that does *not* run the pre-save check** (§10),
+and the omission is deliberate. The gates change what the agent *says*, so an edit
+to one has to be graded or the check grades an agent that doesn't exist. A message
+limit changes whether a *flood* gets answered — and every eval scenario is a burst
+of messages from one synthetic customer by construction, so a gradeable limit
+would throttle the check itself and report the limiter's behavior as the
+prompt's. Full field reference: `docs/AGENT-TOOLS.md`.
+
 ### Where the alerts go — setting up ops notifications
 
 The budget breaker and every pending approval reach the team the **same** way, and
@@ -496,8 +586,9 @@ Sam wires it once with two ordinary product actions:
 1. **Create the ops workflow.** On the **Workflows** page, add a workflow with the
    reserved key **`agent-approvals`**. It's a normal workflow — give it whatever
    steps the team wants (an email to on-call, an in-app note, an SMS). The platform
-   triggers it on ops events: a tool pausing for approval, and the daily budget
-   tripping.
+   triggers it on ops events: a tool pausing for approval, the daily budget
+   tripping, a reply blocked by the reply rules, and a customer going over their
+   message limit.
 2. **Give the ops audience an address.** Put a real contact on the reserved
    **`approvals`** subscriber — one upsert from Acme's backend:
 
@@ -1378,7 +1469,12 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
   was classified and which list caught it, or which reply rule fired and what the
   agent had written — and a blocked reply also pages the ops audience at most once
   an hour per agent, with the rule and the previous hour's count but never the
-  text it matched.
+  text it matched. The **per-customer message limit** rides the agent too, on
+  either runtime, and reports the same way one level in: each window's first
+  suppressed message writes its own breadcrumb (the count, the configured limit,
+  and that no turn ran), and the ops alert is debounced once an hour **per
+  customer** rather than per agent — it names the person, the conversation and
+  the previous hour's suppressed count, and carries none of what they wrote.
 - **Safety properties you get for free**: every side-effecting call is
   idempotent under retries; approval decisions are single-winner across all
   surfaces; the agent's transcript can't contain fabricated tool results —
@@ -1408,7 +1504,7 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 | Actions | custom tool registry, signed HTTP execution, idempotent, 16KB results |
 | Approvals | dashboard + Slack channel + Telegram taps; atomic; per-tap identity; in-place card outcomes; 24h expiry; audit trail |
 | Handoff | `handoff_to_human` built-in; live "waiting for human" queue + operator reply box; teammate label to the customer; attributed summary on handback; reused `approvals` ops audience |
-| Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker; per-agent **topic gate** — one small classifier call before the brain names the topic, the deny/allow policy is applied in code and the classifier is never told which topics are denied; a broken classifier skips rather than mutes — and per-agent **reply rules** — typed phrases plus other people's emails/phones checked on every drafted reply, zero model calls and zero added latency, blocked replies ship a configured fallback bare. Both managed-only, off until configured, graded by the pre-save check |
+| Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker; per-agent **topic gate** — one small classifier call before the brain names the topic, the deny/allow policy is applied in code and the classifier is never told which topics are denied; a broken classifier skips rather than mutes — and per-agent **reply rules** — typed phrases plus other people's emails/phones checked on every drafted reply, zero model calls and zero added latency, blocked replies ship a configured fallback bare. Both managed-only, off until configured, graded by the pre-save check. Plus a per-agent **per-customer message limit** — N messages per customer per window, so one flooder is throttled alone instead of the day budget muting the agent for everyone; the messages still land in the transcript unanswered, the configured notice ships once per window, and the ops alert names the offender with counts but never content. The one guardrail a **bridge** agent gets too (ingress protection, not brain config), off until configured, and deliberately not graded by the pre-save check |
 | Notifications | workflows/digests/delays from agent tools, proactive pushes, resolve webhooks, approval pings |
 | Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); pre-save check — a prompt edit is graded before it saves, warn never block; one-click eval from a real conversation; append-only prompt versions (restore publishes, never rewinds); prompt canary — a version trials on a % of real conversations, sticky per conversation, with a per-arm comparison (counters + judged averages sampled from both arms at the same rate) behind Promote; a config-as-code fixture agent gated by a required CI check (a regression fails the build, not just a warning); anti-fabrication transcripts |
 | Ops | connections re-pointable with history; `asyncify dev` local loop |

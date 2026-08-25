@@ -6,7 +6,25 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A8 — per-customer message limits (plan approved 2026-08-25;
+### Phase A8 — SHIPPED 2026-08-25 (review)
+All 3 slices done (commits 9d87bea, b30a777, +docs), suite 967→1033
+(+66), root+dashboard+sdk tsc clean. What shipped: per-customer message
+limits at the structural chokepoint (top of processTurn — ruled
+mid-slice after the agent escalated a real spec conflict: no shared
+inbound helper exists, so ingress would have been the CANARY_ARM
+anti-pattern; accepted cost = one no-op job per throttled message),
+after the D2 human-pen gate (agent's own catch), once-per-window
+notice, truthful transcript, per-subscriber hourly alert with counts
+never content, both runtimes, eval-driver bypass, Redis-down = today's
+behavior, NOT on the candidate and NOT pre-save-tripping (reasoned).
+Review notes: (1) out-of-bounds reads OFF never clamped; (2) API-level
+whitespace-notice refusal stricter than A7 (SDK bypasses the form);
+(3) windowMinutes in the Redis key (retuning resets); (4) docs state
+A8 does NOT close the per-tenant fair-dequeue gap; (5) prod delta:
+NONE. RESCOPE record: user cut PII redaction / retention purge /
+untrusted-input pack from the backlog entirely.
+
+### (original A8 plan, kept for the record — approved 2026-08-25;
 RESCOPED by user: ONLY per-end-user rate limits — PII redaction,
 retention purge, and the untrusted-input pack REMOVED from the backlog
 at his instruction, not parked)
@@ -39,9 +57,17 @@ throttled flood is the cheapest thing the platform does.
       hour's second offender; windowMinutes in the Redis key (retuning
       starts a fresh series); subscriber_rate deliberately NOT in
       CandidateConfig.
-- [ ] Slice B — surface: "Message limits" Edit-tab card (labels rule),
-      API/agentView/SDK + changeset.
-- [ ] Slice C — docs: guide §6 sixth knob, AGENT-TOOLS, close-out.
+- [x] Slice B — DONE 2026-08-25 (commit b30a777, suite 1012→1033):
+      both-runtimes API (bridge accepts, asserted against the gates
+      400ing in the same test); API-level whitespace-notice refusal
+      (stricter than A7 — the SDK bypasses the form; "   " would store
+      a limit the operator believes is armed); schema deliberately
+      unexported (no candidate to share with — an export is an
+      invitation); does NOT trip pre-save.
+- [x] Slice C — DONE 2026-08-25: guide §6 sixth knob (budget-breaker
+      contrast) + pillar/ops/checklist; AGENT-TOOLS full reference;
+      gap docs with the API-caller-vs-end-user distinction honestly
+      drawn; fair-dequeue non-claim stated.
 
 ### Phase A7 — SHIPPED 2026-08-24 (review)
 All 4 slices done (commits 7a95e86, e331dda, a61c6d1, +docs), suite
@@ -424,8 +450,8 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A5. Prompt versioning + canary — SHIPPED 2026-08-23, review above.
 - [x] A6. Model routing — SHIPPED 2026-08-23, review above.
 - [x] A7. Guardrails completion — SHIPPED 2026-08-24, review above.
-- (IN PROGRESS above) A8. Per-customer message limits — rescoped by
-      user 2026-08-25 to this single item.
+- [x] A8. Per-customer message limits — SHIPPED 2026-08-25, review
+      above (rescoped by user to this single item).
 - [ ] A9. LLM scaling: provider-aware LLM concurrency + LLM failover
       chain mirroring the channel failover.
 - [ ] A10. NEW (2026-08-21) production-readiness set:

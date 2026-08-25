@@ -182,8 +182,25 @@ architecture — we started where they're heading.
   argued for). Both ride `candidate` into the pre-save check, with
   `absent` meaning *the live gate applies* rather than routing's *step
   aside*, because they decide whether anyone answers rather than who
-  does. Still worth copying from them: **mock-tape speed** for
-  pure-prompt iteration.
+  does. **2026-08-25 (A8)** is the first agent knob deliberately kept
+  **off** that candidate knob: a per-END-USER message limit
+  (`{maxMessages, windowMinutes, notice}`, per agent, off by default),
+  because an eval's scenario turns are a burst from one synthetic
+  subscriber by construction, so a gradeable limit would throttle the
+  check itself and report the limiter's behavior as the prompt's. Two
+  structural notes worth keeping. **The placement ruling:** there is no
+  ingress in this codebase to hang a cross-cutting inbound check on —
+  nine independent enqueue sites, no shared helper — so the check rides
+  the shape of the system instead, at the top of the turn job that every
+  customer message, on every channel, in either runtime reaches by
+  construction. A helper would have been the `CANARY_ARM` anti-pattern:
+  a rule nine call sites *and every future channel's author* must
+  remember. The accepted price is one immediately-returning job per
+  suppressed message. **And it is fairness at a different layer** from
+  their BullMQ Pro groups above: theirs is per-tenant fairness at the
+  dequeue, ours is per-end-user fairness at the turn — the queue-level
+  gap is still open, and A8 does not close it. Still worth copying from
+  them: **mock-tape speed** for pure-prompt iteration.
 
 ## 6. Honest scorecard
 

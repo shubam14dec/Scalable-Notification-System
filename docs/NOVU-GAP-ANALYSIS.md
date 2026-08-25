@@ -174,6 +174,43 @@ now have, and how to sell it honestly:
   "what may it say"; absence of a doc page is not proof of absence, so the
   claim stays "we found none", not "they have none".
 
+- **2026-08-25 — the third enforcement knob (A8): per-END-USER message
+  limits.** A7's gates decide what an agent discusses and what it may say;
+  this one decides how often one *customer* gets to ask. Per agent,
+  `{maxMessages, windowMinutes, notice}`, off until configured. The
+  argument that makes it worth a sales slide is the one about what
+  existed before it: the only defense against a flooding end user was the
+  per-agent **daily token budget**, which protects the wallet by taking
+  the agent unavailable **for every customer at once** — so one abusive
+  person could mute an agent for the entire customer base and call it a
+  guardrail working as designed. This throttles the one flooder and
+  nobody else; the budget still bounds the worst day, this bounds any one
+  person's share of it. Their messages still land in the transcript
+  unanswered (a guardrail never edits the record), the operator's notice
+  ships **once per window** so a flood can't be converted into a flood of
+  replies, and the ops alert is debounced hourly **per (agent,
+  subscriber)** — naming who, where, the limit and the previous hour's
+  suppressed count, and never one character of content. It is also the
+  first agent-level policy that applies to **both runtimes** (a flood
+  costs a bridge agent its own compute and bill; it is ingress
+  protection, not brain config) and the first that deliberately does
+  **not** ride the A4 candidate knob into the pre-save check — an eval's
+  scenario turns are a burst from one synthetic subscriber by
+  construction, so a gradeable limit would throttle the check itself.
+  **The honest comparison, and it is not a "they have nothing":** round 1
+  found real rate limiting on their side — a token-bucket limiter with
+  TRIGGER/CONFIG/GLOBAL categories, burst and per-request costs (the
+  Tier-C row in §4, which stands unchanged). But that limiter and ours
+  (`api/rate-limit.ts`, per tenant, plus overflow QoS) are the same
+  *kind* of thing: they meter the **API caller** — the integrator holding
+  the key. A8 is a different axis entirely: it meters an **end user of an
+  agent conversation**, per subscriber, on messages that arrive through
+  the widget, Slack, Telegram and email rather than through an API key at
+  all. Their limiter would not notice this flood, because the flood is
+  one tenant's legitimate traffic. We have found no per-end-user
+  conversational limit on their side — and, as with A7, that stays "we
+  found none", not "they have none".
+
 Sales framing: "prompt edits are deploys — and we're the platform that
 treats them that way." A/B-testing a prompt on real traffic, with the
 judge grading both arms, is the rung above that: promotion answers "is it
