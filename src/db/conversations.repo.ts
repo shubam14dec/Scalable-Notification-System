@@ -199,6 +199,12 @@ export async function createAgent(a: {
   topics?: TopicsConfig;
   /** A7: the outbound reply rules, or absent = off (ditto). */
   moderation?: ModerationConfig;
+  /**
+   * A8: the per-customer message limit, or absent = off (ditto). The only one of
+   * these four a BRIDGE agent may carry — it is ingress protection, not brain
+   * config. See SubscriberRateConfig.
+   */
+  subscriberRate?: SubscriberRateConfig;
 }): Promise<Agent | null> {
   const client = await pool.connect();
   try {
@@ -208,9 +214,10 @@ export async function createAgent(a: {
        (tenant_id, identifier, name, description, runtime, bridge_url,
         signing_secret, model, system_prompt, llm_base_url, llm_credentials, max_tokens,
         auto_resolve_minutes, welcome_message, suggested_prompts, max_daily_tokens, context,
-        routing, topics, moderation)
+        routing, topics, moderation, subscriber_rate)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-             coalesce($17::jsonb, '{}'::jsonb), $18::jsonb, $19::jsonb, $20::jsonb)
+             coalesce($17::jsonb, '{}'::jsonb), $18::jsonb, $19::jsonb, $20::jsonb,
+             $21::jsonb)
      on conflict (tenant_id, identifier) do nothing
      returning *`,
       [
@@ -234,6 +241,7 @@ export async function createAgent(a: {
         a.routing ? JSON.stringify(a.routing) : null,
         a.topics ? JSON.stringify(a.topics) : null,
         a.moderation ? JSON.stringify(a.moderation) : null,
+        a.subscriberRate ? JSON.stringify(a.subscriberRate) : null,
       ],
     );
     const agent: Agent | undefined = rows[0];
@@ -324,6 +332,12 @@ export async function updateAgent(
     topics?: TopicsConfig | null;
     /** A7: the reply rules, on exactly the terms `topics` above states. */
     moderation?: ModerationConfig | null;
+    /**
+     * A8: the per-customer message limit, on exactly the terms `topics` above
+     * states — null clears, undefined leaves, an object replaces the whole
+     * config. Unlike the three above it is legal on a bridge agent.
+     */
+    subscriberRate?: SubscriberRateConfig | null;
   },
 ): Promise<Agent | null> {
   const client = await pool.connect();
@@ -378,6 +392,9 @@ export async function updateAgent(
                               else coalesce($19::jsonb, topics) end,
        moderation      = case when $20::jsonb = 'null'::jsonb then null
                               else coalesce($20::jsonb, moderation) end,
+       -- A8: the same jsonb 'null' clear sentinel, on either runtime
+       subscriber_rate = case when $21::jsonb = 'null'::jsonb then null
+                              else coalesce($21::jsonb, subscriber_rate) end,
        updated_at      = now()
      where tenant_id = $1 and identifier = $2
      returning *`,
@@ -418,6 +435,11 @@ export async function updateAgent(
           : patch.moderation === undefined
             ? null
             : JSON.stringify(patch.moderation),
+        patch.subscriberRate === null
+          ? 'null'
+          : patch.subscriberRate === undefined
+            ? null
+            : JSON.stringify(patch.subscriberRate),
       ],
     );
     let agent: Agent = rows[0];

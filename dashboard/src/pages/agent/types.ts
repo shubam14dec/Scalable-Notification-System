@@ -49,6 +49,12 @@ export interface Agent {
    */
   topics?: AgentTopics | null;
   moderation?: AgentModeration | null;
+  /**
+   * Phase A8: the per-customer message limit, or null when never set up.
+   * Presence is the flag, same as the three above — but this one can be set on
+   * EITHER runtime, so the card that edits it lives outside the managed branch.
+   */
+  subscriberRate?: AgentSubscriberRate | null;
   /** Phase 22 G2: per-agent daily token circuit breaker (null = off). */
   maxDailyTokens?: number | null;
   /**
@@ -113,6 +119,19 @@ export interface AgentModeration {
   fallback: string;
 }
 
+/**
+ * Phase A8: the per-customer message limit. Mirrors `SubscriberRateSchema` in
+ * src/api/routes/agents.ts. All three fields are required — a cap with no window
+ * is not a rate, a window with no cap is not a limit, and a limit with no notice
+ * is a customer talking to a wall. Unlike the two gates above this is NOT
+ * managed-only: it is ingress protection and applies to bridge agents too.
+ */
+export interface AgentSubscriberRate {
+  maxMessages: number;
+  windowMinutes: number;
+  notice: string;
+}
+
 /** An agent-speaks-first starter chip: the label plus the turn it sends. */
 export interface SuggestedPrompt {
   title: string;
@@ -146,6 +165,12 @@ export interface AgentBody {
    */
   topics?: AgentTopics | null;
   moderation?: AgentModeration | null;
+  /**
+   * Phase A8: null switches the message limit off and forgets it, on the terms
+   * `routing` above states — only ever sent on an EDIT. Sent for bridge agents
+   * too, unlike everything else in this group.
+   */
+  subscriberRate?: AgentSubscriberRate | null;
   llm?: { apiKey?: string; baseUrl?: string | null };
 }
 
@@ -300,6 +325,13 @@ export interface ScenarioResult {
  * A4: the edited config a run graded INSTEAD of the agent's live one — what the
  * dashboard's pre-save check sends. Mirrors `CandidateSchema` in
  * src/api/routes/agent-evals.ts; at least one key is always present.
+ *
+ * A8 has NO field here, and the omission is the design: a message limit changes
+ * whether a FLOOD is answered rather than what the agent says, and every eval
+ * scenario is a burst of messages from one synthetic subscriber by construction
+ * — a gradeable limit would throttle the check itself. The server's candidate
+ * schema has no such field either, so a save that touches only the message limit
+ * simply never opens the pre-save check.
  */
 export interface EvalCandidate {
   systemPrompt?: string;

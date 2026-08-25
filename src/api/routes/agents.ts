@@ -63,6 +63,13 @@ import {
   FALLBACK_MAX,
 } from '../../core/reply-rules';
 import {
+  MAX_MESSAGES_MAX,
+  MAX_MESSAGES_MIN,
+  NOTICE_MAX,
+  WINDOW_MINUTES_MAX,
+  WINDOW_MINUTES_MIN,
+} from '../../core/subscriber-rate';
+import {
   listMemories,
   upsertMemory,
   deleteMemory,
@@ -238,6 +245,34 @@ export const ModerationSchema = z
   });
 
 /**
+ * A8 — the PER-CUSTOMER MESSAGE LIMIT (the `agents.subscriber_rate` jsonb), on
+ * the same terms as the two schemas above: bounds IMPORTED from
+ * core/subscriber-rate.ts (which exported them for exactly this), all three
+ * fields required because each is a real guard — a cap with no window is not a
+ * rate, a window with no cap is not a limit, and a limit with no notice is a
+ * customer talking to a wall — and `null` clears.
+ *
+ * `notice` is TRIMMED here and refuses whitespace-only, which is one step
+ * stricter than `redirect`/`fallback`, where A7 caught the same shape in the
+ * form alone. The lesson generalizes and the SDK does not go through the form:
+ * `resolveSubscriberRate` trims and reads an empty notice as NO LIMIT AT ALL,
+ * so a lone space accepted here would store a limit that silently does nothing
+ * while the operator reads it back from the API and believes it is on.
+ *
+ * NOT EXPORTED, deliberately — unlike TopicsSchema and ModerationSchema, which
+ * the eval-run candidate imports. There is no candidate field to share it with
+ * (see SubscriberRateConfig in core/managed-brain.ts: an eval's scenario turns
+ * are a burst from one synthetic subscriber by construction, so a gradeable
+ * message limit would grade the limiter instead of the prompt), and an export
+ * would be an invitation to wire one up.
+ */
+const SubscriberRateSchema = z.object({
+  maxMessages: z.number().int().min(MAX_MESSAGES_MIN).max(MAX_MESSAGES_MAX),
+  windowMinutes: z.number().int().min(WINDOW_MINUTES_MIN).max(WINDOW_MINUTES_MAX),
+  notice: z.string().trim().min(1).max(NOTICE_MAX),
+});
+
+/**
  * Both gates are MANAGED concepts, and the sentence says why in the operator's
  * own terms rather than quoting a runtime enum at them. One constant per gate
  * because the create refine, the patch guard and (for routing) the stats route
@@ -276,6 +311,18 @@ const AgentSchema = z
     topics: TopicsSchema.optional(),
     /** A7 reply rules. Managed only (refined below), absent = off. */
     moderation: ModerationSchema.optional(),
+    /**
+     * A8 per-customer message limit, absent = off. NOTE THE MISSING REFINE: this
+     * is the one per-agent config with NO managed-only guard, and the omission
+     * is the design rather than an oversight. Routing, topics and moderation are
+     * brain config — they stand between a bridge customer and their own code, so
+     * accepting them on a bridge agent would store a policy nothing reads. This
+     * is INGRESS PROTECTION, enforced above the managed/bridge fork at the top of
+     * processTurn: a flooding customer costs a bridge agent its own compute and
+     * its own bill just as surely as it costs a managed agent tokens, and
+     * declining to protect it would be a courtesy nobody asked for.
+     */
+    subscriberRate: SubscriberRateSchema.optional(),
   })
   // A6: routing is a MANAGED concept — a bridge agent's brain is the customer's
   // own code behind a signed URL, and we never pick the model it runs on. Same
@@ -328,6 +375,13 @@ const AgentPatchSchema = z.object({
   topics: TopicsSchema.nullable().optional(),
   /** A7: null switches the reply rules off and forgets them; absent leaves them. */
   moderation: ModerationSchema.nullable().optional(),
+  /**
+   * A8: null switches the message limit off and forgets it; absent leaves it.
+   * Accepted on BOTH runtimes — see the create schema's field for why this one
+   * carries no managed-only guard, and note the matching absence below in the
+   * PATCH handler, where the other three configs are all runtime-checked.
+   */
+  subscriberRate: SubscriberRateSchema.nullable().optional(),
 });
 
 const InboundMessageSchema = z.object({
@@ -434,6 +488,11 @@ function agentView(agent: Agent) {
     // there. Managed-only; a bridge agent can never have either.
     topics: agent.topics ?? null,
     moderation: agent.moderation ?? null,
+    // A8: the per-customer message limit, or null when never configured — the
+    // same "presence is the flag" shape as the three above. Unlike them it can
+    // be non-null on a BRIDGE agent, because the limit is ingress protection
+    // rather than brain config (see SubscriberRateConfig).
+    subscriberRate: agent.subscriber_rate ?? null,
     status: agent.status,
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
@@ -516,6 +575,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
       // shape, so a converter would only be a place for the two to diverge.
       topics: parsed.data.topics,
       moderation: parsed.data.moderation,
+      // A8: same story — the validated shape IS the stored shape. Passed
+      // unconditionally, on either runtime.
+      subscriberRate: parsed.data.subscriberRate,
     });
     if (!agent) {
       return reply.code(409).send({ error: `agent "${parsed.data.identifier}" already exists` });
@@ -642,6 +704,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
       if (parsed.data.moderation != null && nextRuntime !== 'managed') {
         return reply.code(400).send({ error: MODERATION_MANAGED_ONLY });
       }
+      // A8: NO runtime guard here, and its absence is deliberate — the message
+      // limit is the one config a bridge agent may hold. Three guards in a row
+      // followed by a fourth field that has none is exactly where a later reader
+      // would "fix" the omission, so it is written down instead: this limit runs
+      // above the managed/bridge fork and protects the customer's own compute.
+
       const unsafe = await unsafeUrlError({
         bridgeUrl: parsed.data.bridgeUrl,
         llmBaseUrl: parsed.data.llm?.baseUrl,
@@ -678,6 +746,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
         // is not a question a safety surface should be able to raise.
         topics: parsed.data.topics,
         moderation: parsed.data.moderation,
+        // A8: absent leaves the limit alone, null clears it, an object replaces
+        // it whole — three fields, so a merge would only buy ambiguity.
+        subscriberRate: parsed.data.subscriberRate,
       });
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
       return { agent: agentView(agent) };

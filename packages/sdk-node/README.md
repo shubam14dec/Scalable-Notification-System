@@ -276,6 +276,37 @@ Both gates take `candidate` overrides on an eval run, with one difference from
 for the run (a check grades the agent you have, boundaries included), so `null`
 is how you ask "do these still pass with the gate off?".
 
+### Per-customer message limits
+
+`agents.update(id, { subscriberRate })` caps how many messages **one end user**
+may send inside a fixed window. Past the cap that person stops getting replies
+until the window ends and receives your `notice` **once** — never on every
+message, since a limit that answered a flood would be an amplifier. Their
+messages still land in the conversation exactly as they sent them; only the turn
+is skipped, so the transcript stays true. Everyone else is unaffected, which is
+the difference from the daily token budget: that one goes quiet for *all* your
+customers, so using it as the defense against one abusive user lets that user
+mute the agent for everybody. `subscriberRate: null` switches it off. This is the
+one agent config that works on **both runtimes** — it protects your own handler's
+compute, not a brain we run.
+
+```ts
+await asyncify.agents.update('acme-support', {
+  subscriberRate: {
+    maxMessages: 20,
+    windowMinutes: 5,
+    notice: "You're sending messages faster than I can answer — I'll pick this up shortly.",
+  },
+});
+```
+
+A config outside the bounds (`maxMessages` 1–1000, `windowMinutes` 1–1440,
+`notice` 1–2000) is rejected on save and read as **off** if one ever reaches the
+row another way — never clamped, because a limiter throttling at a number you did
+not choose is worse than none. There is deliberately **no `candidate` override**:
+an eval scenario is a burst of messages from one synthetic subscriber by
+construction, so a gradeable message limit would throttle the check itself.
+
 ## API surface
 
 | Method | Purpose |

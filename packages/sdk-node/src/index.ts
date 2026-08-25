@@ -153,6 +153,44 @@ export interface AgentModeration {
   fallback: string;
 }
 
+/**
+ * The PER-CUSTOMER MESSAGE LIMIT — how many messages ONE end user may send this
+ * agent inside a fixed window before the agent stops answering THAT PERSON.
+ * Everyone else is untouched, which is the whole point: the per-agent daily
+ * token budget is a circuit breaker for the agent, so leaning on it as the
+ * defense against one abusive customer lets that customer mute the agent for
+ * every other customer.
+ *
+ * Over the limit, the customer's messages STILL LAND in the conversation exactly
+ * as they were sent — only the turn is skipped, so the record of what someone
+ * sent you stays true — and `notice` goes back ONCE per window, never on every
+ * message, since a limit that answered a flood would be an amplifier. The
+ * blocked messages cost no model call at all, which is the feature.
+ *
+ * All three fields are required (a cap with no window is not a rate, a window
+ * with no cap is not a limit, and a limit with no notice is a customer talking
+ * to a wall), and a config outside the bounds below reads as OFF rather than
+ * being clamped — a limiter that silently invents its own threshold is worse
+ * than none, because your mental model of it is then wrong.
+ *
+ * THE ONE AGENT CONFIG THAT IS NOT MANAGED-ONLY: unlike `routing`, `topics` and
+ * `moderation`, this applies to BRIDGE agents too. It is ingress protection
+ * rather than brain config, and a flood costs your own handler its compute and
+ * its own bill just as surely as it costs a managed agent tokens.
+ *
+ * HAND-KEPT COPY of the server's `SubscriberRateSchema` /
+ * `agentView.subscriberRate` (src/api/routes/agents.ts); this package ships
+ * standalone and cannot import server types.
+ */
+export interface AgentSubscriberRate {
+  /** Inbound messages one subscriber may send per window, 1–1000. Button taps count. */
+  maxMessages: number;
+  /** The fixed window in minutes, 1–1440. Fixed, not rolling: the count restarts when it ends. */
+  windowMinutes: number;
+  /** 1–2000 chars, required: the canned reply the FIRST over-limit message gets, once per window. */
+  notice: string;
+}
+
 /** An agent as the API returns it — secrets (signing, LLM key) never included. */
 export interface Agent {
   identifier: string;
@@ -180,6 +218,8 @@ export interface Agent {
   topics: AgentTopics | null;
   /** The outbound reply rules, or null when never set up. Managed only. */
   moderation: AgentModeration | null;
+  /** The per-customer message limit, or null when never set up. EITHER runtime. */
+  subscriberRate: AgentSubscriberRate | null;
   status: 'active' | 'disabled';
   createdAt: string;
   updatedAt: string;
@@ -206,6 +246,12 @@ export interface CreateAgentOptions {
   topics?: AgentTopics;
   /** The outbound reply rules. Managed only — a bridge agent answers 400. */
   moderation?: AgentModeration;
+  /**
+   * The per-customer message limit. Accepted on BOTH runtimes — the only agent
+   * config that is, because it protects your own compute rather than configuring
+   * a brain we run.
+   */
+  subscriberRate?: AgentSubscriberRate;
 }
 
 export interface ConversationSummary {
@@ -647,16 +693,22 @@ export class AsyncifyClient {
       this.request<{ agent: Agent }>('GET', `/v1/agents/${encodeURIComponent(identifier)}`),
     /**
      * Patch any subset; `autoResolveMinutes: null` switches the backstop off,
-     * and `routing`/`topics`/`moderation: null` each switch that feature off and
-     * forget its config. A provided object REPLACES the whole config — the lists
-     * are never merged, so removing one entry is an ordinary edit.
+     * and `routing`/`topics`/`moderation`/`subscriberRate: null` each switch that
+     * feature off and forget its config. A provided object REPLACES the whole
+     * config — the lists are never merged, so removing one entry is an ordinary
+     * edit.
      */
     update: (
       identifier: string,
       patch: Partial<
         Omit<
           CreateAgentOptions,
-          'identifier' | 'autoResolveMinutes' | 'routing' | 'topics' | 'moderation'
+          | 'identifier'
+          | 'autoResolveMinutes'
+          | 'routing'
+          | 'topics'
+          | 'moderation'
+          | 'subscriberRate'
         >
       > & {
         status?: 'active' | 'disabled';
@@ -664,6 +716,7 @@ export class AsyncifyClient {
         routing?: AgentRouting | null;
         topics?: AgentTopics | null;
         moderation?: AgentModeration | null;
+        subscriberRate?: AgentSubscriberRate | null;
       },
     ) =>
       this.request<{ agent: Agent }>(

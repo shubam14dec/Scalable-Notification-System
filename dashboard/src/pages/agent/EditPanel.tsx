@@ -25,6 +25,7 @@ import {
   type AgentModeration,
   type AgentRouting,
   type AgentRoutingStats,
+  type AgentSubscriberRate,
   type AgentTopics,
   type EvalCandidate,
   type SuggestedPrompt,
@@ -176,6 +177,48 @@ export function AgentForm({
   const topicsIncomplete = runtime === 'managed' && topicsArmed && !topicRedirect.trim();
   const rulesIncomplete = runtime === 'managed' && rulesArmed && !replyFallback.trim();
 
+  // ---- A8: per-customer message limits ----
+  // Controlled for the same reason the gates are: the notice becomes REQUIRED
+  // the moment there are numbers, and the numbers have to be readable while the
+  // operator types to know that. NOT gated on runtime anywhere below — this is
+  // ingress protection, and a bridge agent's own handler is just as floodable.
+  // The bounds on the inputs are a HAND-KEPT COPY of the constants in
+  // src/core/subscriber-rate.ts (MAX_MESSAGES_MIN/MAX, WINDOW_MINUTES_MIN/MAX,
+  // NOTICE_MAX) — this app builds standalone and cannot import server code. They
+  // are hints, not the law: the API validates against the core constants
+  // themselves, and a number past them is refused there rather than clamped.
+  const [rateMax, setRateMax] = useState(
+    initial?.subscriberRate ? String(initial.subscriberRate.maxMessages) : '',
+  );
+  const [rateWindow, setRateWindow] = useState(
+    initial?.subscriberRate ? String(initial.subscriberRate.windowMinutes) : '',
+  );
+  const [rateNotice, setRateNotice] = useState(initial?.subscriberRate?.notice ?? '');
+
+  const rateMaxNum = Number.parseInt(rateMax, 10);
+  const rateWindowNum = Number.parseInt(rateWindow, 10);
+  /** A limit needs BOTH numbers: a cap with no window is not a rate, and a window with no cap is not a limit. */
+  const rateArmed =
+    Number.isFinite(rateMaxNum) && rateMaxNum > 0 && Number.isFinite(rateWindowNum) && rateWindowNum > 0;
+  /** Anything typed in the card at all — the test for "did the operator mean to configure this?". */
+  const rateTouched = Boolean(rateMax.trim() || rateWindow.trim() || rateNotice.trim());
+
+  /** The message limit this form would save, or null for "off and forgotten". */
+  const readSubscriberRate = (): AgentSubscriberRate | null =>
+    rateArmed && rateNotice.trim()
+      ? { maxMessages: rateMaxNum, windowMinutes: rateWindowNum, notice: rateNotice.trim() }
+      : null;
+
+  /**
+   * The half-filled card, refused in words rather than as a dead button. Two
+   * shapes land here and both are the same failure: one number without the
+   * other, and a notice that is empty or only spaces. The second is the A7
+   * lesson repeated — the server trims the notice and an empty one reads as NO
+   * LIMIT, so a lone space would leave a limit the operator can still see on
+   * screen quietly not existing.
+   */
+  const rateIncomplete = rateTouched && (!rateArmed || !rateNotice.trim());
+
   // Field-by-field rather than JSON.stringify: key ORDER would make a
   // re-typed-identical policy look like an edit and put the operator through a
   // check that grades nothing new.
@@ -196,7 +239,8 @@ export function AgentForm({
         e.preventDefault();
         // A7: a gate with rules but nothing to say is never saved, in either
         // direction — it would neither block nor keep blocking.
-        if (topicsIncomplete || rulesIncomplete) return;
+        // A8: same rule for a half-filled message limit, on either runtime.
+        if (topicsIncomplete || rulesIncomplete || rateIncomplete) return;
         const form = new FormData(e.currentTarget);
         const str = (key: string) => String(form.get(key) ?? '').trim();
         const body: AgentBody = {
@@ -261,6 +305,17 @@ export function AgentForm({
           } else if (editing && initial?.moderation) {
             body.moderation = null;
           }
+        }
+        // A8: OUTSIDE the runtime branch above, because the message limit is the
+        // one config a bridge agent may hold. Otherwise the identical rule the
+        // gates follow — clearing the numbers is how you switch it off, and that
+        // has to reach the server as an explicit null or the limit the operator
+        // just deleted stays in force on every message.
+        const nextRate = readSubscriberRate();
+        if (nextRate) {
+          body.subscriberRate = nextRate;
+        } else if (editing && initial?.subscriberRate) {
+          body.subscriberRate = null;
         }
         const arHours = Number.parseInt(str('autoResolveH'), 10);
         const arMins = Number.parseInt(str('autoResolveM'), 10);
@@ -327,6 +382,15 @@ export function AgentForm({
           if (!sameModeration(nextModeration, initial?.moderation ?? null)) {
             candidate.moderation = nextModeration;
           }
+          // A8: the message limit is DELIBERATELY ABSENT from this candidate,
+          // and a save that changes only the limit therefore never opens the
+          // check. The gates change what the agent SAYS, so an edit to one must
+          // be graded or the check grades an agent that does not exist; a
+          // message limit changes whether a FLOOD is answered, and every eval
+          // scenario is a burst of messages from one synthetic subscriber by
+          // construction — a gradeable limit would throttle the check itself and
+          // report the limiter's behavior as the prompt's. There is no candidate
+          // field to send it in (see CandidateSchema in api/routes/agent-evals.ts).
           if (
             candidate.systemPrompt !== undefined ||
             candidate.model !== undefined ||
@@ -713,6 +777,81 @@ export function AgentForm({
         </>
       )}
 
+      {/* Phase A8 — per-customer message limits. OUTSIDE the runtime branch
+          above on purpose, so it renders for BOTH runtimes: unlike routing and
+          the two gates, this is not brain config but ingress protection, and a
+          flood costs a bridge agent its own compute and its own bill just as
+          surely as it costs a managed agent tokens. For a managed agent it
+          follows the Reply rules card; for a bridge agent it is the only card
+          on the form. */}
+      <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+        <div>
+          <span className="block text-[12px] font-medium text-t2">Message limits</span>
+          <span className="mt-0.5 block text-[11px] text-t3">
+            Stops one customer — or a bot — from flooding the agent; everyone else is
+            unaffected. Past the limit the agent stops replying to that one person until the
+            window ends, and they are told ONCE per window — not on every message, so a flood
+            can never be turned into a flood of replies. Their messages still appear in the
+            conversation exactly as they were sent: only the reply is withheld, so the record
+            of what someone actually sent you stays true. Leave the fields blank and nothing
+            changes.
+          </span>
+        </div>
+        <Field
+          label="Max messages per customer"
+          hint="How many messages ONE customer may send in the window below (1–1000). Taps on the agent's buttons count too — a tap flood is a flood."
+        >
+          <Input
+            name="rateMaxMessages"
+            type="number"
+            min={1}
+            max={1000}
+            placeholder="off"
+            value={rateMax}
+            onChange={(e) => setRateMax(e.target.value)}
+            className="font-mono"
+          />
+        </Field>
+        <Field
+          label="in a window of (minutes)"
+          hint="1–1440 (one day). A fixed block, not a rolling one — when the window ends the count starts from zero. Retuning either number starts a fresh count for everyone rather than carrying the old one over."
+        >
+          <Input
+            name="rateWindowMinutes"
+            type="number"
+            min={1}
+            max={1440}
+            placeholder="off"
+            value={rateWindow}
+            onChange={(e) => setRateWindow(e.target.value)}
+            className="font-mono"
+          />
+        </Field>
+        <Field
+          label="When the limit is hit, reply once with:"
+          hint="Sent word for word, by us, to the first message over the limit — the model never runs, so it costs nothing. Every further message in that window gets no reply at all, which is the point: a limit that answered every message would be an amplifier. Required once there is a limit."
+        >
+          <textarea
+            name="rateNotice"
+            rows={2}
+            required={rateArmed}
+            maxLength={2000}
+            value={rateNotice}
+            onChange={(e) => setRateNotice(e.target.value.slice(0, 2000))}
+            placeholder="You're sending messages faster than I can answer — I'll pick this up again shortly."
+            className={TEXTAREA_CLS}
+          />
+        </Field>
+        {rateIncomplete && (
+          <p className="-mt-2 text-[11px] text-err">
+            Fill in all three — how many messages, how long the window is, and the reply to send
+            — or clear all three to switch the limit off. A notice of only spaces counts as
+            missing: we trim it, so a stray space can never quietly switch a limit off while it
+            still looks set on screen.
+          </p>
+        )}
+      </div>
+
       <Field
         label="Auto-resolve after inactivity"
         hint="Conversations idle this long resolve automatically (up to 720h). Blank = never — a new message always reopens"
@@ -945,6 +1084,7 @@ export function EditTab({ agent }: { agent: Agent }) {
             routing: body.routing,
             topics: body.topics,
             moderation: body.moderation,
+            subscriberRate: body.subscriberRate,
             llm: body.llm,
           })
         }
