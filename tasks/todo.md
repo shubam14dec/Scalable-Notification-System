@@ -31,9 +31,13 @@ envs are tenant rows under orgs, dashboard session can enumerate;
 fallback = documented two-click flow, flagged not swallowed).
 CI-fixture alignment: importer tolerates the fixture's doc keys so
 evals/agents/*.json becomes a valid import file.
-- [ ] Slice A — kill-switch: schema, processTurn hold+handoff,
-      once-per-conversation line, pause/resume API, button/badge,
-      tests.
+- [x] Slice A — DONE 2026-08-26 (commit dcac1e3, suite 1033→1053):
+      SPEC CORRECTION (message 2 exits at D2 — breadcrumb per HOLD
+      EPISODE, repeat path = handback-while-paused); eval-driver
+      noPauseHold exemption (spec gap: "pause → verify → resume" needs
+      eval immunity); crash-ordering — notice ships BEFORE the
+      transition (retry self-heals); structural test pins paused_at
+      to exactly 3 readers and no channel; confirm on Resume too.
 - [ ] Slice B — config format + routes: canonical JSON, export,
       import preview/apply on shared schemas, version minting,
       secrets policy, tests.

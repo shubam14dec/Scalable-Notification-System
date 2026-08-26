@@ -135,6 +135,92 @@ function newToolSecret(): string {
   return `ats_${randomBytes(32).toString('base64url')}`;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Shared with the A10 config importer                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A10: the registration LAWS, extracted so that a tool arriving in a config
+ * file meets exactly the ones a tool arriving on this route meets — the same
+ * schema object, the same name rules, the same JSON-Schema check, the same SSRF
+ * guard, in the same order. The import path does not get its own gentler copy;
+ * it calls these.
+ *
+ * Validation is separated from the WRITE on purpose: an import validates every
+ * tool in the file before it creates any of them, so a file with one bad
+ * endpoint is refused whole rather than half-applied.
+ */
+export type ToolInputResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; details?: unknown };
+
+export type ToolCreateInput = z.infer<typeof ToolCreateSchema>;
+export type ToolPatchInput = z.infer<typeof ToolPatchSchema>;
+
+export async function validateToolCreate(
+  body: unknown,
+): Promise<ToolInputResult<z.infer<typeof ToolCreateSchema>>> {
+  const parsed = ToolCreateSchema.safeParse(body);
+  if (!parsed.success) {
+    return { ok: false, error: 'invalid body', details: parsed.error.issues };
+  }
+  const { name, parameters, endpointUrl } = parsed.data;
+  if (!NAME_RE.test(name)) {
+    return { ok: false, error: 'tool name must match ^[a-z][a-z0-9_]{0,63}$' };
+  }
+  if (RESERVED_TOOL_NAMES.includes(name)) return { ok: false, error: 'tool name is reserved' };
+  const paramsMsg = paramsError(parameters);
+  if (paramsMsg) return { ok: false, error: paramsMsg };
+  const unsafe = await unsafeEndpointError(endpointUrl);
+  if (unsafe) return { ok: false, error: unsafe };
+  return { ok: true, data: parsed.data };
+}
+
+export async function validateToolPatch(
+  body: unknown,
+): Promise<ToolInputResult<z.infer<typeof ToolPatchSchema>>> {
+  const parsed = ToolPatchSchema.safeParse(body);
+  if (!parsed.success) {
+    return { ok: false, error: 'invalid body', details: parsed.error.issues };
+  }
+  if (parsed.data.parameters !== undefined) {
+    const paramsMsg = paramsError(parsed.data.parameters);
+    if (paramsMsg) return { ok: false, error: paramsMsg };
+  }
+  if (parsed.data.endpointUrl !== undefined) {
+    const unsafe = await unsafeEndpointError(parsed.data.endpointUrl);
+    if (unsafe) return { ok: false, error: unsafe };
+  }
+  return { ok: true, data: parsed.data };
+}
+
+/**
+ * Mint the call secret and store the def. Returns null on the unique-name
+ * conflict, which both callers map to their own answer (409 here; "it already
+ * exists, patch it instead" in the importer).
+ */
+export async function createValidatedTool(
+  tenantId: string,
+  agentId: string,
+  data: z.infer<typeof ToolCreateSchema>,
+): Promise<{ tool: AgentToolDef; secret: string } | null> {
+  const secret = newToolSecret();
+  const tool = await createToolDef({
+    tenantId,
+    agentId,
+    name: data.name,
+    description: data.description,
+    parameters: data.parameters as Record<string, unknown>,
+    endpointUrl: data.endpointUrl,
+    sealedSecret: sealSecret(secret),
+    approval: data.approval,
+    timeoutMs: data.timeoutMs,
+    guard: data.guard ?? null,
+  });
+  return tool ? { tool, secret } : null;
+}
+
+
 export function registerAgentToolRoutes(app: FastifyInstance) {
   app.post<{ Params: { identifier: string } }>(
     '/v1/agents/:identifier/tools',
@@ -143,43 +229,21 @@ export function registerAgentToolRoutes(app: FastifyInstance) {
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
 
-      const parsed = ToolCreateSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+      const valid = await validateToolCreate(req.body);
+      if (!valid.ok) {
+        return reply
+          .code(400)
+          .send({ error: valid.error, ...(valid.details ? { details: valid.details } : {}) });
       }
-      const { name, description, parameters, endpointUrl, approval, timeoutMs, guard } = parsed.data;
 
-      if (!NAME_RE.test(name)) {
-        return reply.code(400).send({ error: 'tool name must match ^[a-z][a-z0-9_]{0,63}$' });
-      }
-      if (RESERVED_TOOL_NAMES.includes(name)) {
-        return reply.code(400).send({ error: 'tool name is reserved' });
-      }
-      const paramsMsg = paramsError(parameters);
-      if (paramsMsg) return reply.code(400).send({ error: paramsMsg });
-      const unsafe = await unsafeEndpointError(endpointUrl);
-      if (unsafe) return reply.code(400).send({ error: unsafe });
-
-      const secret = newToolSecret();
-      const tool = await createToolDef({
-        tenantId: req.tenant.id,
-        agentId: agent.id,
-        name,
-        description,
-        parameters: parameters as Record<string, unknown>,
-        endpointUrl,
-        sealedSecret: sealSecret(secret),
-        approval,
-        timeoutMs,
-        guard: guard ?? null,
-      });
-      if (!tool) {
+      const created = await createValidatedTool(req.tenant.id, agent.id, valid.data);
+      if (!created) {
         return reply
           .code(409)
           .send({ error: 'a tool with this name already exists on this agent' });
       }
       // The plaintext call secret is shown exactly once, like API keys.
-      return reply.code(201).send({ tool: toolView(tool), secret });
+      return reply.code(201).send({ tool: toolView(created.tool), secret: created.secret });
     },
   );
 
@@ -201,19 +265,12 @@ export function registerAgentToolRoutes(app: FastifyInstance) {
       const agent = await getAgent(req.tenant.id, req.params.identifier);
       if (!agent) return reply.code(404).send({ error: 'unknown agent' });
 
-      const parsed = ToolPatchSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+      const valid = await validateToolPatch(req.body);
+      if (!valid.ok) {
+        return reply
+          .code(400)
+          .send({ error: valid.error, ...(valid.details ? { details: valid.details } : {}) });
       }
-      if (parsed.data.parameters !== undefined) {
-        const paramsMsg = paramsError(parsed.data.parameters);
-        if (paramsMsg) return reply.code(400).send({ error: paramsMsg });
-      }
-      if (parsed.data.endpointUrl !== undefined) {
-        const unsafe = await unsafeEndpointError(parsed.data.endpointUrl);
-        if (unsafe) return reply.code(400).send({ error: unsafe });
-      }
-
       // The tool must belong to THIS agent (not just this tenant).
       const existing = await getToolDef(req.tenant.id, req.params.toolId);
       if (!existing || existing.agent_id !== agent.id) {
@@ -221,13 +278,13 @@ export function registerAgentToolRoutes(app: FastifyInstance) {
       }
 
       const tool = await updateToolDef(req.tenant.id, req.params.toolId, {
-        description: parsed.data.description,
-        parameters: parsed.data.parameters as Record<string, unknown> | undefined,
-        endpointUrl: parsed.data.endpointUrl,
-        approval: parsed.data.approval,
-        status: parsed.data.status,
-        timeoutMs: parsed.data.timeoutMs,
-        guard: parsed.data.guard,
+        description: valid.data.description,
+        parameters: valid.data.parameters as Record<string, unknown> | undefined,
+        endpointUrl: valid.data.endpointUrl,
+        approval: valid.data.approval,
+        status: valid.data.status,
+        timeoutMs: valid.data.timeoutMs,
+        guard: valid.data.guard,
       });
       if (!tool) return reply.code(404).send({ error: 'unknown tool' });
       return { tool: toolView(tool) };

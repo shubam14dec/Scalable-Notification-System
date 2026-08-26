@@ -6,7 +6,27 @@ import { getDayTokens } from '../../shared/agent-counters';
 import { verifySubscriberToken } from '../../auth/subscriber-token';
 import { sealSecret } from '../../auth/secret-box';
 import { getEnvironment, getUserById } from '../../db/accounts.repo';
-import { upsertSubscriber } from '../../db/repositories';
+import { listWorkflows, upsertSubscriber } from '../../db/repositories';
+import { listToolDefs, updateToolDef } from '../../db/agent-tools.repo';
+import { listSources } from '../../db/knowledge.repo';
+import {
+  createValidatedTool,
+  validateToolCreate,
+  validateToolPatch,
+  type ToolCreateInput,
+  type ToolPatchInput,
+} from './agent-tools';
+import {
+  agentFieldsFromConfig,
+  diffAgentConfig,
+  missingKnowledgeNames,
+  missingWorkflowKeys,
+  parseAgentConfigFile,
+  referencedWorkflowKeys,
+  serializeAgentConfig,
+  type AgentConfigFile,
+  type ConfigDiff,
+} from '../../core/agent-config-file';
 import {
   clearCanary,
   conversationTranscript,
@@ -544,6 +564,154 @@ export async function authenticateSender(
   return Boolean(req.tenant) && !reply.sent;
 }
 
+/**
+ * A10: the two SAVE PATHS, lifted out of their route handlers so the config
+ * importer can ride them instead of re-implementing them.
+ *
+ * This is the A5 doctrine applied to a new caller: an import-update goes
+ * through `updateAgent`, which is what mints a prompt version when the prompt or
+ * model moves — an importer with its own UPDATE would be a second way to change
+ * what an agent says, and history would quietly stop being complete. The same
+ * argument covers the guards: the SSRF check, the managed-only rules and the
+ * "a managed agent needs a key" rule are laws about agents, not about the route
+ * someone reached them through.
+ */
+type SaveOutcome<T> = { ok: true; value: T } | { ok: false; status: 400 | 404 | 409; error: string };
+
+async function createAgentFromInput(
+  tenantId: string,
+  data: z.infer<typeof AgentSchema>,
+): Promise<SaveOutcome<{ agent: Agent; signingSecret: string }>> {
+  const unsafe = await unsafeUrlError({
+    bridgeUrl: data.bridgeUrl,
+    llmBaseUrl: data.llm?.baseUrl,
+  });
+  if (unsafe) return { ok: false, status: 400, error: unsafe };
+  const secret = newAgentSecret();
+  const agent = await createAgent({
+    tenantId,
+    identifier: data.identifier,
+    name: data.name,
+    description: data.description,
+    runtime: data.runtime,
+    bridgeUrl: data.bridgeUrl,
+    sealedSecret: sealSecret(secret),
+    model: data.model,
+    systemPrompt: data.systemPrompt,
+    maxTokens: data.maxTokens,
+    maxDailyTokens: data.maxDailyTokens ?? undefined,
+    autoResolveMinutes: data.autoResolveMinutes,
+    llmBaseUrl: data.llm?.baseUrl ?? undefined,
+    sealedLlmCredentials: data.llm?.apiKey
+      ? sealSecret(JSON.stringify({ apiKey: data.llm.apiKey }))
+      : undefined,
+    welcomeMessage: data.welcomeMessage,
+    suggestedPrompts: data.suggestedPrompts,
+    context: data.context,
+    routing: data.routing ? routingConfig(data.routing) : undefined,
+    // A7: no wire->stored conversion for these two — unlike routing (whose
+    // optional cheapModel becomes ''), the validated shape IS the stored
+    // shape, so a converter would only be a place for the two to diverge.
+    topics: data.topics,
+    moderation: data.moderation,
+    // A8: same story — the validated shape IS the stored shape. Passed
+    // unconditionally, on either runtime.
+    subscriberRate: data.subscriberRate,
+  });
+  if (!agent) {
+    return { ok: false, status: 409, error: `agent "${data.identifier}" already exists` };
+  }
+  return { ok: true, value: { agent, signingSecret: secret } };
+}
+
+async function patchAgentFromInput(
+  tenantId: string,
+  identifier: string,
+  existing: Agent,
+  data: z.infer<typeof AgentPatchSchema>,
+): Promise<SaveOutcome<Agent>> {
+  // Switching runtimes must not leave a broken agent behind.
+  const nextRuntime = data.runtime ?? existing.runtime;
+  if (nextRuntime === 'bridge' && !(data.bridgeUrl ?? existing.bridge_url)) {
+    return { ok: false, status: 400, error: 'bridge runtime requires a bridgeUrl' };
+  }
+  if (nextRuntime === 'managed' && !(data.llm?.apiKey || existing.llm_credentials)) {
+    return { ok: false, status: 400, error: 'managed runtime requires llm.apiKey' };
+  }
+  // A6: routing is managed-only, judged against what the agent will BE after
+  // this patch (nextRuntime), not what it was — the same test the bridgeUrl
+  // and llm.apiKey guards above make. Clearing (`routing: null`) is exempt
+  // on purpose: a managed→bridge conversion must be able to switch the
+  // router off in the same request, and a clear is never wrong.
+  if (data.routing != null && nextRuntime !== 'managed') {
+    return {
+      ok: false,
+      status: 400,
+      error:
+        'model routing needs a managed agent: a bridge agent’s brain is your own code, not a model we choose',
+    };
+  }
+  // A7: the two gates take routing's guard verbatim, including its exemption
+  // — `!= null` lets a CLEAR through on a managed→bridge conversion, and
+  // switching a gate off is never the wrong answer for an agent that cannot
+  // run it. Judged against nextRuntime, so the test is what the agent will
+  // BE after this patch rather than what it was.
+  if (data.topics != null && nextRuntime !== 'managed') {
+    return { ok: false, status: 400, error: TOPICS_MANAGED_ONLY };
+  }
+  if (data.moderation != null && nextRuntime !== 'managed') {
+    return { ok: false, status: 400, error: MODERATION_MANAGED_ONLY };
+  }
+  // A8: NO runtime guard here, and its absence is deliberate — the message
+  // limit is the one config a bridge agent may hold. Three guards in a row
+  // followed by a fourth field that has none is exactly where a later reader
+  // would "fix" the omission, so it is written down instead: this limit runs
+  // above the managed/bridge fork and protects the customer's own compute.
+
+  const unsafe = await unsafeUrlError({
+    bridgeUrl: data.bridgeUrl,
+    llmBaseUrl: data.llm?.baseUrl,
+  });
+  if (unsafe) return { ok: false, status: 400, error: unsafe };
+
+  const agent = await updateAgent(tenantId, identifier, {
+    name: data.name,
+    description: data.description,
+    runtime: data.runtime,
+    bridgeUrl: data.bridgeUrl,
+    status: data.status,
+    model: data.model,
+    systemPrompt: data.systemPrompt,
+    maxTokens: data.maxTokens,
+    maxDailyTokens: data.maxDailyTokens,
+    autoResolveMinutes: data.autoResolveMinutes,
+    llmBaseUrl: data.llm === undefined ? undefined : data.llm.baseUrl,
+    sealedLlmCredentials: data.llm?.apiKey
+      ? sealSecret(JSON.stringify({ apiKey: data.llm.apiKey }))
+      : undefined,
+    welcomeMessage: data.welcomeMessage,
+    suggestedPrompts: data.suggestedPrompts,
+    context: data.context,
+    routing:
+      data.routing === undefined
+        ? undefined
+        : data.routing === null
+          ? null
+          : routingConfig(data.routing),
+    // A7: absent leaves the stored policy alone, null clears it, an object
+    // REPLACES it whole. No merge on purpose — a half-updated deny list is a
+    // guard nobody can reason about, and "which entries did I just remove?"
+    // is not a question a safety surface should be able to raise.
+    topics: data.topics,
+    moderation: data.moderation,
+    // A8: absent leaves the limit alone, null clears it, an object replaces
+    // it whole — three fields, so a merge would only buy ambiguity.
+    subscriberRate: data.subscriberRate,
+  });
+  if (!agent) return { ok: false, status: 404, error: 'unknown agent' };
+  return { ok: true, value: agent };
+}
+
 export function registerAgentRoutes(app: FastifyInstance) {
   // ---- agent management (dashboard / server credentials) ----
 
@@ -552,47 +720,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
     }
-    const unsafe = await unsafeUrlError({
-      bridgeUrl: parsed.data.bridgeUrl,
-      llmBaseUrl: parsed.data.llm?.baseUrl,
-    });
-    if (unsafe) return reply.code(400).send({ error: unsafe });
-    const secret = newAgentSecret();
-    const agent = await createAgent({
-      tenantId: req.tenant.id,
-      identifier: parsed.data.identifier,
-      name: parsed.data.name,
-      description: parsed.data.description,
-      runtime: parsed.data.runtime,
-      bridgeUrl: parsed.data.bridgeUrl,
-      sealedSecret: sealSecret(secret),
-      model: parsed.data.model,
-      systemPrompt: parsed.data.systemPrompt,
-      maxTokens: parsed.data.maxTokens,
-      maxDailyTokens: parsed.data.maxDailyTokens ?? undefined,
-      autoResolveMinutes: parsed.data.autoResolveMinutes,
-      llmBaseUrl: parsed.data.llm?.baseUrl ?? undefined,
-      sealedLlmCredentials: parsed.data.llm?.apiKey
-        ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
-        : undefined,
-      welcomeMessage: parsed.data.welcomeMessage,
-      suggestedPrompts: parsed.data.suggestedPrompts,
-      context: parsed.data.context,
-      routing: parsed.data.routing ? routingConfig(parsed.data.routing) : undefined,
-      // A7: no wire->stored conversion for these two — unlike routing (whose
-      // optional cheapModel becomes ''), the validated shape IS the stored
-      // shape, so a converter would only be a place for the two to diverge.
-      topics: parsed.data.topics,
-      moderation: parsed.data.moderation,
-      // A8: same story — the validated shape IS the stored shape. Passed
-      // unconditionally, on either runtime.
-      subscriberRate: parsed.data.subscriberRate,
-    });
-    if (!agent) {
-      return reply.code(409).send({ error: `agent "${parsed.data.identifier}" already exists` });
-    }
+    const created = await createAgentFromInput(req.tenant.id, parsed.data);
+    if (!created.ok) return reply.code(created.status).send({ error: created.error });
     // The plaintext secret is shown exactly once, like API keys.
-    return reply.code(201).send({ agent: agentView(agent), signingSecret: secret });
+    return reply
+      .code(201)
+      .send({ agent: agentView(created.value.agent), signingSecret: created.value.signingSecret });
   });
 
   app.get('/v1/agents', { preHandler: [authenticate] }, async (req) => ({
@@ -680,87 +813,14 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const existing = await getAgent(req.tenant.id, req.params.identifier);
       if (!existing) return reply.code(404).send({ error: 'unknown agent' });
 
-      // Switching runtimes must not leave a broken agent behind.
-      const nextRuntime = parsed.data.runtime ?? existing.runtime;
-      if (nextRuntime === 'bridge' && !(parsed.data.bridgeUrl ?? existing.bridge_url)) {
-        return reply.code(400).send({ error: 'bridge runtime requires a bridgeUrl' });
-      }
-      if (
-        nextRuntime === 'managed' &&
-        !(parsed.data.llm?.apiKey || existing.llm_credentials)
-      ) {
-        return reply.code(400).send({ error: 'managed runtime requires llm.apiKey' });
-      }
-      // A6: routing is managed-only, judged against what the agent will BE after
-      // this patch (nextRuntime), not what it was — the same test the bridgeUrl
-      // and llm.apiKey guards above make. Clearing (`routing: null`) is exempt
-      // on purpose: a managed→bridge conversion must be able to switch the
-      // router off in the same request, and a clear is never wrong.
-      if (parsed.data.routing != null && nextRuntime !== 'managed') {
-        return reply.code(400).send({
-          error:
-            'model routing needs a managed agent: a bridge agent’s brain is your own code, not a model we choose',
-        });
-      }
-      // A7: the two gates take routing's guard verbatim, including its exemption
-      // — `!= null` lets a CLEAR through on a managed→bridge conversion, and
-      // switching a gate off is never the wrong answer for an agent that cannot
-      // run it. Judged against nextRuntime, so the test is what the agent will
-      // BE after this patch rather than what it was.
-      if (parsed.data.topics != null && nextRuntime !== 'managed') {
-        return reply.code(400).send({ error: TOPICS_MANAGED_ONLY });
-      }
-      if (parsed.data.moderation != null && nextRuntime !== 'managed') {
-        return reply.code(400).send({ error: MODERATION_MANAGED_ONLY });
-      }
-      // A8: NO runtime guard here, and its absence is deliberate — the message
-      // limit is the one config a bridge agent may hold. Three guards in a row
-      // followed by a fourth field that has none is exactly where a later reader
-      // would "fix" the omission, so it is written down instead: this limit runs
-      // above the managed/bridge fork and protects the customer's own compute.
-
-      const unsafe = await unsafeUrlError({
-        bridgeUrl: parsed.data.bridgeUrl,
-        llmBaseUrl: parsed.data.llm?.baseUrl,
-      });
-      if (unsafe) return reply.code(400).send({ error: unsafe });
-
-      const agent = await updateAgent(req.tenant.id, req.params.identifier, {
-        name: parsed.data.name,
-        description: parsed.data.description,
-        runtime: parsed.data.runtime,
-        bridgeUrl: parsed.data.bridgeUrl,
-        status: parsed.data.status,
-        model: parsed.data.model,
-        systemPrompt: parsed.data.systemPrompt,
-        maxTokens: parsed.data.maxTokens,
-        maxDailyTokens: parsed.data.maxDailyTokens,
-        autoResolveMinutes: parsed.data.autoResolveMinutes,
-        llmBaseUrl: parsed.data.llm === undefined ? undefined : parsed.data.llm.baseUrl,
-        sealedLlmCredentials: parsed.data.llm?.apiKey
-          ? sealSecret(JSON.stringify({ apiKey: parsed.data.llm.apiKey }))
-          : undefined,
-        welcomeMessage: parsed.data.welcomeMessage,
-        suggestedPrompts: parsed.data.suggestedPrompts,
-        context: parsed.data.context,
-        routing:
-          parsed.data.routing === undefined
-            ? undefined
-            : parsed.data.routing === null
-              ? null
-              : routingConfig(parsed.data.routing),
-        // A7: absent leaves the stored policy alone, null clears it, an object
-        // REPLACES it whole. No merge on purpose — a half-updated deny list is a
-        // guard nobody can reason about, and "which entries did I just remove?"
-        // is not a question a safety surface should be able to raise.
-        topics: parsed.data.topics,
-        moderation: parsed.data.moderation,
-        // A8: absent leaves the limit alone, null clears it, an object replaces
-        // it whole — three fields, so a merge would only buy ambiguity.
-        subscriberRate: parsed.data.subscriberRate,
-      });
-      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
-      return { agent: agentView(agent) };
+      const saved = await patchAgentFromInput(
+        req.tenant.id,
+        req.params.identifier,
+        existing,
+        parsed.data,
+      );
+      if (!saved.ok) return reply.code(saved.status).send({ error: saved.error });
+      return { agent: agentView(saved.value) };
     },
   );
 
@@ -1090,6 +1150,394 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return { agent: agentView(resumed) };
     },
   );
+
+  /**
+   * ---- A10 CONFIG-AS-CODE: export, import preview, import apply ----
+   *
+   * One file describes an agent; three routes move it. The format itself lives
+   * in core/agent-config-file.ts (which owns the serializer and the reader);
+   * everything here is about the LAWS an incoming file has to meet, and those
+   * are deliberately not new laws: the knobs go through `AgentSchema` /
+   * `AgentPatchSchema` (the very objects the save routes use), the tools go
+   * through the registration route's own validators, and the write itself rides
+   * `createAgentFromInput` / `patchAgentFromInput` — so an imported prompt mints
+   * a version exactly like a typed one.
+   */
+
+  const ImportBodySchema = z.object({
+    /** The parsed config file. Shape-checked by the format owner, not here. */
+    file: z.unknown(),
+    /**
+     * The target environment's LLM key. Never in the file — it travels in the
+     * request, once, and only when the operator has one to give. Same bounds as
+     * `LlmConfigSchema.apiKey`, because it ends up in exactly that field.
+     */
+    llmApiKey: z.string().min(8).max(512).optional(),
+  });
+
+  /**
+   * Preview has no key to type into a managed create, but it still has to be
+   * able to tell an operator that their 31st topic label is one too many. So it
+   * validates with this stand-in and throws it away — nothing is written by a
+   * preview, and `needsLlmKey` (computed from the REAL absence) is what the
+   * dashboard reads to decide whether to ask for the real one.
+   */
+  const PREVIEW_LLM_KEY = 'preview-only-never-stored';
+
+  type ImportRefusal = { status: 400 | 404 | 409 | 422; error: string; details?: unknown };
+
+  interface ImportPlan {
+    config: AgentConfigFile;
+    existing: Agent | null;
+    diff: ConfigDiff;
+    missingWorkflows: string[];
+    missingKnowledge: string[];
+    needsLlmKey: boolean;
+    /** Exactly one of these two is set — the mode decides which. */
+    create: z.infer<typeof AgentSchema> | null;
+    patch: z.infer<typeof AgentPatchSchema> | null;
+    toolCreates: Array<{ name: string; data: ToolCreateInput }>;
+    toolPatches: Array<{ id: string; name: string; data: ToolPatchInput }>;
+    /** On the agent, absent from the file — left exactly where they are. */
+    toolsKept: string[];
+  }
+
+  /**
+   * Everything both import routes need, computed once and identically.
+   *
+   * Preview and apply do not merely agree by convention here — apply EXECUTES
+   * the plan preview describes. That is the whole reason for a two-step import:
+   * a modal that says "one tool added, prompt changed" and an apply that then
+   * refuses on a bound the preview never checked would be worse than no preview
+   * at all, so every check apply makes is made here, before either answers.
+   */
+  async function planImport(
+    tenantId: string,
+    body: z.infer<typeof ImportBodySchema>,
+    opts: { preview: boolean },
+  ): Promise<{ ok: true; plan: ImportPlan } | { ok: false; refusal: ImportRefusal }> {
+    const parsed = parseAgentConfigFile(body.file);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        refusal: { status: 400, error: 'invalid config file', details: parsed.issues },
+      };
+    }
+    const config = parsed.config;
+
+    const existing = await getAgent(tenantId, config.identifier);
+    const [liveTools, liveKnowledge, tenantWorkflows] = await Promise.all([
+      existing ? listToolDefs(tenantId, existing.id) : Promise.resolve([]),
+      existing ? listSources(tenantId, existing.id) : Promise.resolve([]),
+      listWorkflows(tenantId),
+    ]);
+
+    const diff = diffAgentConfig(config, existing ? { agent: existing, tools: liveTools } : null);
+    const missingWorkflows = missingWorkflowKeys(
+      config,
+      (tenantWorkflows as Array<{ key: string }>).map((w) => w.key),
+    );
+    const missingKnowledge = missingKnowledgeNames(
+      config,
+      liveKnowledge.map((s) => s.name),
+    );
+    // A managed agent needs a key it does not already have: always on create,
+    // and on the bridge→managed conversion a file can ask for.
+    const needsLlmKey =
+      config.runtime === 'managed' && !(existing && existing.llm_credentials);
+    const llmApiKey =
+      body.llmApiKey ?? (opts.preview && needsLlmKey ? PREVIEW_LLM_KEY : undefined);
+
+    // A file NAMES the workflows its prompt drives. Apply refuses when the
+    // tenant lacks one (a prompt that tells the model to trigger a workflow
+    // that does not exist is a broken agent, and shipping it quietly would make
+    // the failure a customer's problem at turn time); preview reports the same
+    // list as a warning, so the operator can create them and come back.
+    if (!opts.preview && missingWorkflows.length > 0) {
+      return {
+        ok: false,
+        refusal: {
+          status: 422,
+          error: `this config needs workflows this environment does not have: ${missingWorkflows.join(', ')}`,
+          details: { missingWorkflows },
+        },
+      };
+    }
+
+    // Absent means "no opinion" and leaves the stored value alone — which is
+    // what makes an import non-destructive. An EXPLICIT null is different: the
+    // serializer never writes one, so a null in a file is a human saying "clear
+    // this", and the save schemas already read it exactly that way.
+    const fields = agentFieldsFromConfig(config);
+    // llmBaseUrl never travels on its own: it is the endpoint the stored key is
+    // used against, so repointing it while an older key stays behind would ship
+    // that key somewhere its owner never agreed to. It moves only together with
+    // a key — always on create (where one is required for managed), and on
+    // update only when the operator supplies one.
+    delete fields.llmBaseUrl;
+    const llm = llmApiKey
+      ? {
+          apiKey: llmApiKey,
+          ...(config.llmBaseUrl !== undefined ? { baseUrl: config.llmBaseUrl } : {}),
+        }
+      : undefined;
+
+    let create: z.infer<typeof AgentSchema> | null = null;
+    let patch: z.infer<typeof AgentPatchSchema> | null = null;
+    if (!existing) {
+      const createBody = { ...fields, identifier: config.identifier, ...(llm ? { llm } : {}) };
+      const checked = AgentSchema.safeParse(createBody);
+      if (!checked.success) {
+        return {
+          ok: false,
+          refusal: { status: 400, error: 'invalid body', details: checked.error.issues },
+        };
+      }
+      create = checked.data;
+    } else {
+      const checked = AgentPatchSchema.safeParse({ ...fields, ...(llm ? { llm } : {}) });
+      if (!checked.success) {
+        return {
+          ok: false,
+          refusal: { status: 400, error: 'invalid body', details: checked.error.issues },
+        };
+      }
+      patch = checked.data;
+    }
+
+    // The SSRF gate, run here rather than only at write time so a preview
+    // refuses a bridgeUrl pointing at private infrastructure instead of
+    // promising an apply that cannot happen.
+    const unsafe = await unsafeUrlError({
+      bridgeUrl: create?.bridgeUrl ?? patch?.bridgeUrl,
+      llmBaseUrl: llm?.baseUrl,
+    });
+    if (unsafe) return { ok: false, refusal: { status: 400, error: unsafe } };
+
+    // Tools: validated to the last one BEFORE any of them is written, so a file
+    // with one bad endpoint is refused whole rather than applied halfway.
+    const byName = new Map(liveTools.map((t) => [t.name, t]));
+    const toolCreates: ImportPlan['toolCreates'] = [];
+    const toolPatches: ImportPlan['toolPatches'] = [];
+    for (const tool of config.tools ?? []) {
+      const live = byName.get(tool.name);
+      if (!live) {
+        const checked = await validateToolCreate(tool);
+        if (!checked.ok) {
+          return {
+            ok: false,
+            refusal: {
+              status: 400,
+              error: `tool "${tool.name}": ${checked.error}`,
+              details: checked.details,
+            },
+          };
+        }
+        toolCreates.push({ name: tool.name, data: checked.data });
+        continue;
+      }
+      if (!diff.toolChanges.changed.includes(tool.name)) continue;
+      // Only the fields the file STATES are patched — an omitted timeoutMs is
+      // not a request to reset the timeout. `status` is never among them: a
+      // tool an operator disabled here stays disabled, because that is
+      // operational state, not config (the same line the agent's own `status`
+      // and `pausedAt` sit on).
+      const { name: _name, ...stated } = tool;
+      const checked = await validateToolPatch(stated);
+      if (!checked.ok) {
+        return {
+          ok: false,
+          refusal: {
+            status: 400,
+            error: `tool "${tool.name}": ${checked.error}`,
+            details: checked.details,
+          },
+        };
+      }
+      toolPatches.push({ id: live.id, name: tool.name, data: checked.data });
+    }
+
+    return {
+      ok: true,
+      plan: {
+        config,
+        existing,
+        diff,
+        missingWorkflows,
+        missingKnowledge,
+        needsLlmKey,
+        create,
+        patch,
+        toolCreates,
+        toolPatches,
+        toolsKept: diff.toolChanges.removed,
+      },
+    };
+  }
+
+  /**
+   * The file for one agent. Both runtimes: a bridge agent exports its tools and
+   * its knobs too, and `runtime` in the file says which kind it is.
+   *
+   * The body IS the file (no envelope), so `curl ... > support-demo.agent.json`
+   * writes something the import route accepts and a human can read in a diff.
+   * The canary report route sets the same precedent for a bare body.
+   *
+   * DISABLED TOOLS ARE NOT EXPORTED. A disabled tool is not part of what the
+   * agent does, and `status` is operational state that deliberately does not
+   * travel — exporting one would silently re-enable it in the target
+   * environment, which is precisely the surprise config-as-code must not have.
+   */
+  app.get<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/export',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const agent = await getAgent(req.tenant.id, req.params.identifier);
+      if (!agent) return reply.code(404).send({ error: 'unknown agent' });
+      const [tools, knowledge, workflows] = await Promise.all([
+        listToolDefs(req.tenant.id, agent.id, { activeOnly: true }),
+        listSources(req.tenant.id, agent.id),
+        listWorkflows(req.tenant.id),
+      ]);
+      return serializeAgentConfig({
+        agent,
+        tools,
+        knowledge,
+        workflowKeys: referencedWorkflowKeys(
+          agent.system_prompt,
+          (workflows as Array<{ key: string }>).map((w) => w.key),
+        ),
+      });
+    },
+  );
+
+  /**
+   * Step one: what WOULD this file do? Reads only — no agent is created, no
+   * knob moves, no version is minted. The answer is field-level on purpose: an
+   * operator about to promote a config to production is asking "what changes?",
+   * and a green checkmark is not an answer to that question.
+   */
+  app.post('/v1/agents/import/preview', { preHandler: [authenticate] }, async (req, reply) => {
+    const body = ImportBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      return reply.code(400).send({ error: 'invalid body', details: body.error.issues });
+    }
+    const planned = await planImport(req.tenant.id, body.data, { preview: true });
+    if (!planned.ok) {
+      const { status, error, details } = planned.refusal;
+      return reply.code(status).send({ error, ...(details ? { details } : {}) });
+    }
+    const { plan } = planned;
+    return {
+      identifier: plan.config.identifier,
+      mode: plan.diff.mode,
+      changes: plan.diff.changes,
+      toolChanges: plan.diff.toolChanges,
+      /**
+       * What 'removed' means, said out loud so a dashboard cannot render it as a
+       * threat: NOTHING is removed by an import. A knob or a tool the file does
+       * not mention is left exactly as it is — an import must not destroy what
+       * the file's author never knew about, and deleting a tool stays an
+       * explicit act in the dashboard, done by someone who can see what calls it.
+       */
+      removalPolicy: 'kept' as const,
+      missingWorkflows: plan.missingWorkflows,
+      /** References the target lacks. A warning, never a refusal: knowledge is
+       *  referenced by name in this format and its content is not in the file,
+       *  so an import has nothing to create — it can only tell the truth. */
+      missingKnowledge: plan.missingKnowledge,
+      needsLlmKey: plan.needsLlmKey,
+    };
+  });
+
+  /**
+   * Step two: apply it.
+   *
+   * Create rides the create path (and therefore requires an llmApiKey for a
+   * managed agent, exactly like POST /v1/agents — the file has no key in it, so
+   * the operator supplies the target environment's own). Update rides
+   * `updateAgent`, so a changed prompt or model MINTS A PROMPT VERSION like any
+   * other save and history stays complete.
+   *
+   * What an import never touches: `status`, `pausedAt` (a paused agent stays
+   * paused — importing a config is not an all-clear), the canary, version
+   * history, and the stored LLM credentials unless a key was supplied.
+   */
+  app.post('/v1/agents/import', { preHandler: [authenticate] }, async (req, reply) => {
+    const body = ImportBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      return reply.code(400).send({ error: 'invalid body', details: body.error.issues });
+    }
+    const planned = await planImport(req.tenant.id, body.data, { preview: false });
+    if (!planned.ok) {
+      const { status, error, details } = planned.refusal;
+      return reply.code(status).send({ error, ...(details ? { details } : {}) });
+    }
+    const { plan } = planned;
+
+    let agent: Agent;
+    let signingSecret: string | undefined;
+    if (plan.create) {
+      const created = await createAgentFromInput(req.tenant.id, plan.create);
+      if (!created.ok) return reply.code(created.status).send({ error: created.error });
+      agent = created.value.agent;
+      signingSecret = created.value.signingSecret;
+    } else {
+      // Non-null by construction: planImport sets exactly one of create/patch,
+      // and `existing` is what decided which.
+      const saved = await patchAgentFromInput(
+        req.tenant.id,
+        plan.config.identifier,
+        plan.existing!,
+        plan.patch!,
+      );
+      if (!saved.ok) return reply.code(saved.status).send({ error: saved.error });
+      agent = saved.value;
+    }
+
+    // Tool secrets are minted per environment and shown ONCE, like every other
+    // secret this API hands out: the file cannot carry them (that is what makes
+    // it git-safe), so a freshly imported tool needs its new secret handed to
+    // the operator here or its backend can never verify the calls we make.
+    const created: Array<{ name: string; secret: string }> = [];
+    for (const tool of plan.toolCreates) {
+      const made = await createValidatedTool(req.tenant.id, agent.id, tool.data);
+      // null = a tool with this name appeared between the plan and now. The
+      // import does not fight it: the tool exists, which is what the file asked
+      // for, and the racing writer's version is the newer one.
+      if (made) created.push({ name: tool.name, secret: made.secret });
+    }
+    const updated: string[] = [];
+    for (const tool of plan.toolPatches) {
+      const patched = await updateToolDef(req.tenant.id, tool.id, {
+        description: tool.data.description,
+        parameters: tool.data.parameters as Record<string, unknown> | undefined,
+        endpointUrl: tool.data.endpointUrl,
+        approval: tool.data.approval,
+        timeoutMs: tool.data.timeoutMs,
+        guard: tool.data.guard,
+      });
+      if (patched) updated.push(tool.name);
+    }
+
+    logExec({
+      tenantId: req.tenant.id,
+      transactionId: `agent-${agent.identifier}`,
+      level: 'info',
+      detail:
+        `agent ${agent.identifier} ${plan.diff.mode === 'create' ? 'CREATED' : 'UPDATED'} from a config file ` +
+        `(v${agent.prompt_version}; tools +${created.length} ~${updated.length} kept ${plan.toolsKept.length})`,
+    });
+
+    return reply.code(plan.diff.mode === 'create' ? 201 : 200).send({
+      mode: plan.diff.mode,
+      agent: agentView(agent),
+      // Shown exactly once, like POST /v1/agents. Absent on an update.
+      ...(signingSecret ? { signingSecret } : {}),
+      tools: { created, updated, kept: plan.toolsKept },
+      missingKnowledge: plan.missingKnowledge,
+    });
+  });
 
   app.post<{ Params: { identifier: string } }>(
     '/v1/agents/:identifier/rotate-secret',
