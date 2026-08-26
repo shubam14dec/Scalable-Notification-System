@@ -478,8 +478,12 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       update the landing page by these features"). Repo: asyncify-site
       (sibling; live at asyncify.org via Cloudflare Pages auto-deploy
       from github.com/shubam14dec/asyncify-site — pushing = deploying,
-      so verify locally first). Absorbs A2c. What to sell (the five
-      shipped rungs, each with its proven one-liner):
+      so verify locally first). Absorbs A2c. UPDATED 2026-08-26 (his
+      explicit reminder): the full arc is now SEVEN shipped phases —
+      "judge → CI gate → pre-save check → versioning + canary → model
+      routing → topic gate + reply rules → per-customer limits, all
+      live-tested" — the site must sell all seven, each with its proven
+      one-liner:
       · A2 judged evals — "test your prompt like code, with a judge for
         what traces can't see; the model grades, the code decides"
       · A3 CI gate — "a push that breaks the agent cannot merge — real
@@ -494,6 +498,13 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
         control")
       · A6 model routing — "the easy turns on a cheaper model — trusted
         to talk, never to act; escalation is law, not judgment"
+      · A7 topic gate + reply rules — "two gates around the brain: what
+        the agent will discuss, and what a reply may never say —
+        enforced in code, a prompt can be argued with, a gate cannot"
+        (+ "the classifier is never told the policy")
+      · A8 per-customer limits — "one flooding customer throttled
+        politely and free — everyone else never notices; the record
+        stays truthful" (contrast: a budget breaker mutes everyone)
       HOW (constraints from the site's own history): fit the EXISTING
       agents scenes/copy — extend, don't redesign; GSAP motion stays
       SUBTLE and only where it improves UX (his standing rule), gate
