@@ -436,13 +436,8 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - (folded into A16 below) A2c. Landing page judged-evals line —
       superseded 2026-08-23: the site update now covers ALL of A2–A6,
       see A16.
-- [ ] A2b. LIVE judge supervisor (user's idea 2026-08-21): async judging
-      of PRODUCTION turns reusing A2's engine verbatim — per-agent
-      toggle (off / sampled % / knowledge-turns-only / all), reply sends
-      immediately, judge scores in background; bad verdict → flag
-      conversation + ops alert + optional auto-handoff (composes P26
-      handoff + P22 alerts + A10 alerting). Blocking-mode rejected
-      (2x cost, +2-4s every reply).
+- (REMOVED at user's instruction 2026-08-26) A2b live judge supervisor
+      — cut from the backlog; the quality track ends at A8.
 - [x] A3. CI eval gate — SHIPPED 2026-08-22, review above.
 - [x] A4. Pre-save eval runs — SHIPPED 2026-08-22, review above. (Its
       second half — conversation → eval-case — was already shipped in
