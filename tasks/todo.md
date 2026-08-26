@@ -6,6 +6,43 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A10 — kill-switch + config-as-code (plan approved 2026-08-26;
+user rescoped the A10 set: handoff-SLA + active-alerting REMOVED)
+KILL-SWITCH: agents.paused_at timestamptz (null = live; deliberately
+NOT a third status — disabled keeps its hard-off meaning, the timestamp
+is incident forensics). Enforced at the A8 chokepoint (top of
+processTurn, after the D2 gate — zero ingress edits): while paused,
+messages LAND in the transcript (no 409s), no brain, holding line ONCE
+per conversation, conversation routes to the P26 waiting_human queue
+(user-approved: an incident filling Sam's queue is the point);
+breadcrumb per held turn. Resume: normal turns resume; human-owned
+threads stay human until handback. UI: Pause/Resume button + confirm +
+PAUSED badge (list + detail).
+CONFIG-AS-CODE: one canonical JSON (identifier→tools incl. guards +
+all six knobs), NEVER any secret (git-safe by construction); knowledge
+as REFERENCES not content (v1, user-approved); workflow keys as
+checked requirements. Export route; two-step import (preview w/
+field-level diff → apply), validated against THE SAME zod schemas as
+the save routes (A7 identity doctrine); import-update rides
+updateAgent (mints a version; dashboard imports trip the pre-save
+check). UI: Export on header, Import on list page w/ preview modal +
+keys-never-travel prompt, Promote-to-env dropdown (verified feasible:
+envs are tenant rows under orgs, dashboard session can enumerate;
+fallback = documented two-click flow, flagged not swallowed).
+CI-fixture alignment: importer tolerates the fixture's doc keys so
+evals/agents/*.json becomes a valid import file.
+- [ ] Slice A — kill-switch: schema, processTurn hold+handoff,
+      once-per-conversation line, pause/resume API, button/badge,
+      tests.
+- [ ] Slice B — config format + routes: canonical JSON, export,
+      import preview/apply on shared schemas, version minting,
+      secrets policy, tests.
+- [ ] Slice C — import/promote UI: preview/diff modal, pre-save
+      integration, Promote-to-env, SDK + changeset.
+- [ ] Slice D — docs: guide §6/§13 + config-as-code section,
+      AGENT-TOOLS, gap docs (env promotion = Tier-A novu gap),
+      close-out.
+
 ### Phase A8 — SHIPPED 2026-08-25 (review)
 All 3 slices done (commits 9d87bea, b30a777, +docs), suite 967→1033
 (+66), root+dashboard+sdk tsc clean. What shipped: per-customer message
@@ -447,16 +484,8 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A7. Guardrails completion — SHIPPED 2026-08-24, review above.
 - [x] A8. Per-customer message limits — SHIPPED 2026-08-25, review
       above (rescoped by user to this single item).
-- [ ] A10. NEW (2026-08-21) production-readiness set:
-      [ ] kill-switch — one-click per-agent pause; stops answering
-          instantly, inbound routes to handoff/hold
-      [ ] handoff-queue SLA — waiting_human older than X fires an ops
-          notification (sweep pattern + own trigger machinery)
-      [ ] active health alerting — tool-failure/error-rate spikes PUSH
-          to the ops channel (Health modal today is passive)
-      [ ] agent config as-code — export/import agent (prompt, tools,
-          guardrails, knowledge refs) as JSON/YAML; enabler for A5 and
-          env promotion
+- (IN PROGRESS above) A10. Kill-switch + config-as-code (rescoped by
+      user 2026-08-26: handoff-SLA + active-alerting removed).
 - [ ] A11. Tool approval via workflow — deferred tool call fires a real
       notification; approve from ANY channel; webhook resumes (Tier B,
       composes buttons + trigger machinery; very demo-worthy).

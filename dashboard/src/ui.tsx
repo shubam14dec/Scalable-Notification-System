@@ -75,6 +75,13 @@ const STATUS_STYLES: Record<string, { color: string; label?: string }> = {
   waiting_human: { color: 'var(--warn)', label: 'waiting for human' },
   human: { color: 'var(--info)', label: 'human' },
   disabled: { color: 'var(--t3)' },
+  // A10 the kill-switch. Amber, the same attention-needing warn idiom as
+  // waiting_human and retry — and deliberately NOT the grey `disabled` uses.
+  // Grey reads as "switched off and fine"; a paused agent is a live agent in
+  // the middle of an incident, still taking messages, with its conversations
+  // piling into a human queue. It is the one agent state someone must notice
+  // from across the room, so it borrows the colour that means "look at this".
+  paused: { color: 'var(--warn)' },
 };
 
 export function StatusBadge({ status }: { status: string }) {

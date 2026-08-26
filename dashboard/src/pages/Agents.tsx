@@ -131,7 +131,15 @@ export default function AgentsPage() {
                     </Mono>
                   </td>
                   <td className={td}>
-                    <StatusBadge status={a.status} />
+                    {/* A10: two badges, not one. `paused` is a sibling of the
+                        status, so hiding the real status behind it would tell a
+                        half-truth — a disabled AND paused agent has to read as
+                        both. The paused badge goes FIRST because it is the one
+                        that means "someone needs to do something". */}
+                    <span className="inline-flex items-center gap-2">
+                      {a.pausedAt ? <StatusBadge status="paused" /> : null}
+                      <StatusBadge status={a.status} />
+                    </span>
                   </td>
                   <td className={`${td} text-right`}>
                     <Mono className="text-t3">{timeAgo(a.createdAt)}</Mono>

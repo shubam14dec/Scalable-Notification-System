@@ -95,6 +95,23 @@ export interface Agent {
    * BRIDGE AGENTS TOO. See SubscriberRateConfig for why.
    */
   subscriber_rate: SubscriberRateConfig | null;
+  /**
+   * A10 THE KILL-SWITCH: when an operator paused this agent, or null = live
+   * (the default, and what every pre-A10 row holds). Deliberately NOT a third
+   * `status` value — see the column comment in schema.sql: `disabled` keeps its
+   * hard-off meaning (409s at the door, dropped deliveries), while a pause must
+   * keep HEARING the customer and only stop the agent from answering.
+   *
+   * A timestamp rather than a boolean because the question a post-mortem asks
+   * is "when", not "whether". Read in exactly one place — the hold at the top
+   * of processTurn — and set/cleared by the pause/resume routes; nothing at
+   * ingress consults it, which is what keeps a pause from becoming a 409.
+   *
+   * Like `subscriber_rate` and unlike the brain knobs above, it applies to
+   * BOTH RUNTIMES: a bridge agent mid-incident needs pausing too, and for it
+   * the pause simply means its webhook stops being called.
+   */
+  paused_at: string | null;
   /** D6 per-agent config bag; carries the rolling-summarization trigger knobs. */
   context: AgentContext;
   created_at: string;
@@ -807,6 +824,67 @@ export async function rotateAgentSecret(
     `update agents set signing_secret = $3, updated_at = now()
      where tenant_id = $1 and identifier = $2`,
     [tenantId, identifier, sealedSecret],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * A10 THE KILL-SWITCH: stamp or clear `agents.paused_at`. Returns the fresh row
+ * so the route can answer with the agent's real state, or null when there is no
+ * such agent (the caller turns that into the house 404).
+ *
+ * WRITTEN TO BE IDEMPOTENT ON PURPOSE, and the SQL is where that lives rather
+ * than in a route-level "is it already paused?" branch: pausing a paused agent
+ * re-stamps the same intent and resuming a live one clears an already-null
+ * column. Both are 200s with no surprise, because this is an EMERGENCY BUTTON
+ * and an emergency button that errors on a double-press is a broken button —
+ * the person mashing it at 3am is not reading the response body, they are
+ * watching the badge.
+ *
+ * Pausing DOES re-stamp the timestamp on a second press. That is the honest
+ * reading of the column: it records the most recent moment a human decided this
+ * agent must stop, which is the moment a post-mortem cares about; the earlier
+ * press is in the audit log, not in a column that only holds one value.
+ */
+export async function setAgentPaused(
+  tenantId: string,
+  identifier: string,
+  paused: boolean,
+): Promise<Agent | null> {
+  const { rows } = await pool.query(
+    `update agents set paused_at = case when $3 then now() else null end, updated_at = now()
+      where tenant_id = $1 and identifier = $2
+      returning *`,
+    [tenantId, identifier, paused],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * A10: has this conversation ALREADY been told the agent is paused? The claim
+ * behind the once-per-conversation holding line.
+ *
+ * The claim is the SHIPPED ROW ITSELF (`raw.pausedHold` on the agent reply),
+ * not a breadcrumb written beforehand and not a Redis key: a row that exists is
+ * a line the customer actually received, so a crash between deciding to speak
+ * and speaking cannot silence the conversation forever.
+ *
+ * `excludeDedupeKey` is this turn's own reply slot (`reply-<messageId>`). A
+ * BullMQ retry of the very message that shipped the line must not read its own
+ * first attempt as "someone else already said it" — excluding it lets the retry
+ * re-run the ordinary reply path, where the dedupe key stops a second row and
+ * deliverReply's send-once guard stops a second send.
+ */
+export async function pausedHoldNoticeSent(
+  conversationId: string,
+  excludeDedupeKey: string,
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `select 1 from conversation_messages
+      where conversation_id = $1 and role = 'agent' and raw->'pausedHold' is not null
+        and dedupe_key is distinct from $2
+      limit 1`,
+    [conversationId, excludeDedupeKey],
   );
   return (rowCount ?? 0) > 0;
 }

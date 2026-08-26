@@ -1,5 +1,5 @@
 // Per-agent detail page (route /agents/:identifier, tabs via ?tab=). V1 top-tabs
-// topology: breadcrumb, identity row with Disable + Delete on the right, health
+// topology: breadcrumb, identity row with Pause + Disable + Delete on the right, health
 // strip, underline tab bar, full-width panel content. Self-fetches by identifier
 // from the unchanged ['agents'] list query (refresh-safe, live-invalidated), so
 // no new endpoint or react-query key is introduced.
@@ -48,6 +48,17 @@ export default function AgentDetailPage() {
       const { identifier: id, ...rest } = body;
       return api(`/v1/agents/${id}`, { method: 'PATCH', body: rest });
     },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  });
+
+  // A10 THE KILL-SWITCH. Its own mutation rather than a field on `update`
+  // above, because it is not a config save: no body, no version minted, no
+  // pre-save eval check, and it must stay reachable when the Edit form is in
+  // any state at all — half-typed, invalid, mid-save. During an incident the
+  // button has to work while the page is a mess.
+  const pause = useMutation({
+    mutationFn: ({ identifier: id, paused }: { identifier: string; paused: boolean }) =>
+      api(`/v1/agents/${id}/${paused ? 'pause' : 'resume'}`, { method: 'POST' }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents'] }),
   });
 
@@ -119,6 +130,10 @@ export default function AgentDetailPage() {
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-[18px] font-semibold tracking-tight text-t1">{agent.name}</h1>
             <Mono className="text-t3">{agent.identifier}</Mono>
+            {/* A10: paused first, and beside the status rather than instead of
+                it — an agent can be paused and disabled at once, and each badge
+                answers a different question. */}
+            {agent.pausedAt ? <StatusBadge status="paused" /> : null}
             <StatusBadge status={agent.status} />
           </div>
           <div className="mt-0.5 text-[12px] text-t3">
@@ -140,6 +155,33 @@ export default function AgentDetailPage() {
             onClick={() => navigate(`/conversations?agent=${agent.identifier}`)}
           >
             Conversations
+          </Button>
+          {/* A10 THE KILL-SWITCH. Left of Disable because it is the milder,
+              more reachable half of the pair, and the two are easy to confuse:
+              Disable shuts the door (messages are refused), Pause keeps it open
+              and stops the answering. Both confirms below say which is which in
+              plain sentences — the copy IS the feature here, since the cost of
+              pressing the wrong one during an incident is a customer hitting an
+              error instead of a person. */}
+          <Button
+            onClick={() => {
+              const paused = !agent.pausedAt;
+              const message = paused
+                ? `Pause "${agent.identifier}"?\n\n` +
+                  '· The agent keeps accepting messages — nothing is refused, and every message still lands in the transcript.\n' +
+                  '· It stops answering: no model calls, no tools, no calls to your own service.\n' +
+                  '· Each customer is told once that a person is taking over.\n' +
+                  "· Their conversations move to your team's queue, waiting for a human.\n\n" +
+                  'Resume puts the agent back on new messages.'
+                : `Resume "${agent.identifier}"?\n\n` +
+                  '· New messages get normal agent turns again.\n' +
+                  "· Conversations already waiting for your team stay with your team — resuming does not take them back. Use Return to agent on a conversation to hand one back.";
+              if (window.confirm(message)) {
+                pause.mutate({ identifier: agent.identifier, paused });
+              }
+            }}
+          >
+            {agent.pausedAt ? 'Resume agent' : 'Pause agent'}
           </Button>
           <Button
             onClick={() =>

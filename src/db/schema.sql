@@ -998,3 +998,29 @@ alter table agents add column if not exists moderation jsonb;
 -- truthful) — only the turn is skipped. One Redis INCR per inbound message on a
 -- limited agent; zero for everyone else.
 alter table agents add column if not exists subscriber_rate jsonb;
+
+-- ---- Phase A10: THE KILL-SWITCH ----
+-- When an operator hit "Pause agent", or null = live (the default, and what
+-- every pre-A10 row holds). A TIMESTAMP, not a third `status` value, and that
+-- is the whole design decision of the slice:
+--   • `status = 'disabled'` keeps its existing HARD-OFF meaning — the API 409s
+--     inbound messages and the workers drop deliveries. A disabled agent is one
+--     nobody is talking to. Overloading it for a pause would have made every
+--     paused agent start REFUSING messages at the door, which is the opposite
+--     of what a pause is for: the customer must still be heard, and their words
+--     must still land in the transcript, or the incident destroys the evidence.
+--   • a nullable timestamp is INCIDENT FORENSICS. "Paused" is a boolean anyone
+--     can read off it, but "paused at 03:12, four minutes after the deploy" is
+--     the sentence a post-mortem is actually written from, and a boolean column
+--     would have thrown that away for one byte.
+-- Enforced in ONE place — the top of processTurn, right after the D2 human-pen
+-- gate and BEFORE the A8 limiter (a paused agent must not send rate notices).
+-- While it is set: the inbound row still lands, no brain/classifier/tool/bridge
+-- POST runs, the customer is told ONCE per conversation, and the conversation
+-- is routed into the P26 waiting_human queue so a person picks it up.
+-- Ingress is deliberately untouched: nothing in the API or the channel webhooks
+-- reads this column, so pausing can never turn into a 409 at the door.
+-- Resuming is just clearing it — no sweep, no backfill. New messages run normal
+-- turns; conversations already handed to humans stay with humans until handback,
+-- exactly as P26 has always worked.
+alter table agents add column if not exists paused_at timestamptz;

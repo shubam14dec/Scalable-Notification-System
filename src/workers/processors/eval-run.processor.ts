@@ -119,6 +119,12 @@ function inProcessDriver(
           // driver, and for the same reason: a driver opting out of a
           // platform-wide protection should have to say so.
           noRateLimit: true,
+          // A10: and exempt from the kill-switch hold, for the two reasons on
+          // the field itself — eval conversations must never be filed into the
+          // operator's incident queue, and "pause, diagnose, run the evals,
+          // resume" is the workflow the button exists to make possible. Also
+          // unconditional, for the same reason as the flag above it.
+          noPauseHold: true,
         },
         { jobId: `conv-${message.id}`, attempts: 5 },
       );

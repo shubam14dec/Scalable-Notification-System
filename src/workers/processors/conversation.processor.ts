@@ -79,8 +79,10 @@ import {
   getSubscriberById,
   insertConversationMessage,
   lastUserMessage,
+  pausedHoldNoticeSent,
   resolveConversation,
   setAgentMessageContent,
+  setConversationWaitingHuman,
   updateConversationMessageRaw,
   updateConversationMetadata,
   type Agent,
@@ -136,6 +138,25 @@ export interface ConversationJobData {
    * the runs would have been throttleable and half not.
    */
   noRateLimit?: boolean;
+  /**
+   * INTERNAL (Phase A10) — never accepted from a request body, by the same
+   * explicit-field-list construction as the two fields above.
+   *
+   * Exempts this turn from the kill-switch hold. Stamped ONLY by the eval-run
+   * driver, and it protects two different things at once. First, the operator's
+   * queue: an eval scenario opens real conversations against a synthetic
+   * subscriber, and holding them would file a stack of robot conversations in
+   * front of the human who is already dealing with the incident. Second, the
+   * incident workflow itself — pause, diagnose, RUN THE EVALS, resume is the
+   * sequence the button exists to make possible, and an agent whose evals all
+   * come back as the same holding line cannot be verified before it is switched
+   * back on.
+   *
+   * An explicit flag rather than inferring it from `evalCandidate` or the
+   * caller's shape — the `noCanary`/`noRateLimit` precedent: a driver opting out
+   * of a platform-wide protection should have to say so.
+   */
+  noPauseHold?: boolean;
 }
 
 const BRIDGE_TIMEOUT_MS = 10_000;
@@ -143,6 +164,31 @@ const METADATA_MAX_BYTES = 64 * 1024;
 /** Deterministic reply shipped when an agent's daily token budget is spent (G2). */
 const BUDGET_EXHAUSTED_NOTE =
   "I'm temporarily unavailable right now — the team has been notified. Please try again later.";
+/**
+ * A10 THE KILL-SWITCH: the one line a customer hears while an agent is paused,
+ * shipped ONCE per conversation just before the conversation is handed to a
+ * person.
+ *
+ * PLATFORM COPY, not per-agent config, and that is a v1 decision with a reason
+ * rather than a corner cut. A pause is an EMERGENCY BUTTON: the operator
+ * pressing it is watching something go wrong right now, and a button that first
+ * asks them to compose a customer-facing sentence is a button they will hesitate
+ * over — which is the one thing an emergency control must never cost. So the
+ * platform supplies one honest default and the operator supplies one click.
+ *
+ * The sentence is chosen to be true no matter WHY the button was pressed. It
+ * promises only what the next line of code actually delivers (the conversation
+ * really is being routed to the team's queue), never explains, never apologises
+ * on the tenant's behalf, and never says the word "error" — the customer does
+ * not need to know whether this is a bad deploy or a bad prompt.
+ *
+ * Making it configurable is additive and easy later (a nullable `pause_notice`
+ * column read here, exactly like the A8 limiter's `notice`). It is deliberately
+ * NOT in v1 because the failure mode of a configurable field on an emergency
+ * control is an operator staring at an empty textarea during an incident.
+ */
+const PAUSED_HOLD_NOTE =
+  'Our team is taking over this conversation — a person will be with you shortly.';
 /** Minimum wall-clock gap between plan-card progress edits (throttle floor). */
 const PLAN_CARD_EDIT_SPACING_MS = 1000;
 
@@ -234,6 +280,112 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     return;
   }
 
+  // ---- Phase A10: THE KILL-SWITCH ----
+  //
+  // One operator, one button, every conversation on this agent stops being
+  // answered by a model — WITHOUT the customer hitting a wall and without the
+  // incident erasing its own evidence.
+  //
+  // WHY HERE. Same argument as A8's, and it inherits A8's ruling wholesale:
+  // every customer turn on every channel in either runtime IS a default-kind
+  // job on QUEUE.CONVERSATION and therefore arrives at this function. A pause
+  // enforced here cannot be bypassed by a channel nobody has written yet,
+  // because a channel that does not enqueue a turn job is a channel whose agent
+  // never answers. There is nothing to remember at nine call sites.
+  //
+  // WHY NOT AT INGRESS, which is the other obvious answer and the wrong one:
+  // refusing the message at the door is what `status = 'disabled'` already
+  // does, and it is exactly what a pause must NOT do. During an incident the
+  // customer's words are the evidence. A 409 at the widget throws away the
+  // sentence that would have told you what the agent got wrong, and it tells
+  // the customer the product is broken instead of that a person is coming.
+  // Nothing in the API or the webhooks reads `paused_at`; that is a property of
+  // the design, asserted by a test, not an accident of where the code landed.
+  //
+  // ORDER, and each neighbour is a real ruling:
+  //   • AFTER the D2 human-pen gate (above). A thread a human already owns is
+  //     already held by a stronger claim than this one, and the holding line is
+  //     platform prose — shipping it into an operator's live conversation would
+  //     talk over the person who is mid-sentence with the customer. D2 wins.
+  //   • BEFORE the A8 limiter (below). A paused agent must never send a rate
+  //     notice: "you're sending messages faster than I can answer them" is a
+  //     sentence about an agent that is answering. Pause wins, and it wins by
+  //     position — the limiter's whole block is skipped, so a paused agent does
+  //     not even spend the INCR.
+  //   • BEFORE the budget check, the canary snapshot, the topic gate, routing
+  //     and the brain. None of them are reached while paused; there is nothing
+  //     to rank against them because a held turn never gets that far.
+  //
+  // FREE WHEN LIVE: one null comparison on a row already in hand. A live agent
+  // — which is every agent almost all of the time — pays nothing at all.
+  let paused = false;
+  /**
+   * The holding line to ship, or '' — non-empty ONLY on the turn that first
+   * tells THIS conversation the agent is paused.
+   */
+  let pausedNotice = '';
+  if (
+    agent.paused_at !== null &&
+    // The eval driver runs real turns through this function against a synthetic
+    // subscriber. Holding those would be actively harmful in two ways: it would
+    // push EVAL conversations into the operator's real queue (Sam opens the
+    // incident queue and finds robots), and it would make it impossible to
+    // verify a fix before resuming — which is the exact sequence a pause
+    // exists to enable: pause, diagnose, run the evals, resume. An explicit
+    // flag rather than sniffing the caller's shape, the same reasoning as
+    // `noRateLimit` and `noCanary` before it.
+    !data.noPauseHold
+  ) {
+    paused = true;
+    const replyDedupeKey = `reply-${messageId}`;
+    // ONCE PER CONVERSATION, not once per message. An incident is precisely the
+    // moment a customer sends four messages in thirty seconds, and four
+    // identical apologies is how a system tells someone nobody is home. The
+    // claim is the shipped row itself — see pausedHoldNoticeSent for why that,
+    // rather than a breadcrumb or a Redis key, is the honest claim.
+    const alreadyTold = await pausedHoldNoticeSent(conversationId, replyDedupeKey);
+    if (!alreadyTold) pausedNotice = PAUSED_HOLD_NOTE;
+
+    // The breadcrumb, on every turn THIS GATE holds — the topic-gate/rate-limit
+    // idiom: a NAMED KEY on a system row, never `raw.action`, because an action
+    // row replays to the model as a tool call and a `pause` action would teach
+    // the agent a phantom tool.
+    //
+    // THE HONEST GRANULARITY, stated because it is not what it first looks
+    // like: this fires once per HOLD EPISODE, not once per message of a flood.
+    // The first held turn routes the conversation to waiting_human, so the
+    // customer's next message is stopped by the D2 gate above — which keeps
+    // their row, refreshes the operator's view and writes its own exec line —
+    // and never reaches this code. A second breadcrumb here therefore means
+    // something specific and worth seeing: a human took the conversation, handed
+    // it back, and the still-paused agent had to hold it again.
+    await systemNote(
+      conversation,
+      messageId,
+      'paused-hold',
+      `agent ${agent.identifier} is paused (since ${agent.paused_at}) — message stored, no turn ran`,
+      {
+        pausedHold: {
+          pausedAt: agent.paused_at,
+          runtime: agent.runtime,
+          // Whether THIS turn is the one that speaks. False on a re-hold after
+          // a handback, which is the only way to reach here twice.
+          notice: pausedNotice !== '',
+        },
+      },
+    );
+
+    logExec({
+      tenantId,
+      transactionId: `conv-${conversationId}`,
+      level: 'warn',
+      detail:
+        `agent ${agent.identifier} is paused — message stored, no turn ran; ` +
+        `conversation handed to the operator queue` +
+        (pausedNotice ? ' (holding line sent)' : ' (already told)'),
+    });
+  }
+
   // ---- Phase A8: THE PER-CUSTOMER MESSAGE LIMIT ----
   //
   // WHY HERE, and it is the whole design decision of the phase.
@@ -288,6 +440,11 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   /** The notice to ship, or '' — non-empty ONLY on the first block of a window. */
   let rateNotice = '';
   if (
+    // A10: pause wins over the limiter, and it wins by skipping the whole block
+    // rather than by suppressing the notice at the end of it — a held turn
+    // spends no Redis ops, and a paused agent can never tell a customer it is
+    // too busy to answer when the truth is that it has been switched off.
+    !paused &&
     agent.subscriber_rate !== null &&
     // Subscriber-authored inbound only. A button/card tap is a user row too (it
     // carries raw.action), and it counts: a tap flood enqueues turns exactly
@@ -440,17 +597,64 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // exactly like the topic gate's redirect and the budget note. Nothing
   // downstream needs to know a limiter exists, and no channel needs a special
   // case to deliver a throttle notice.
-  if (rateLimited && !rateNotice) return;
+  //
+  // A10 folds into the same shape. `noBrain` is ONE predicate for "this turn
+  // runs no model", deliberately named for the consequence rather than for
+  // either cause, so a stage added below cannot be guarded against the limiter
+  // and forget the kill-switch. `platformNotice` is the single line of canned
+  // prose either of them wants to ship; the two can never both be set, because
+  // pause skips the limiter's block entirely.
+  const noBrain = rateLimited || paused;
+  const platformNotice = rateNotice || pausedNotice;
 
-  // Skipped for a throttled turn: the notice is canned platform text that needs
-  // no history to write, and a "composing" pulse would promise a reply the
-  // limiter has already decided not to produce.
-  const history = rateLimited ? [] : await conversationHistoryBefore(conversationId, messageId);
+  /**
+   * A10: put this conversation in front of a person, reusing P26's real
+   * transition rather than writing `status` by hand — that one call is what
+   * makes the operator queue list it, the dashboard's live view update, the D2
+   * gate hold the customer's NEXT message, and handback work afterwards. A
+   * hand-rolled UPDATE would have given the first of those four and quietly
+   * broken the rest.
+   *
+   * Idempotent where it matters: the transition is guarded on `status =
+   * 'active'`, so re-asserting a hold on a conversation a human already owns
+   * writes nothing and emits nothing. Calling it blind is the correct usage.
+   *
+   * NOT UNDONE ON RESUME, and that is P26 semantics, unchanged: clearing
+   * `paused_at` makes new turns run normally, but a conversation sitting in the
+   * queue stays with the human who owns it until they hand it back. A sweep
+   * that yanked conversations back from operators the moment someone hit Resume
+   * would be a second incident. There is nothing to un-pause.
+   */
+  const holdForHumans = async (): Promise<void> => {
+    if (!(await setConversationWaitingHuman(conversationId))) return;
+    logExec({
+      tenantId,
+      transactionId: `conv-${conversationId}`,
+      level: 'info',
+      detail: `paused agent ${agent.identifier}: conversation moved to waiting_human for a person to pick up`,
+    });
+  };
+
+  if (noBrain && !platformNotice) {
+    // A HELD turn does not take the cheap exit, because the hold has to be
+    // re-asserted whether or not there is anything left to say: the only way to
+    // arrive here paused-and-silent is a conversation that was handed back to
+    // the agent while the pause was still on, and returning now would strand
+    // that customer in an `active` conversation nobody is answering.
+    if (!paused) return;
+    await holdForHumans();
+    return;
+  }
+
+  // Skipped for a throttled or held turn: the notice is canned platform text
+  // that needs no history to write, and a "composing" pulse would promise a
+  // reply the limiter (or the pause) has already decided not to produce.
+  const history = noBrain ? [] : await conversationHistoryBefore(conversationId, messageId);
 
   // Turn-start "composing" pulse for both runtimes; the managed branch pulses
   // again on each model call via the onModelCall hook.
   const emitTyping = typingEmitter(conversation, subscriber.external_id, agent);
-  if (!rateLimited) emitTyping();
+  if (!noBrain) emitTyping();
 
   // The brain branch: who answers this turn. Everything after (reply row,
   // channel delivery, signals, breadcrumbs) is identical for both runtimes.
@@ -471,8 +675,13 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // that got the budget note parroted back verbatim (lesson §13). The tag matters
   // more here than anywhere: an agent that learned to imitate its own throttle
   // notice would start telling unthrottled customers to slow down.
-  if (rateNotice) {
-    reply = rateNotice;
+  //
+  // A10's holding line rides the identical path for the identical reason, and
+  // the tag is load-bearing in the same way: an agent that learned to imitate
+  // "our team is taking over this conversation" would start handing off
+  // conversations nobody handed off.
+  if (platformNotice) {
+    reply = platformNotice;
     replyPlatformNote = true;
   }
   // A5 slice B: the canary version that actually served this turn (undefined =
@@ -494,11 +703,15 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // a deterministic note through the normal reply path (one job = one finalize).
   // The Redis counter is fast+approximate; Postgres raw.usage stays the truth.
   let budgetExhausted = false;
-  // A8: `!rateLimited` on every stage from here down. A throttled turn has
-  // already decided nothing will run; reading the budget, the canary snapshot or
-  // the topic classifier for it would spend queries (and, for the gate, tokens)
-  // to reach an answer that cannot change the outcome.
-  if (agent.runtime === 'managed' && !rateLimited && agent.max_daily_tokens != null) {
+  // A8/A10: `!noBrain` on every stage from here down. A throttled turn — or a
+  // turn held by the kill-switch — has already decided nothing will run;
+  // reading the budget, the canary snapshot or the topic classifier for it
+  // would spend queries (and, for the gate, tokens) to reach an answer that
+  // cannot change the outcome. This is also the line that makes the pause a
+  // real pause rather than a suppressed reply: NO brain, NO classifier, NO
+  // tools, NO routing, and — in the bridge branch far below — no POST to the
+  // customer's own service either.
+  if (agent.runtime === 'managed' && !noBrain && agent.max_daily_tokens != null) {
     const used = await getDayTokens(agent.id);
     if (used >= agent.max_daily_tokens) {
       budgetExhausted = true;
@@ -561,7 +774,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // may carry its own topic policy. The guard is the branch's own, so a
   // budget-exhausted or bridge turn still resolves nothing and reads nothing.
   let turnCandidate: CandidateConfig | undefined;
-  if (agent.runtime === 'managed' && !budgetExhausted && !rateLimited) {
+  if (agent.runtime === 'managed' && !budgetExhausted && !noBrain) {
     // A canary is not a second override mechanism: it is the A4 candidate knob
     // aimed at real traffic. The arm was decided once when the conversation
     // opened; all that happens per turn is one PK read of the snapshot.
@@ -618,7 +831,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
   // signed URL, and we do not stand between them and their own service (the
   // same law routing, versions and canaries state at their own surfaces).
   let topicBlocked = false;
-  if (agent.runtime === 'managed' && !budgetExhausted && !rateLimited) {
+  if (agent.runtime === 'managed' && !budgetExhausted && !noBrain) {
     const gate = resolveTopics(topicsForTurn(agent.topics, turnCandidate));
     if (gate) {
       const model = topicGateModel(agent, turnCandidate);
@@ -690,7 +903,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     }
   }
 
-  if (agent.runtime === 'managed' && !budgetExhausted && !topicBlocked && !rateLimited) {
+  if (agent.runtime === 'managed' && !budgetExhausted && !topicBlocked && !noBrain) {
     planCard =
       conversation.channel !== 'email'
         ? createPlanCard({
@@ -953,7 +1166,16 @@ async function processTurn(data: ConversationJobData): Promise<void> {
     // bridge agent too — the one A5-A7-era knob that does. A flood costs the
     // customer's own service its compute and its bill; declining to protect it
     // because the brain is theirs would be a courtesy nobody asked for.
-  } else if (agent.runtime === 'bridge' && !rateLimited) {
+    //
+    // A10 lands on the same side, and it is the reason `noBrain` is checked
+    // here rather than only in the managed branch above: a bridge agent
+    // mid-incident is exactly the agent someone needs to switch off, and the
+    // operator holding the button often cannot deploy a fix to the customer
+    // code at all. For a bridge agent the pause means precisely one thing —
+    // ITS WEBHOOK STOPS BEING CALLED. No POST leaves this process, so whatever
+    // the customer's service is doing wrong, it stops doing it to this
+    // agent's traffic the moment the button is pressed.
+  } else if (agent.runtime === 'bridge' && !noBrain) {
     try {
       const dispatched = await dispatchToBridge(agent, conversation, subscriber, message, history);
       reply = dispatched.reply;
@@ -1021,6 +1243,11 @@ async function processTurn(data: ConversationJobData): Promise<void> {
           // A6: raw.routing records which model actually SERVED this reply and
           // whether the turn escalated. Additive and ABSENT when routing was off
           // — a pre-A6 row and an unrouted row stay byte-identical.
+          // A10: raw.pausedHold marks THE holding line. It is not decoration —
+          // this row IS the once-per-conversation claim that pausedHoldNoticeSent
+          // reads, so a conversation can never be apologised to twice, and the
+          // Turn Inspector can point at the exact message where the kill-switch
+          // took over. Absent on every other reply, paused or not.
           raw:
             turnUsage ||
             turnTrace ||
@@ -1029,7 +1256,8 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             budgetExhausted ||
             replyPlatformNote ||
             servedCanaryVersion ||
-            turnRouting
+            turnRouting ||
+            pausedNotice
               ? {
                   ...(turnUsage ? { usage: turnUsage } : {}),
                   ...(turnTrace ? { trace: turnTrace } : {}),
@@ -1038,6 +1266,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
                   ...(budgetExhausted || replyPlatformNote ? { platformNote: true } : {}),
                   ...(servedCanaryVersion ? { canaryVersion: servedCanaryVersion } : {}),
                   ...(turnRouting ? { routing: turnRouting } : {}),
+                  ...(pausedNotice ? { pausedHold: true } : {}),
                 }
               : undefined,
         })) ?? (await getConversationMessageByDedupe(conversationId, `reply-${messageId}`));
@@ -1073,6 +1302,16 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       });
     }
   }
+
+  // A10: the hold goes in AFTER the holding line has been written and sent, and
+  // the order is the whole point. Flipping the conversation to waiting_human
+  // first would put it behind the D2 gate at the top of this function, so a
+  // crash between the flip and the insert would leave the retry bouncing off D2
+  // and the customer never hearing anything at all. Speaking first and holding
+  // second makes the failure self-healing instead: the customer has the line,
+  // and the very next message re-enters this gate and re-asserts the hold.
+  if (paused) await holdForHumans();
+
   await applySignals(conversation, messageId, signals, subscriber, agent);
 
   logExec({

@@ -30,6 +30,7 @@ import {
   handbackConversation,
   lastOperatorMessage,
   rotateAgentSecret,
+  setAgentPaused,
   SAMPLE_PERCENT_DEFAULT,
   startCanary,
   updateAgent,
@@ -494,6 +495,14 @@ function agentView(agent: Agent) {
     // rather than brain config (see SubscriberRateConfig).
     subscriberRate: agent.subscriber_rate ?? null,
     status: agent.status,
+    // A10 THE KILL-SWITCH: when an operator paused this agent, or null = live.
+    // Sits BESIDE `status` rather than inside it on purpose — the two answer
+    // different questions and a client must be able to see both at once. An
+    // agent can be disabled and paused, or active and paused; "active" keeps
+    // meaning "the door is open", and this says whether anyone is answering.
+    // Exposed as the raw timestamp, not a boolean, so the dashboard can show
+    // WHEN and a post-mortem can read it straight off the API.
+    pausedAt: agent.paused_at,
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
   };
@@ -1016,6 +1025,69 @@ export function registerAgentRoutes(app: FastifyInstance) {
         // save mints nothing, exactly as on the restore route).
         version: promoted.prompt_version,
       };
+    },
+  );
+
+  /**
+   * ---- A10 THE KILL-SWITCH: pause / resume ----
+   *
+   * Two routes, one column, no body. `POST .../pause` stamps `paused_at`;
+   * `POST .../resume` clears it. While it is stamped, every inbound message on
+   * this agent still LANDS (nothing here or in the channel webhooks reads the
+   * column — a pause can never become a 409 at the door), no brain or bridge
+   * runs, the customer is told once per conversation, and the conversation is
+   * routed to the operator queue. See the hold at the top of processTurn.
+   *
+   * IDEMPOTENT BY DESIGN — pausing a paused agent is a 200 no-op, and so is
+   * resuming a live one. That is not laziness about status codes, it is the
+   * requirement: this is an emergency button, and an emergency button that
+   * errors on a double-press is a broken button. The person pressing it twice
+   * is not reading the response body — they are checking that it worked, at
+   * 3am, while something is on fire. A 409 there would read as "the pause
+   * failed" and send them looking for a second lever that does not exist.
+   *
+   * BOTH RUNTIMES. Unlike the brain knobs (versions, canary, routing, the two
+   * A7 gates) these routes never 400 a bridge agent: an agent whose brain is
+   * the customer's own code is exactly the agent an operator cannot fix by
+   * deploying, and for it the pause means its webhook stops being called.
+   *
+   * NO PRE-SAVE INTERACTION, deliberately. The A7 pre-save eval check guards
+   * CONFIG changes — "does this new prompt still behave?" — and a pause changes
+   * no config and asks no such question. Making an emergency stop wait on an
+   * eval run would be the single worst place in the product to add latency.
+   * For the same reason neither route mints a prompt version.
+   */
+  app.post<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/pause',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const paused = await setAgentPaused(req.tenant.id, req.params.identifier, true);
+      if (!paused) return reply.code(404).send({ error: 'unknown agent' });
+      logExec({
+        tenantId: req.tenant.id,
+        transactionId: `agent-${paused.identifier}`,
+        level: 'warn',
+        detail: `agent ${paused.identifier} PAUSED — messages keep landing, no turns run, conversations go to the operator queue`,
+      });
+      return { agent: agentView(paused) };
+    },
+  );
+
+  app.post<{ Params: { identifier: string } }>(
+    '/v1/agents/:identifier/resume',
+    { preHandler: [authenticate] },
+    async (req, reply) => {
+      const resumed = await setAgentPaused(req.tenant.id, req.params.identifier, false);
+      if (!resumed) return reply.code(404).send({ error: 'unknown agent' });
+      logExec({
+        tenantId: req.tenant.id,
+        transactionId: `agent-${resumed.identifier}`,
+        level: 'info',
+        detail:
+          `agent ${resumed.identifier} RESUMED — new messages run normal turns; ` +
+          `conversations already handed to a person stay with them until handback`,
+      });
+      return { agent: agentView(resumed) };
     },
   );
 

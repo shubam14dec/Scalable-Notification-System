@@ -63,6 +63,14 @@ export interface Agent {
    */
   context?: { triggerTurns?: number; tailTurns?: number } | null;
   status: 'active' | 'disabled';
+  /**
+   * A10 the kill-switch: when an operator paused this agent, or null = live.
+   * A SIBLING of `status`, not a third value in it — a paused agent is still
+   * `active` (its door is open, messages still land and still appear in the
+   * transcript); what stops is the answering. Both can be true at once, so both
+   * render.
+   */
+  pausedAt?: string | null;
   createdAt: string;
   /** Last-save timestamp — used to tell whether an eval run predates the prompt. */
   updatedAt?: string | null;
