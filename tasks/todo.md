@@ -452,8 +452,6 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A7. Guardrails completion — SHIPPED 2026-08-24, review above.
 - [x] A8. Per-customer message limits — SHIPPED 2026-08-25, review
       above (rescoped by user to this single item).
-- [ ] A9. LLM scaling: provider-aware LLM concurrency + LLM failover
-      chain mirroring the channel failover.
 - [ ] A10. NEW (2026-08-21) production-readiness set:
       [ ] kill-switch — one-click per-agent pause; stops answering
           instantly, inbound routes to handoff/hold
