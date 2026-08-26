@@ -53,7 +53,19 @@ async function rawRequest(path: string, options: RequestInit): Promise<Response>
     ...(options.headers as Record<string, string>),
   };
   if (session.access) headers.authorization = `Bearer ${session.access}`;
-  if (session.envId) headers['x-environment-id'] = session.envId;
+  // The selected environment is the DEFAULT, not a floor: an explicit
+  // `x-environment-id` from the caller wins. That is what lets one screen talk
+  // to a SIBLING environment without switching the whole app into it (A10
+  // promote reads from here and writes to there, in one flow).
+  //
+  // This does not widen anything: the access token identifies the USER, not an
+  // environment, and the server authorizes every request by looking the env up
+  // and checking the user's membership of its organization (src/api/auth.ts).
+  // Naming another env in this header can only reach environments the signed-in
+  // user is already a member of — the same check that guards the switcher.
+  if (!headers['x-environment-id'] && session.envId) {
+    headers['x-environment-id'] = session.envId;
+  }
   return fetch(path, { ...options, headers });
 }
 
@@ -72,11 +84,21 @@ async function tryRefresh(): Promise<boolean> {
 
 export async function api<T = unknown>(
   path: string,
-  options: { method?: string; body?: unknown } = {},
+  options: {
+    method?: string;
+    body?: unknown;
+    /**
+     * Run this ONE request against another environment of the user's org,
+     * leaving the app's selected environment (and therefore the whole query
+     * cache) alone. Used by promote; see the note in `rawRequest`.
+     */
+    envId?: string;
+  } = {},
 ): Promise<T> {
   const init: RequestInit = {
     method: options.method ?? 'GET',
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    ...(options.envId ? { headers: { 'x-environment-id': options.envId } } : {}),
   };
 
   let res = await rawRequest(path, init);

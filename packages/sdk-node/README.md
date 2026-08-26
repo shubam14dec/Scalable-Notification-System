@@ -307,6 +307,87 @@ not choose is worse than none. There is deliberately **no `candidate` override**
 an eval scenario is a burst of messages from one synthetic subscriber by
 construction, so a gradeable message limit would throttle the check itself.
 
+## The kill-switch
+
+`agents.pause(id)` stops an agent answering **right now**, without shutting the
+door on your customers. While it is paused their messages still land in the
+conversation exactly as they sent them, nothing is refused, and the transcript
+stays true — what stops is the answering: no model calls, no tools, no calls to
+your own service. Each customer is told once that a person is taking over, and
+their conversations move to your team's human queue. During an incident, filling
+that queue is the point.
+
+```ts
+await asyncify.agents.pause('acme-support');
+// …ship the fix, verify it…
+await asyncify.agents.resume('acme-support');
+```
+
+This is **not** `agents.update(id, { status: 'disabled' })`. `disabled` is a hard
+off that refuses messages at the door; a pause keeps taking them. The two are
+separate axes and can both be true — `agent.pausedAt` (a timestamp, so a
+post-mortem can read *when*) sits beside `status` rather than inside it. Both
+calls are idempotent, because a double-pressed emergency button must never
+error, and neither mints a prompt version: a pause changes no config.
+
+Resuming does not take conversations back from your team. Threads a teammate
+already picked up stay with them until they hand back.
+
+## Config as code
+
+`agents.export(id)` returns the whole agent as one JSON file — prompt, model,
+every knob, budgets, tools with their guards, knowledge by reference, and the
+workflow keys the prompt requires. It contains **no secret of any kind**, by
+construction, so it is safe to commit and review in a diff. The response *is*
+the file, with no envelope, so `curl … > acme-support.agent.json` writes
+something you can import.
+
+Importing is two steps, because "what changes?" is a real question and a green
+checkmark is not an answer to it:
+
+```ts
+const file = await asyncify.agents.export('acme-support'); // from staging
+
+const preview = await asyncify.agents.importPreview(file); // against production
+preview.mode;            // 'create' | 'update'
+preview.changes;         // [{ field: 'systemPrompt', action: 'changed' }, …]
+preview.toolChanges;     // { added, changed, removed }
+preview.needsLlmKey;     // true when a managed create needs a key from you
+
+if (!preview.needsLlmKey) await asyncify.agents.import(file);
+else await asyncify.agents.import(file, { llmApiKey: process.env.PROD_LLM_KEY! });
+```
+
+**An import deletes nothing.** A knob the file does not mention is left as it
+is, and a tool on the agent but not in the file is **kept** — that is what
+`preview.removalPolicy: 'kept'` states out loud, and `toolChanges.removed` names
+the asymmetry rather than an action. An import must not destroy what the file's
+author never knew about; removing a tool stays a deliberate act done by someone
+who can see what calls it.
+
+Preview validates everything apply validates — through the *same* schemas the
+ordinary save routes use — so "preview clean, apply 400" cannot happen. Applying
+an update rides the normal save path, so a changed prompt or model mints a
+prompt version like any other save and your history stays complete. An import
+never touches `status`, `pausedAt` (importing a config is not an all-clear), the
+canary, or version history.
+
+What travels and what does not:
+
+| Travels | Stays behind |
+|---|---|
+| Prompt, model, all six knobs, budgets | The LLM key and every tool signing secret |
+| Tools with their guards and endpoints | Disabled tools (operational state) |
+| Knowledge as **references** (name + origin) | Knowledge **content** — index it in the target |
+| Workflow keys as **requirements** | The workflows themselves — an import never creates one |
+
+Because keys never travel, creating a managed agent from a file needs the target
+environment's own key passed to `import`. Newly created tools each get a fresh
+signing secret, returned **once** in `result.tools.created` — store them then or
+rotate later. `preview.missingWorkflows` and `preview.missingKnowledge` are
+warnings, never refusals: the import can only tell you the truth about what the
+target lacks.
+
 ## API surface
 
 | Method | Purpose |
@@ -319,6 +400,8 @@ construction, so a gradeable message limit would throttle the check itself.
 | `topics.upsert / addSubscribers / removeSubscribers / list / delete` | Manage segments |
 | `workflows.upsert / list` · `templates.upsert / get / list / delete` | Manage workflows & MJML templates |
 | `agents.create / list / get / update / rotateSecret / delete / linkToken` | Manage AI agents |
+| `agents.pause / resume` | The kill-switch: stop answering without refusing messages |
+| `agents.export / importPreview / import` | Config as code — one secret-free JSON file per agent, previewed before it applies |
 | `agents.tools.create / list / update / delete / rotateSecret` | Per-agent custom tool registry |
 | `agents.knowledge.create / list / reindex / remove` | Per-agent knowledge sources for grounded answers |
 | `agents.memories.list / put / remove` | Per-customer long-term memory (durable facts, by subscriber external id) |

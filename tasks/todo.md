@@ -38,9 +38,20 @@ evals/agents/*.json becomes a valid import file.
       eval immunity); crash-ordering — notice ships BEFORE the
       transition (retry self-heals); structural test pins paused_at
       to exactly 3 readers and no channel; confirm on Resume too.
-- [ ] Slice B — config format + routes: canonical JSON, export,
-      import preview/apply on shared schemas, version minting,
-      secrets policy, tests.
+- [x] Slice B — DONE 2026-08-26 (commit 2d1616d, suite 1053→1114):
+      format converged with the CI fixture (validates UNEDITED);
+      schema identity proven behaviourally (identical zod issue
+      paths); kept-not-deleted tools; base URL travels but applies
+      only alongside a fresh key (no repointing stored creds);
+      preview validates everything apply validates; RULING mid-slice:
+      maxTokens + autoResolveMinutes joined the format (silent config
+      loss on promote = the failure this feature prevents).
+- [ ] TEST-HEALTH (added 2026-08-26): model-routing.test.ts's two
+      load-flaky tests ("SAFE tool keeps the turn cheap" + an
+      extra-message-row count) fail intermittently under full-suite
+      load only (9/9 isolated, green on clean full runs) — has now
+      cost triage time in A8/A10; harden the assertions the way the
+      A6 agent made its wire checks retry-proof.
 - [ ] Slice C — import/promote UI: preview/diff modal, pre-save
       integration, Promote-to-env, SDK + changeset.
 - [ ] Slice D — docs: guide §6/§13 + config-as-code section,

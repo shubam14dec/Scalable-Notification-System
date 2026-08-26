@@ -20,6 +20,7 @@ import {
   th,
 } from '../ui';
 import { timeAgo } from './Activity';
+import { ImportAgentButton } from './agent/ConfigFile';
 import { AgentForm } from './agent/EditPanel';
 import { SecretReveal } from './agent/shared';
 import type { Agent, AgentBody } from './agent/types';
@@ -73,9 +74,15 @@ export default function AgentsPage() {
       <PageHeader
         title="Agents"
         action={
-          <Button variant="primary" onClick={() => setCreateOpen(true)}>
-            New agent
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* A10: Import sits left of New agent — it is the same act (an agent
+                appears here) arrived at from a file rather than a form, and the
+                primary button stays the one that needs no input to start. */}
+            <ImportAgentButton />
+            <Button variant="primary" onClick={() => setCreateOpen(true)}>
+              New agent
+            </Button>
+          </div>
         }
       />
       <p className="-mt-4 mb-5 max-w-2xl text-[12px] text-t3">

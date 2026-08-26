@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Button, Mono, Skeleton, StatusBadge } from '../ui';
 import { ChannelsPanel } from './agent/ChannelsPanel';
+import { AgentConfigActions } from './agent/ConfigFile';
 import { EditTab } from './agent/EditPanel';
 import { EvalsPanel } from './agent/EvalsPanel';
 import { HealthStrip } from './agent/HealthStrip';
@@ -183,6 +184,11 @@ export default function AgentDetailPage() {
           >
             {agent.pausedAt ? 'Resume agent' : 'Pause agent'}
           </Button>
+          {/* A10 CONFIG AS CODE. Beside Pause because both are things you do to
+              the agent as a whole rather than to a field in the Edit form, and
+              because promoting a config is the planned counterpart to the
+              unplanned button next to it. */}
+          <AgentConfigActions identifier={agent.identifier} />
           <Button
             onClick={() =>
               update.mutate({

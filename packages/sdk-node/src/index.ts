@@ -221,6 +221,17 @@ export interface Agent {
   /** The per-customer message limit, or null when never set up. EITHER runtime. */
   subscriberRate: AgentSubscriberRate | null;
   status: 'active' | 'disabled';
+  /**
+   * When an operator PAUSED this agent, or null when it is live — see
+   * `agents.pause`. Deliberately beside `status` rather than folded into it:
+   * the two answer different questions, and an agent can be `active` and
+   * paused at once. `status: 'disabled'` means the door is shut (messages are
+   * refused); a pause means the door is open and nobody is answering yet.
+   *
+   * A timestamp rather than a boolean so a post-mortem can read WHEN straight
+   * off the API.
+   */
+  pausedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -578,6 +589,163 @@ export interface SubscriberMemory {
   updatedAt: string;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Config as code (A10)                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A custom tool as it travels in a config file.
+ *
+ * HAND-KEPT COPY of the server's `ConfigToolSchema`
+ * (src/core/agent-config-file.ts); this package ships standalone and cannot
+ * import it. Shape only — `parameters`, `endpointUrl` and `guard` are
+ * re-validated at import time by the tool-registration schema (bounds,
+ * JSON-Schema-ness, reserved names, SSRF), which is where those laws live.
+ *
+ * The tool's SIGNING SECRET is not here and never will be: that is what makes
+ * the file safe to commit. Importing a tool the target lacks mints it a fresh
+ * secret, returned once by `agents.import`.
+ */
+export interface AgentConfigTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  endpointUrl: string;
+  approval?: 'auto' | 'required';
+  timeoutMs?: number;
+  guard?: Record<string, unknown> | null;
+}
+
+/**
+ * One knowledge source BY REFERENCE. `origin` is the URL for a url-backed
+ * source and the literal `'text'` for pasted text — enough to recognise the
+ * same source in another environment, never enough to reconstruct its content.
+ *
+ * An import therefore never creates knowledge; it reports what the target is
+ * missing (`missingKnowledge`) and leaves indexing to you.
+ */
+export interface AgentConfigKnowledge {
+  name: string;
+  origin: string;
+}
+
+/**
+ * The canonical agent file: everything about an agent except its secrets and
+ * its operational state. Safe to commit, diff and review.
+ *
+ * HAND-KEPT COPY of the server's `AgentConfigFileSchema`
+ * (src/core/agent-config-file.ts). Knob values are typed loosely here for the
+ * same reason they are `unknown` there — ONE law each: this type says a
+ * `topics` key may be present, and the save schema says what a valid topics
+ * policy is. Round-tripping a file you got from `agents.export` never needs
+ * you to name these types at all.
+ *
+ * What deliberately does NOT travel: the LLM key and every tool secret (no
+ * secret is ever in this file), `status` and the pause timestamp (operational
+ * state — an import must not disable a live agent or resume a paused one),
+ * prompt-version history and the canary (they belong to the environment they
+ * happened in), and DISABLED tools (exporting one would silently re-enable it
+ * in the target).
+ */
+export interface AgentConfigFile {
+  formatVersion?: number;
+  identifier: string;
+  name: string;
+  description?: string;
+  runtime: 'bridge' | 'managed';
+  bridgeUrl?: string;
+  model?: string;
+  systemPrompt?: string;
+  llmBaseUrl?: string;
+  context?: Record<string, unknown>;
+  welcomeMessage?: string | null;
+  suggestedPrompts?: unknown[];
+  routing?: unknown;
+  topics?: unknown;
+  moderation?: unknown;
+  subscriberRate?: unknown;
+  maxTokens?: number | null;
+  maxDailyTokens?: number | null;
+  autoResolveMinutes?: number | null;
+  tools?: AgentConfigTool[];
+  knowledge?: AgentConfigKnowledge[];
+  /** Workflow keys the prompt references — checked as REQUIREMENTS, never created. */
+  workflows?: string[];
+}
+
+/** What an import would do to one config field. */
+export interface AgentConfigChange {
+  field: string;
+  action: 'added' | 'changed' | 'removed' | 'unchanged';
+}
+
+/**
+ * What an import would do to the agent's tools, reconciled BY NAME (a tool name
+ * is immutable and unique per agent, so it is the only identity a file can
+ * carry across environments — a row id would mean nothing in the target).
+ */
+export interface AgentConfigToolChanges {
+  /** In the file, not on the agent — import CREATES these (each gets a fresh secret). */
+  added: string[];
+  /** On both and different — import updates these in place. */
+  changed: string[];
+  /**
+   * On the agent, NOT in the file. These are **kept**, not deleted — see
+   * `AgentImportPreview.removalPolicy`. The field is named for the asymmetry it
+   * reports, not for an action anything takes.
+   */
+  removed: string[];
+}
+
+/**
+ * The answer to "what would this file do?" — reads only. Nothing is created, no
+ * knob moves, no version is minted.
+ *
+ * The preview validates everything the apply validates (using a throwaway
+ * stand-in key where a real one is required), so "preview clean, apply 400"
+ * cannot happen.
+ */
+export interface AgentImportPreview {
+  identifier: string;
+  /** Whether the target environment already has an agent with this identifier. */
+  mode: 'create' | 'update';
+  changes: AgentConfigChange[];
+  toolChanges: AgentConfigToolChanges;
+  /**
+   * Always `'kept'`. Said out loud by the API so a client cannot render
+   * `toolChanges.removed` as a threat: an import DELETES NOTHING. A knob or a
+   * tool the file does not mention is left exactly as it is — an import must
+   * not destroy what the file's author never knew about, and deleting a tool
+   * stays an explicit act done by someone who can see what calls it.
+   */
+  removalPolicy: 'kept';
+  /** Workflow keys the file requires that this environment does not have. A warning. */
+  missingWorkflows: string[];
+  /** Knowledge sources the file references that the target lacks. A warning — see above. */
+  missingKnowledge: string[];
+  /**
+   * True when applying this file needs an `llmApiKey` you supply: a managed
+   * agent being CREATED has no stored credential yet, and the file carries none.
+   */
+  needsLlmKey: boolean;
+}
+
+/** The result of applying a config file. */
+export interface AgentImportResult {
+  mode: 'create' | 'update';
+  agent: Agent;
+  /** Shown EXACTLY ONCE, on create only — store it. Absent on an update. */
+  signingSecret?: string;
+  tools: {
+    /** Newly created tools with their fresh signing secrets — shown once. */
+    created: Array<{ name: string; secret: string }>;
+    updated: string[];
+    /** On the agent but not in the file: untouched. */
+    kept: string[];
+  };
+  missingKnowledge: string[];
+}
+
 /** Which connections carry approval cards; each field null when unset. */
 export interface ApprovalSettings {
   slackConnectionId: string | null;
@@ -735,6 +903,88 @@ export class AsyncifyClient {
         'DELETE',
         `/v1/agents/${encodeURIComponent(identifier)}`,
       ),
+
+    /**
+     * THE KILL-SWITCH. Stop this agent from answering, right now, without
+     * closing the door on your customers.
+     *
+     * While paused: their messages still LAND in the conversation exactly as
+     * they sent them (the transcript stays true and nothing 409s at the door),
+     * no turn runs and no model is called, the first held message of each
+     * conversation gets one holding line, and the conversation goes to the
+     * human queue — an incident filling your operator queue is the point.
+     *
+     * This is not `update(id, { status: 'disabled' })`: `disabled` is a hard
+     * off that REFUSES messages. A pause keeps receiving them.
+     *
+     * Idempotent — a double-pressed emergency button must never error — and it
+     * mints no prompt version, because a pause changes no config.
+     */
+    pause: (identifier: string) =>
+      this.request<{ agent: Agent }>(
+        'POST',
+        `/v1/agents/${encodeURIComponent(identifier)}/pause`,
+      ),
+    /**
+     * Lift the pause. New messages run normal turns again.
+     *
+     * Conversations that were already handed to a person STAY with that person
+     * until they hand back — resuming the agent does not yank threads out from
+     * under the teammate holding them. Idempotent, like `pause`.
+     */
+    resume: (identifier: string) =>
+      this.request<{ agent: Agent }>(
+        'POST',
+        `/v1/agents/${encodeURIComponent(identifier)}/resume`,
+      ),
+
+    /**
+     * ---- CONFIG AS CODE ----
+     *
+     * The whole agent as one JSON file — prompt, model, all six knobs, budgets,
+     * tools with their guards, knowledge by reference, required workflow keys —
+     * and NEVER a secret, by construction. Commit it, diff it in review, and
+     * import it into your staging or production environment.
+     *
+     * The response IS the file (no envelope), so this round-trips: what
+     * `export` returns is exactly what `importPreview`/`import` accept.
+     */
+    export: (identifier: string) =>
+      this.request<AgentConfigFile>(
+        'GET',
+        `/v1/agents/${encodeURIComponent(identifier)}/export`,
+      ),
+    /**
+     * Step one of an import: what WOULD this file do here? Reads only.
+     *
+     * Field-level on purpose — someone about to promote a config to production
+     * is asking "what changes?", and a green checkmark is not an answer to that
+     * question. Check `needsLlmKey` to know whether `import` will need a key.
+     */
+    importPreview: (file: AgentConfigFile) =>
+      this.request<AgentImportPreview>('POST', '/v1/agents/import/preview', { file }),
+    /**
+     * Step two: apply it. Creates the agent when the identifier is new,
+     * otherwise updates it — and an update rides the ordinary save path, so a
+     * changed prompt or model MINTS A PROMPT VERSION like any other save and
+     * your history stays complete.
+     *
+     * `llmApiKey` is the TARGET environment's own key. Files never carry keys,
+     * so creating a managed agent from one requires you to supply it here (the
+     * same rule as `create`); on an update it is optional and replaces the
+     * stored credential. A file's `llmBaseUrl` only takes effect alongside a
+     * fresh key — a config file can never repoint an existing stored key at
+     * another host.
+     *
+     * What an import never touches: `status`, the pause timestamp (importing a
+     * config is not an all-clear), the canary, and version history.
+     */
+    import: (file: AgentConfigFile, options: { llmApiKey?: string } = {}) =>
+      this.request<AgentImportResult>('POST', '/v1/agents/import', {
+        file,
+        ...(options.llmApiKey ? { llmApiKey: options.llmApiKey } : {}),
+      }),
+
     /**
      * Mint the single-use deep link (24h TTL) that merges a user's Telegram
      * into this subscriber: generate it server-side for your LOGGED-IN user

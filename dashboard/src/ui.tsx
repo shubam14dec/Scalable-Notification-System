@@ -157,11 +157,21 @@ export function Modal({
   onClose,
   title,
   children,
+  size = 'md',
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
+  /**
+   * 'md' (default) is the form width every existing dialog uses. 'lg' exists
+   * for dialogs whose content is a LIST the user has to read and compare —
+   * A10's import preview is a field-by-field diff, and squeezing "System
+   * prompt will change" into a form-width column makes a review surface into a
+   * scroll. Widening the shared component beats a one-off dialog that drifts
+   * from the house one.
+   */
+  size?: 'md' | 'lg';
 }) {
   useEffect(() => {
     if (!open) return;
@@ -182,7 +192,9 @@ export function Modal({
         aria-label={title}
         // Tall content (e.g. the managed-LLM agent form) scrolls inside the
         // dialog instead of overflowing the viewport.
-        className="flex max-h-[84vh] w-full max-w-md flex-col rounded-lg border border-bd bg-surface"
+        className={`flex max-h-[84vh] w-full flex-col rounded-lg border border-bd bg-surface ${
+          size === 'lg' ? 'max-w-xl' : 'max-w-md'
+        }`}
         style={{ animation: 'modal-in 150ms ease' }}
       >
         <h2 className="shrink-0 px-5 pb-4 pt-5 text-[15px] font-semibold text-t1">{title}</h2>
