@@ -69,7 +69,7 @@ lanes for actual delivery. Hybrid of both spines.
 | | novu | Asyncify |
 |---|---|---|
 | Source of truth | **MongoDB** (Mongoose) — ObjectId↔string mapping layer everywhere, soft-delete plugins being removed, high-write ExecutionDetails **actively migrating to ClickHouse** | **Postgres** — outbox doctrine, execution logs dual-written to ClickHouse **from day one** |
-| Scoping | `_organizationId` + `_environmentId` on every row; new `contextKeys[]` axis with hashed uniqueness | `tenant_id` on every row |
+| Scoping | `_organizationId` + `_environmentId` on every row; new `contextKeys[]` axis with hashed uniqueness | `tenant_id` on every row — and a tenant **is** an environment (environments are tenant rows under an organization), so the org/env axis exists without a second column. That is why a cross-environment agent promote needed no new endpoint: the dashboard's session token carries `x-environment-id` and org membership is re-checked per request |
 | Idempotency | unique **partial** indexes (digest master guard, subscriber-per-env) | unique constraints everywhere (events, messages, conversation dedupe keys) — same doctrine |
 | Pagination | keyset/cursor with `limit+1`, bidirectional, **counts capped at 50k** | offset/limit | **adopt theirs** as tables grow |
 | Repository | BaseRepositoryV2: **mandatory column projection**, inferred `Pick<>` types, `.lean()` everywhere | `select *` common | adopt the projection discipline on hot paths |
@@ -217,7 +217,10 @@ pass/fail; their harness grades mock-shell replays.
 **Where they're structurally ahead:** step-chain execution (unlocks the
 whole deferred-action family), per-tenant fairness groups, cursor
 pagination + capped counts, 76-provider catalog with a scaffolding
-generator, the environment promotion/diff machinery, and sheer surface
+generator, the environment promotion/diff machinery **for workflows and
+layouts** (agents came off that list on 2026-08-26 — they serialize to a
+secret-free file and promote with a *field-level* diff; every other
+resource type is still theirs), and sheer surface
 (severity, contexts, schedules, translations, RBAC, regions, billing).
 
 **Their weight is also their weakness:** dual queue backends mid-

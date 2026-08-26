@@ -211,6 +211,50 @@ now have, and how to sell it honestly:
   conversational limit on their side — and, as with A7, that stays "we
   found none", not "they have none".
 
+- **2026-08-26 — config as code (A10): the AGENT half of environment
+  promotion ships; the platform half stays open.** Read this one against
+  §4's Tier-A row **"Environment promotion + diff"** (*"envs exist;
+  promotion is manual re-creation"*) and the two rows folded into it —
+  §1's Tier-C **"Agent env sync / runtime migration"** and round 3's
+  **"Agent publish dev→prod"**. For **agents**, "manual re-creation" is
+  now false: an agent serializes to one JSON file (identity, prompt,
+  model, all six knobs, custom tools with their guards, knowledge
+  references, the workflow keys its prompt names), and a two-step import
+  — a **field-level** preview, then apply — carries it into another
+  environment. `GET /v1/agents/:id/export`, `POST /v1/agents/import/preview`,
+  `POST /v1/agents/import`, plus a dashboard **Promote to…** menu that
+  runs the trip against a sibling environment of the same org (existing
+  session auth + `x-environment-id`, membership re-checked per request —
+  no new endpoint, nothing weakened). **The row is NOT closed**: workflow
+  and layout promotion is untouched, and that — not agents — is the bulk of
+  what their Change-entity subsystem does. Tier A stands, one resource type
+  lighter.
+  **Where ours differs from theirs, stated as differences rather than
+  wins.** Their publish copies an agent to prod where it *arrives inactive*
+  and providers must be reconnected per environment; ours reaches the same
+  safety from a stricter rule — **operational state and secrets are not in
+  the format at all**, so an import cannot enable, disable, pause or resume
+  anything, a paused agent stays paused, and there is no field a credential
+  could hide in (git-safe by construction, not by a redaction step). Their
+  dry-run diff reports per resource (created/updated/skipped); ours reports
+  **per field** — `systemPrompt` changed, `maxDailyTokens` added, this tool
+  created, that one kept — because an operator promoting to production is
+  asking "what changes?", and a green checkmark is not an answer. Two
+  things we have found no counterpart to on their side: an import that
+  **mints a prompt version and rides the A4 pre-save eval check**, so a
+  config change arriving as a *file* is graded exactly like one typed into
+  the dashboard (and when the promote crosses environments, the dashboard
+  says out loud that the check cannot run there rather than implying it
+  did); and **requirements checking** — a file names the workflow keys its
+  prompt drives, and an import into an environment lacking one is refused
+  (422) instead of shipping an agent whose tool call will fail at turn
+  time. As always: "we found none", not "they have none".
+  A10's other half — the **kill-switch** (pause an agent: messages keep
+  landing, no brain runs, one holding line per conversation, the
+  conversation moves to the human queue, evals exempt so a fix can be
+  verified before resuming) — is shipped in the same phase; no novu sweep
+  was run for it, so no comparative claim is made here.
+
 Sales framing: "prompt edits are deploys — and we're the platform that
 treats them that way." A/B-testing a prompt on real traffic, with the
 judge grading both arms, is the rung above that: promotion answers "is it

@@ -141,6 +141,36 @@ Anthropic endpoints do (full discount), some Anthropic-compat layers ignore it
 stays blank until an agent has **7+ days of production usage** — it appears on its
 own once the data exists, nothing to enable.
 
+**The agent kill-switch and config-as-code add nothing deployment-specific
+either — but config-as-code is the first feature that makes a *dev-shaped* config
+arrive in production, so two things are worth knowing before the first promote.**
+Pause/resume is one timestamp column and one comparison at the top of the turn
+job; export/import are three routes on the existing API. No new service, queue,
+secret, env var, or console step, and a paused agent survives a restart because
+the state is a row, not memory. The honest notes are both about what a file
+*deliberately* doesn't carry:
+
+1. **No credential is in the file, so production supplies its own.** Importing a
+   managed agent into a fresh environment asks for *that* environment's LLM key,
+   and every tool the import creates hands back a newly minted call secret
+   **once**, on screen — its backend can't verify our calls until someone copies
+   it. Knowledge travels as references, never content, so the sources are
+   re-added and re-indexed on the target with the target's own embedding
+   credentials.
+2. **Endpoints *do* travel, and production's SSRF guard is the difference.**
+   `assertSafeOutboundUrl` runs the same code in every environment; what differs
+   is config: local dev sets `OUTBOUND_URL_ALLOW=localhost,127.0.0.1,host.docker.internal`,
+   and **production leaves it empty**. So a config exported from a laptop whose
+   `bridgeUrl` or tool `endpointUrl` still points at `localhost` or a dev tunnel
+   is **refused at import in production (400)** — that is the guard working, not a
+   bug, and the two-step preview surfaces it before the apply. Point those URLs at
+   real hostnames before promoting.
+
+A cross-environment **Promote** is a dashboard action (a user session plus
+`x-environment-id`, membership re-checked per request); an API key is scoped to
+the environment that issued it, so a scripted promote is two keys — export with
+the source's, import with the target's.
+
 **Human handoff (Phase 26) adds no infra either.** The `handoff_to_human` tool,
 the conversation state machine (`waiting_human`/`human`), the operator reply
 route, and the handback fold all ride the **existing** API, worker, ws gateway,

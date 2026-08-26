@@ -1328,3 +1328,308 @@ inferred from the run's shape, and never accepted from a request body).
 
 Typed wrapper: `client.agents.update(id, { subscriberRate })` in
 `@asyncify-hq/node` (`AgentSubscriberRate`).
+
+## The kill-switch — `pause` / `resume`
+
+Every knob above is a policy set in advance. This pair is the **manual** control
+for the moment something is wrong right now: one button stops an agent from
+answering **without refusing its customers**. The operator-facing story is
+section 13 of [ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).
+
+```bash
+curl -X POST -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/agents/support-bot/pause
+# → 200 { "agent": { …, "pausedAt": "2026-08-26T09:14:02.118Z" } }
+
+curl -X POST -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/agents/support-bot/resume
+# → 200 { "agent": { …, "pausedAt": null } }
+```
+
+**No body, on either route.** The state is one timestamp — `pausedAt` on the
+agent object, `null` when live — and it is deliberately **not** a third value of
+`status`: `disabled` keeps its hard-off meaning, and a timestamp answers *when*,
+which is what an incident review asks. Unknown identifier is a **404**.
+
+**Both are idempotent, and that is the requirement rather than a shortcut.**
+Pausing a paused agent is a `200` no-op; so is resuming a live one. The person
+pressing this twice is not reading a response body — they are checking that it
+worked, at 3am, while something is on fire, and a `409` there would read as *"the
+pause failed"* and send them hunting for a second lever that doesn't exist.
+
+**Both runtimes.** Unlike the brain-config knobs (versions, canary, `routing`,
+`topics`, `moderation`), these never `400` a bridge agent. An agent whose brain
+is the customer's own code is exactly the agent an operator cannot fix by
+deploying; for it, the pause means Asyncify stops POSTing turns to their service.
+
+**Neither route runs the pre-save check, and neither mints a prompt version.**
+The check grades *config* changes — "does this new prompt still behave?" — and a
+pause changes no config and asks no such question. Making an emergency stop wait
+on an eval run would be the worst place in the product to add latency.
+
+**What a paused agent does with an inbound message**, in order, at the top of the
+turn job — the same chokepoint the per-customer limit uses, so no channel can
+bypass it:
+
+| | While paused |
+|---|---|
+| The message row | **lands, always.** Nothing here or in the channel webhooks reads the pause, so it can never become a `409` at the door — that is `disabled`'s job, and during an incident the customer's words are the evidence |
+| The brain | never runs — no model call, no tool call, no bridge POST, no topic classifier, no history read, no typing pulse |
+| The customer | gets one platform-authored holding line: *"Our team is taking over this conversation — a person will be with you shortly."* Claimed **once per conversation** by the shipped reply row itself, not once per message |
+| The conversation | moves to `waiting_human` through P26's real transition — so the operator queue lists it, the D2 gate holds the customer's *next* message, and handback works afterwards |
+| The transcript | gets a breadcrumb per hold episode: a named `raw.pausedHold` key (`{ pausedAt, runtime, notice }`), never `raw.action`, which would replay to the model as a phantom tool |
+
+**Order against the neighbouring gates, because each ranking is a ruling.**
+*After* the D2 human-pen gate: a thread a person already owns is held by a
+stronger claim, and shipping platform prose into an operator's live conversation
+would talk over them mid-sentence. *Before* the `subscriberRate` limiter: a
+paused agent must never say *"you're sending faster than I can answer"* — a
+sentence about an agent that is answering — so the limiter's whole block is
+skipped and a held turn doesn't even spend the `INCR`. *Before* the token
+budget, the canary snapshot, the topic gate, routing and the brain, none of which
+a held turn reaches. A **live** agent pays one null comparison on a row already
+in hand.
+
+**The breadcrumb's granularity is once per hold *episode*, not once per message.**
+The first held turn routes the conversation to `waiting_human`, so the customer's
+next message is stopped by the D2 gate above and never reaches this code. A
+*second* breadcrumb on one conversation therefore means something specific and
+worth seeing: a human took it, handed it back, and the still-paused agent had to
+hold it again.
+
+**Evals are exempt, and that exemption is what makes the drill possible.** The
+eval driver runs real turns through the same function against a synthetic
+subscriber, and holding those would push robots into the operator's real incident
+queue *and* make it impossible to verify a fix before resuming — which is the
+exact sequence a kill-switch exists to enable: pause, diagnose, run the
+scenarios, resume. It is an **explicit** flag on the eval driver, never inferred
+from the caller's shape and never accepted from a request body — the same
+discipline as the eval driver's rate-limit and canary exemptions.
+
+**Resume does not reclaim conversations.** Clearing `pausedAt` makes new turns
+run normally; a conversation sitting with an operator stays theirs until they
+hand it back (P26 semantics, unchanged). A sweep that yanked conversations back
+from people mid-reply the moment someone pressed Resume would be a second
+incident.
+
+**`pausedAt` is operational state, never config.** It is not in the config file
+below, it is not settable through `PATCH /v1/agents/:identifier`, and an import
+neither pauses a live agent nor resumes a paused one.
+
+Typed wrappers: `client.agents.pause(identifier)` / `client.agents.resume(identifier)`
+in `@asyncify-hq/node`; `Agent.pausedAt` carries the state.
+
+## Config as code — `export`, `import/preview`, `import`
+
+One JSON document describes an agent completely enough to recreate it in another
+environment: identity, the six knobs, custom tools with their guards, the
+knowledge it reads and the workflow keys its prompt names. **No secret is ever
+serialized** — not the LLM key, not the agent signing secret, not a tool's call
+secret. The file is safe to commit because there is nowhere in it for a
+credential to hide, not because a redaction step remembered to run. The
+operator-facing story is section 13 of
+[ASYNCIFY-AGENTS-GUIDE.md](ASYNCIFY-AGENTS-GUIDE.md).
+
+### `GET /v1/agents/:identifier/export`
+
+```bash
+curl -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/agents/support-bot/export > support-bot.agent.json
+```
+
+**The body IS the file** — no envelope — so the redirect above writes something
+the import route accepts and a human can read in a pull request. Unknown
+identifier is a **404**. Both runtimes export: a bridge agent carries its tools
+and knobs too, and `runtime` says which kind it is.
+
+| Key | What it holds |
+|---|---|
+| `formatVersion` | `1`. A file declaring a version **above** the API's is refused; unknown *keys* are ignored, which is the opposite asymmetry on purpose — silently dropping a key you don't know is safe, silently mis-reading a changed shape is not |
+| `identifier` | **required**, the file's primary key. It is what decides create-vs-update on import |
+| `name`, `description`, `runtime`, `bridgeUrl`, `model`, `systemPrompt`, `llmBaseUrl`, `context`, `welcomeMessage`, `suggestedPrompts` | the agent's identity and brain config; `runtime` (`bridge` \| `managed`) and `name` are required |
+| `routing`, `topics`, `moderation`, `subscriberRate`, `maxTokens`, `maxDailyTokens`, `autoResolveMinutes` | all six guardrail/behaviour knobs plus the reply cap and idle backstop. Values ride as opaque JSON here on purpose — the *ranges* are stated once, in the save schemas, and the import runs every knob through those very objects |
+| `tools` | up to 200; each `{ name, description, parameters, endpointUrl, approval?, timeoutMs?, guard? }` — the `guard` block travels intact |
+| `knowledge` | up to 200 **references**: `{ name, origin }`, where `origin` is the source URL or the literal `"text"` for pasted prose. Chunk text and embeddings are **not** in the file |
+| `workflows` | up to 100 workflow **keys** the agent's prompt names — requirements to check, never workflows to create |
+
+**Not in the file, deliberately:** every secret; `status` and `pausedAt`
+(operational state — an import must not disable a live agent or resume a paused
+one); `promptVersion` and the canary (history and trials belong to the
+environment they happened in).
+
+**Absent is absent.** A knob that was never configured is *omitted* rather than
+written as `null`, so a config file reads as a list of decisions someone made
+rather than a form with fifteen blanks. Lists are sorted by name, so two exports
+of the same agent are byte-identical regardless of row order — which is what
+makes `git diff` on these files worth reading.
+
+**Disabled tools are not exported.** A disabled tool isn't part of what the agent
+does, and `status` doesn't travel — exporting one would silently re-enable it in
+the target environment, precisely the surprise config-as-code exists to prevent.
+
+**`workflows` is derived by scanning the prompt** for the tenant's real workflow
+keys (boundary-anchored, so a workflow keyed `ship` doesn't match "shipping").
+There is no agent→workflow table to read: the managed brain offers
+`trigger_workflow` with the whole workflow list as an enum, so an agent's real
+dependency is exactly the set of keys its prompt tells the model to trigger. It
+is a heuristic, and both failure modes are benign — a key the prompt never
+mentions isn't exported, and a spurious match only adds a requirement the source
+environment provably satisfies.
+
+**`bridgeUrl` and `llmBaseUrl` do travel**, and that call is deliberate: both are
+endpoints rather than credentials, both are already returned by
+`GET /v1/agents/:identifier` to any holder of an API key, and a bridge agent
+whose file omitted its own bridge URL couldn't be recreated at all. The pairing
+risk lands on the other side — the key never travels, so an endpoint on its own
+dials nothing. Import treats them accordingly (below).
+
+### `POST /v1/agents/import/preview`
+
+```bash
+curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/import/preview \
+  -d "{ \"file\": $(cat support-bot.agent.json) }"
+```
+
+| Body field | Rules |
+|---|---|
+| `file` | **required**, the parsed config file (an object, not a string). Shape-checked by the format owner; a malformed file is a **400** `invalid config file` with the field-level issues under `details` |
+| `llmApiKey` | optional, **8–512** chars — the *target* environment's LLM key. Never in the file; it travels in the request, once. Preview accepts it but stores nothing |
+
+Response:
+
+```jsonc
+{ "identifier": "support-bot",
+  "mode": "update",                     // or "create" — no agent with this identifier here
+  "changes": [ { "field": "systemPrompt", "action": "changed" },
+               { "field": "maxDailyTokens", "action": "added" },
+               { "field": "topics", "action": "removed" },
+               { "field": "model", "action": "unchanged" } ],
+  "toolChanges": { "added": ["lookup_order"], "changed": ["refund_customer"],
+                   "removed": ["legacy_ping"] },
+  "removalPolicy": "kept",
+  "missingWorkflows": [],               // keys this environment does not have
+  "missingKnowledge": ["refund-policy"],// references the target agent lacks
+  "needsLlmKey": false }
+```
+
+**Read `removed` carefully — it describes the FILE, not the outcome.** Nothing is
+removed by an import, which is what `removalPolicy: "kept"` says out loud so a UI
+cannot render the word as a threat. A field the file doesn't mention keeps its
+stored value; a tool on the agent that the file doesn't mention is left exactly
+where it is. An import must not destroy what the file's author never knew about,
+and deleting a tool stays an explicit act done by someone who can see what calls
+it. `changed` means *the file's value wins*; `added` means the agent has nothing
+there yet.
+
+**The live side is compared through the serializer** — the stored agent is turned
+into the file it *would* export as, and the two files are diffed. So "export,
+change nothing, import" is guaranteed to report nothing, and normalisation can
+never manufacture a spurious `changed` row.
+
+**Tools reconcile by name**, which is the only stable identity a file can carry:
+a tool name is immutable and unique per agent, while a row id would be
+meaningless in the target environment. Only the fields a file *states* are
+compared, so an omitted `timeoutMs` is not read as a request to change the
+timeout.
+
+**Preview refuses everything apply would refuse, except the missing-workflow
+case.** That is the whole point of two steps: a modal that says "one tool added,
+prompt changed" followed by an apply that then fails on a bound the preview never
+checked would be worse than no preview at all. So the knobs go through the save
+schemas here, every tool endpoint goes through the tool-registration validators
+and the SSRF guard here, and a `bridgeUrl` pointing at private infrastructure is
+a **400** at preview rather than a promise that can't be kept. Missing workflows
+are the deliberate exception — reported as a warning list so the operator can go
+create them and come back.
+
+**`needsLlmKey` is computed from the real absence**, not from what you sent: it
+is `true` when the file's `runtime` is `managed` and the target has no stored
+credentials — always on create, and on the `bridge → managed` conversion a file
+can ask for. Preview validates with a throwaway stand-in key so it can still tell
+you your 31st topic label is one too many; nothing is written and nothing is
+stored.
+
+### `POST /v1/agents/import`
+
+```bash
+curl -X POST -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  https://api.asyncify.org/v1/agents/import \
+  -d "{ \"file\": $(cat support-bot.agent.json), \"llmApiKey\": \"$PROD_LLM_KEY\" }"
+# → 201 (create) / 200 (update)
+# { "mode": "create",
+#   "agent": { …, "identifier": "support-bot", "promptVersion": 1 },
+#   "signingSecret": "ags_…",
+#   "tools": { "created": [ { "name": "lookup_order", "secret": "ats_…" } ],
+#              "updated": [], "kept": ["legacy_ping"] },
+#   "missingKnowledge": [] }
+```
+
+Same body as preview. **`201` on create, `200` on update.**
+
+**Missing workflows are a `422` here**, with the offending keys in both the
+message and `details.missingWorkflows`. A prompt that tells the model to trigger
+a workflow this environment doesn't have is a broken agent; shipping it quietly
+would make the failure a customer's problem at turn time.
+
+**An update rides the same save path a human does**, so a changed prompt or model
+**mints a prompt version** and history stays complete. A create rides the create
+path, and therefore requires an `llmApiKey` for a managed agent exactly like
+`POST /v1/agents` does.
+
+**`llmBaseUrl` is only applied alongside a key.** It is the endpoint a stored key
+is used against, so re-pointing it while an older key stays behind would ship
+that credential somewhere its owner never agreed to. On create a key is always
+present (managed agents require one); on update the file's base URL is applied
+**only** if you supplied `llmApiKey` in the same request, and otherwise silently
+left alone. There is no way to repoint stored credentials through an import.
+
+**Secrets are shown exactly once, on apply.** A freshly created agent returns its
+`signingSecret` (absent on an update), and every tool the import creates returns
+its newly minted call secret — the file cannot carry them (that is what makes it
+git-safe), so a tool's backend can never verify our calls unless the operator
+takes the secret here. The dashboard's import modal refuses to auto-navigate
+away while any of these are on screen.
+
+**Tools are validated to the last one before any of them is written**, so a file
+with one bad endpoint is refused whole rather than applied halfway. A tool the
+file adds that raced into existence between preview and apply is not fought over:
+the tool exists, which is what the file asked for.
+
+**What an import never touches:** `status`, `pausedAt` (a paused agent stays
+paused — importing a config is not an all-clear), a tool's `status` (one an
+operator disabled here stays disabled), the canary, version history, and the
+stored LLM credentials unless a key was supplied.
+
+**The reader is deliberately tolerant.** Unknown keys are ignored (including
+`_comment` blocks), `formatVersion` may be absent and defaults to `1`,
+`workflows` entries may be full workflow objects instead of bare keys (only the
+key is read), and a tool `endpointUrl` may be an env template like
+`${ACME_TOOLS_URL}/refund` rather than an absolute URL — the file is a document,
+and the URL law belongs to the moment we are about to dial it, so **apply** runs
+every endpoint through the registration schema and its SSRF guard and refuses an
+unresolved template there with the real message. This is why the repo's CI eval
+fixture (`evals/agents/support-demo.agent.json`) is a valid import file **without
+being edited to suit us**.
+
+### Promoting across environments
+
+The dashboard's **Promote to…** menu targets another environment in the same
+organization by sending `x-environment-id` alongside a **user session token**;
+every such request re-checks that the caller is a member of that environment's
+organization. **An API-key caller cannot do this** — an API key is scoped to the
+environment that issued it, and the header is ignored on that path. From a
+script, the two-environment trip is two keys: export with the source
+environment's key, import with the target's.
+
+**The pre-save eval check does not run across environments** and the dashboard
+says so instead of hiding it: threading a candidate config into the target's
+evals would grade the wrong environment's agent, so a cross-environment promote
+that changes the prompt or model shows an amber warning naming the *target's*
+real enabled-scenario count and asking you to run that environment's evals from
+its own tab afterwards. Same-environment imports run the full check normally.
+
+Typed wrappers in `@asyncify-hq/node`: `client.agents.export(identifier)` returns
+the file as `AgentConfigFile`, `client.agents.importPreview(file)` returns
+`AgentImportPreview`, and `client.agents.import(file, { llmApiKey })` returns
+`AgentImportResult`.

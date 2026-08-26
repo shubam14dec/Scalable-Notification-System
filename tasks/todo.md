@@ -46,17 +46,55 @@ evals/agents/*.json becomes a valid import file.
       preview validates everything apply validates; RULING mid-slice:
       maxTokens + autoResolveMinutes joined the format (silent config
       loss on promote = the failure this feature prevents).
-- [ ] TEST-HEALTH (added 2026-08-26): model-routing.test.ts's two
-      load-flaky tests ("SAFE tool keeps the turn cheap" + an
-      extra-message-row count) fail intermittently under full-suite
-      load only (9/9 isolated, green on clean full runs) — has now
-      cost triage time in A8/A10; harden the assertions the way the
-      A6 agent made its wire checks retry-proof.
-- [ ] Slice C — import/promote UI: preview/diff modal, pre-save
-      integration, Promote-to-env, SDK + changeset.
-- [ ] Slice D — docs: guide §6/§13 + config-as-code section,
-      AGENT-TOOLS, gap docs (env promotion = Tier-A novu gap),
-      close-out.
+- [x] Slice C — DONE 2026-08-26 (commit c8cf6c4, suite 1114→1124):
+      PROMOTE IS REAL CROSS-ENV — the fallback's premise was false
+      (dashboard auth = user token + x-environment-id header with
+      per-request membership checks; no new endpoint, nothing
+      weakened). Pre-save honesty: same-env imports run the full
+      check; cross-env promote gets an amber warning with the
+      TARGET's real eval count (threading the component would collide
+      cache keys and grade the wrong env's agent). Secrets-shown-once
+      no-auto-navigate; two self-caught pre-ship bugs.
+- [x] Slice D — DONE 2026-08-26 (docs commit, no code): guide §13
+      kill-switch drill + pause-vs-disable table + config-as-code
+      section (placed in §13 not §6 — a manual emergency control is
+      not a configured knob; §2/§6 got forward pointers); AGENT-TOOLS
+      full reference for all 5 routes (every posture stated WITH its
+      reason); NOVU-GAP dated addendum claims ONLY the agent half of
+      the Tier-A env-promotion row ("Tier A stands, one resource type
+      lighter" — workflow/layout promotion untouched; kill-switch got
+      no sweep so no comparative claim); ARCHITECTURE-COMPARISON
+      qualifier + env-is-a-tenant-row fact; DEPLOYMENT: promoted
+      dev-shaped configs w/ localhost/tunnel URLs are REFUSED by
+      prod's empty OUTBOUND_URL_ALLOW (the guard working, not a bug).
+      Every doc claim spot-verified against code by the manager
+      (holding-line wording, raw.pausedHold shape, 422/409 codes).
+
+PHASE REVIEW (built 2026-08-26; awaiting user E2E + push): 5 local
+commits (dcac1e3 A, 2d1616d B, c8cf6c4 C, +docs D; suite 1033→1124,
++91). Kill-switch: paused_at timestamptz (never a status), hold at the
+processTurn chokepoint AFTER the D2 human-pen gate / BEFORE the A8
+limiter, messages always land, one platform holding line per
+conversation claimed by the shipped reply row itself, conversations
+route to the P26 waiting_human queue, eval driver carries an explicit
+noPauseHold exemption (pause → fix → verify → resume), resume never
+reclaims operator-owned threads, both routes idempotent, both
+runtimes. Config-as-code: formatVersion-1 JSON with NO field for any
+secret, import validates through the SAME zod schemas as the save
+routes, update mints a prompt version + dashboard same-env imports run
+the pre-save check, tools kept-never-deleted, missing workflows 422,
+knowledge as references, llmBaseUrl applies only with a fresh key,
+REAL cross-env Promote via x-environment-id (fallback premise was
+false). CI fixture validates as an import file UNEDITED. Next: user
+runs the 7-step manual script, then push on his word (release 0.8.7).
+
+### TEST-HEALTH — model-routing load flake (added 2026-08-26)
+- [ ] model-routing.test.ts's two load-flaky tests ("SAFE tool keeps
+      the turn cheap" + an extra-message-row count) fail
+      intermittently under full-suite load only (9/9 isolated, green
+      on clean full runs) — has now cost triage time in A8/A10;
+      harden the assertions the way the A6 agent made its wire checks
+      retry-proof.
 
 ### Phase A8 — SHIPPED 2026-08-25 (review)
 All 3 slices done (commits 9d87bea, b30a777, +docs), suite 967→1033
@@ -499,8 +537,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A7. Guardrails completion — SHIPPED 2026-08-24, review above.
 - [x] A8. Per-customer message limits — SHIPPED 2026-08-25, review
       above (rescoped by user to this single item).
-- (IN PROGRESS above) A10. Kill-switch + config-as-code (rescoped by
-      user 2026-08-26: handoff-SLA + active-alerting removed).
+- [x] A10. Kill-switch + config-as-code — BUILT 2026-08-26, review
+      above (rescoped by user: handoff-SLA + active-alerting removed);
+      awaiting user E2E + push.
 - [ ] A11. Tool approval via workflow — deferred tool call fires a real
       notification; approve from ANY channel; webhook resumes (Tier B,
       composes buttons + trigger machinery; very demo-worthy).

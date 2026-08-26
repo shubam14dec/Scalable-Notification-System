@@ -65,7 +65,9 @@ so one person flooding the agent is slowed down *alone* instead of taking
 it down for everyone, and two gates around the brain itself: one that
 decides whether a question is this agent's to answer at all, one that reads
 every drafted reply before it ships. Enforced in code, outside the model —
-a prompt can be argued with; a gate cannot.
+a prompt can be argued with; a gate cannot. Those all run without you; for the
+day you need to intervene by hand there's a **kill-switch** (§13) that pauses
+the whole agent without hanging up on the customers already talking to it.
 
 **Knowledge with citations (§8)** — the agent answers from *your*
 documents and names its source, and says "I don't know" otherwise. In
@@ -184,6 +186,12 @@ None of it is required to go live — the agent works without any of it. It's
 what keeps the agent good after the twentieth prompt edit. It's also a *prompt*
 loop, so it belongs to the managed brain: a bridge agent's thinking is Acme's
 own code, and there is no prompt here for Asyncify to grade.
+
+One habit runs alongside it and belongs to **both** runtimes: once the agent is
+worth keeping, **export it as a file** and let it live in Acme's git, so moving
+it from a staging environment to production is a reviewed diff rather than a
+careful afternoon of re-typing — and so an incident has a known-good config to
+go back to (§13).
 
 ---
 
@@ -1492,6 +1500,152 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
   "a row in *your* environment changed," and the dashboard then re-fetches it
   through the normal authenticated API.
 
+### The kill-switch: stopping an agent without hanging up on customers
+
+Something is wrong *right now* — a prompt edit went out worse than it read, a
+tool started returning nonsense, the model provider is having a day. Sam opens
+the agent and presses **Pause** (the agent's header, next to Disable). One
+button, every conversation on that agent, **both runtimes** — a bridge agent is
+precisely the agent Priya can't fix by redeploying, and for it the pause means
+Asyncify stops calling her service at all.
+
+A paused agent is deliberately not a dead agent:
+
+1. **Messages keep landing.** Nothing is refused; every message still enters the
+   transcript. During an incident the customer's words *are* the evidence, and
+   the sentence that would have told you what went wrong is the last thing worth
+   throwing away.
+2. **No brain runs.** No model call, no tool call, no call to your own service,
+   no classifier.
+3. **The customer is told once.** *"Our team is taking over this conversation —
+   a person will be with you shortly."* Once per **conversation**, not once per
+   message: an incident is exactly when someone sends four messages in thirty
+   seconds, and four identical apologies is how a system tells them nobody is
+   home. It's platform wording rather than a field to compose at 3am, and it
+   promises only what actually happens next.
+4. **Their conversation goes to your team's queue.** Every held conversation
+   lands in the same *waiting for human* queue as a `handoff_to_human` (§7), and
+   Sam answers from the same reply box. An incident filling that queue is the
+   point, not a side effect.
+5. **A thread a person already owns is left alone.** The human-pen rule (§7) is
+   checked first, so the holding line never talks over an operator mid-sentence
+   with a customer.
+6. **Every held turn leaves a breadcrumb** in the transcript, and the pause
+   itself writes an Activity line.
+
+The badge follows it everywhere: **PAUSED** sits *beside* the agent's status on
+both the Agents list and the agent's own header — beside, not instead of, because
+paused and disabled are different facts about the same agent.
+
+**The drill.** Pause → the customers get one honest line and land in your
+queue → the humans hold the line → fix it → **verify** → Resume.
+
+That verify step is the one worth spelling out, because it's the step a naive
+kill-switch makes impossible: **evals run through a paused agent on purpose.**
+The eval driver carries an explicit exemption from the hold (§10), so Priya can
+pause the incident, change the prompt, run the agent's scenarios against it, read
+the result, and only *then* resume. Without that exemption the eval
+conversations would be held like everyone else's — Sam would open the incident
+queue and find robots in it, and there would be no way to check a fix before
+putting it back in front of customers.
+
+**Resume** puts the agent back on new messages. It does **not** yank
+conversations back from the people holding them: a thread an operator picked up
+stays theirs until they use **Return to agent** (§7). Resuming is not an
+all-clear for work already in progress, and a sweep that reclaimed it would be a
+second incident. Both buttons confirm first, and both are **idempotent** —
+pausing a paused agent is a success, not an error, because an emergency button
+that complains about a double-press is a broken button.
+
+**Pause is not Disable.** Both live on the agent; they answer different
+questions.
+
+| | **Pause** (the kill-switch) | **Disable** (the agent's status) |
+|---|---|---|
+| What it means | *temporarily*, humans are handling this | this agent is off |
+| The customer's message | still lands in the transcript | refused at the door — the widget gets a `409 agent is disabled`; on Slack, Telegram and email the message simply isn't routed to it |
+| What the customer hears | one holding line, then a person | nothing |
+| Where the conversation ends up | your team's queue | nowhere |
+| Reach for it when | something is wrong and people need to hold the line | the agent is retired or shouldn't be reachable at all |
+
+Pause is **operational state, not config** — which is why importing a config file
+(next) never resumes a paused agent and never pauses a live one.
+
+### Config as code: the agent as a file
+
+An agent is a lot of decisions — a prompt, a model, six guardrail knobs, a set of
+custom tools with their guards, the documents it reads, the workflows it drives.
+Re-typing them into a second environment is how a production agent quietly ends
+up different from the one that was tested.
+
+So the whole agent is **one JSON file**: everything above, plus its identifier
+and welcome copy — *minus its secrets and its operational state*.
+
+```bash
+curl -H "x-api-key: $API_KEY" \
+  https://api.asyncify.org/v1/agents/support-bot/export > support-bot.agent.json
+```
+
+The response body *is* the file — no envelope to strip. In the dashboard it's
+**Export agent** on the agent's header, which downloads the same document.
+
+Three things Acme does with it:
+
+- **Promote dev → prod, with a diff first.** Import is two steps: a **preview**
+  that changes nothing and answers *"what would this do?"* field by field —
+  prompt *changed*, `maxDailyTokens` *added*, this tool created, that one
+  updated — and then an apply. A green checkmark is not an answer to "what
+  changes in production?", so the preview doesn't give you one. In the
+  dashboard that's **Import agent** on the Agents list, which walks the same two
+  steps in a modal.
+- **Keep the agent in Acme's own git.** The file has nowhere to put a
+  credential, so it's safe to commit by construction rather than because a
+  redaction step remembered to run. Prompt edits then show up in Acme's own code
+  review, next to the code they support.
+- **Templates.** Export the agent that works, change the identifier and the
+  name, import it as the starting point for the next one.
+
+What the file is careful about, all of it deliberate:
+
+- **Keys never travel.** Not the LLM key, not the agent's signing secret, not a
+  tool's call secret — there is no field for any of them. Importing a *managed*
+  agent into a new environment therefore asks you for that environment's own LLM
+  key, and freshly created tools hand back new secrets **once**, on screen, the
+  same way every other secret in this product does. Endpoints (`bridgeUrl`,
+  `llmBaseUrl`) *do* travel, because an agent whose file omitted its own bridge
+  URL couldn't be recreated at all — but an LLM base URL is only ever applied
+  **together with a fresh key**, so an import can never quietly re-point an
+  existing stored key at somewhere its owner never agreed to.
+- **Nothing is ever deleted.** A tool on the agent that the file doesn't mention
+  is **kept**, and so is a knob the file is silent about. The preview reports the
+  asymmetry so you can see it; removing a tool stays an explicit act done by
+  someone who can see what calls it.
+- **An import is a save, with the same net under it.** A changed prompt mints a
+  **prompt version** exactly like typing it would (§10), and a dashboard import
+  that changes the prompt or model **runs the pre-save check first** on an agent
+  with enabled scenarios — you read the eval delta before the config commits, in
+  the same panel as any other edit.
+- **Knowledge travels as a reference, not as content.** The file lists what the
+  agent reads by name and origin; the documents and their embeddings stay put. A
+  knowledge base is megabytes of your prose, and re-indexing it costs embedding
+  calls an import shouldn't spend behind your back. The preview tells you which
+  sources the target is missing so you can add them there (§8) — a warning, never
+  a refusal.
+- **Workflows are requirements, and they're checked.** The file lists the
+  workflow keys the prompt names. If the target environment doesn't have one, the
+  import is **refused** rather than shipped — a prompt telling the model to
+  trigger `order-shipped` where no such workflow exists is a broken agent, and
+  finding that out at turn time makes it a customer's problem.
+
+**Promote to…** on the agent's header does the whole trip in the dashboard: pick
+another environment in your organization, and it exports, previews against *that*
+environment and applies there. One honesty note it makes on screen rather than
+hiding: when you promote a prompt or model change, **the pre-save check doesn't
+run across environments** — it would grade the wrong environment's agent — so
+the warning names the target's *real* enabled-eval count and asks you to run that
+environment's evals from its own Evals tab afterwards. Same-environment imports
+get the full check as usual.
+
 ## Capability checklist
 
 | | |
@@ -1507,6 +1661,8 @@ whichever service hosts a bridge brain, `cli` on developer machines only.
 | Guardrails | per-tool repeat-action rule (auto→approval, with history) + hourly rate cap; per-agent daily-token circuit breaker; per-agent **topic gate** — one small classifier call before the brain names the topic, the deny/allow policy is applied in code and the classifier is never told which topics are denied; a broken classifier skips rather than mutes — and per-agent **reply rules** — typed phrases plus other people's emails/phones checked on every drafted reply, zero model calls and zero added latency, blocked replies ship a configured fallback bare. Both managed-only, off until configured, graded by the pre-save check. Plus a per-agent **per-customer message limit** — N messages per customer per window, so one flooder is throttled alone instead of the day budget muting the agent for everyone; the messages still land in the transcript unanswered, the configured notice ships once per window, and the ops alert names the offender with counts but never content. The one guardrail a **bridge** agent gets too (ingress protection, not brain config), off until configured, and deliberately not graded by the pre-save check |
 | Notifications | workflows/digests/delays from agent tools, proactive pushes, resolve webhooks, approval pings |
 | Quality | eval harness: tool-trace assertions + LLM-judged dimensions (groundedness / tone / refusal, scored 1–5 against your bar, rationales in the dashboard; ungraded = visibly skipped, never a silent pass); pre-save check — a prompt edit is graded before it saves, warn never block; one-click eval from a real conversation; append-only prompt versions (restore publishes, never rewinds); prompt canary — a version trials on a % of real conversations, sticky per conversation, with a per-arm comparison (counters + judged averages sampled from both arms at the same rate) behind Promote; a config-as-code fixture agent gated by a required CI check (a regression fails the build, not just a warning); anti-fabrication transcripts |
+| Kill-switch | one-button **pause** on either runtime — messages keep landing (nothing is refused, the transcript stays complete), no model/tool/bridge call runs, each customer is told once, and their conversation moves to the human queue; threads a person already owns are untouched, evals are exempt so a fix can be verified *before* resuming, and resuming never reclaims a conversation from the operator holding it. Distinct from disable, which refuses at the door |
+| Config as code | the whole agent as one JSON file — identity, prompt, all six knobs, custom tools with guards, knowledge references, required workflow keys — with **no field for a secret**, so it is git-safe by construction. Export route, two-step import (field-level preview → apply) validated by the same schemas the save routes use, an import mints a prompt version and rides the pre-save check, tools absent from a file are kept never deleted, missing workflows refuse and missing knowledge warns, and a **Promote to…** menu runs the trip into another environment of the same organization |
 | Ops | connections re-pointable with history; `asyncify dev` local loop |
 
 *Deep dives: `docs/AGENT-TOOLS.md` (tools, endpoint contract, approvals,
