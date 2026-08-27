@@ -85,8 +85,14 @@ routes, update mints a prompt version + dashboard same-env imports run
 the pre-save check, tools kept-never-deleted, missing workflows 422,
 knowledge as references, llmBaseUrl applies only with a fresh key,
 REAL cross-env Promote via x-environment-id (fallback premise was
-false). CI fixture validates as an import file UNEDITED. Next: user
-runs the 7-step manual script, then push on his word (release 0.8.7).
+false). CI fixture validates as an import file UNEDITED. User E2E
+2026-08-27 caught 2 dashboard bugs the jsdom tests structurally could
+not (no real mousedown): promote menu closed itself before item click
+(missing portal-ref check vs its AddButton precedent) and the promote
+preview froze on "Checking…" (StrictMode detaches an effect-fired
+mutation's observer — UI must render from callback-written state, see
+skill ledger). Both fixed + verified by headless-Edge probe running
+the FULL promote trip. Next: push on his word (release 0.8.7).
 
 ### TEST-HEALTH — model-routing load flake (added 2026-08-26)
 - [ ] model-routing.test.ts's two load-flaky tests ("SAFE tool keeps

@@ -303,6 +303,22 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   Corollary for record-only edits: pre-edit agent replies keep stale
   facts; operators purge a fact by deleting the reply that CONTAINS it,
   not the reply that repeats it.
+- **Never render from an effect-fired mutation's own state** (proven in
+  A10 E2E, 2026-08-27): a TanStack v5 mutation fired from a MOUNT EFFECT
+  resolves detached in dev — StrictMode's simulated unmount drops the
+  observer's last listener, TanStack detaches the observer from the
+  in-flight mutation, and nothing re-attaches it on resubscribe. Config
+  callbacks (onSuccess/onError) still run, but `isPending` freezes true
+  and `data` never lands: the promote modal spun on "Checking…" forever
+  over a completed 200. Drive the UI from component state written in
+  onSuccess/onError (PreSaveCheck's `setRunId` does this — by accident);
+  click-fired mutations are immune (subscriptions settled long before).
+  Sibling lesson from the same E2E: a portaled menu that closes on
+  outside-mousedown must check BOTH the anchor ref AND the portal's own
+  ref — the portal is not inside the anchor, so item mousedown counted
+  as outside and unmounted the menu before its click fired; jsdom's
+  fireEvent.click sends no real mousedown, so tests can't catch either
+  bug — headless-browser probes (puppeteer-core + Edge) can.
 - **Outbound-URL SSRF guard** (Phase 9): every tenant-supplied URL our
   servers dial must pass `src/core/safe-url.ts` — write-time
   `assertSafeOutboundUrl` in the route + connect-time `safeDispatcher()`

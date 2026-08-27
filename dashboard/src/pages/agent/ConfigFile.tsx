@@ -353,6 +353,18 @@ function ConfigImportModal({
   const [result, setResult] = useState<ImportResult | null>(null);
 
   /* ---- preview ---- */
+  //
+  // The preview's UI state is COMPONENT state written by the callbacks, never
+  // the mutation's own `isPending`/`data`. A mutation fired from the mount
+  // effect below resolves detached in dev: StrictMode's simulated unmount drops
+  // the observer's last listener, TanStack detaches the observer from the
+  // in-flight mutation, and nothing re-attaches it on resubscribe — callbacks
+  // still run, but `isPending` freezes at true and the modal spins forever
+  // (caught in A10 manual E2E; PreSaveCheck's setRunId-in-onSuccess is the
+  // same pattern, there by accident).
+  const [previewOutcome, setPreviewOutcome] = useState<
+    { data?: ImportPreview; error?: Error } | null
+  >(null);
   const preview = useMutation({
     mutationFn: (body: AgentConfigFile) =>
       api<ImportPreview>('/v1/agents/import/preview', {
@@ -360,8 +372,12 @@ function ConfigImportModal({
         body: { file: body },
         envId,
       }),
+    onSuccess: (d) => setPreviewOutcome({ data: d }),
+    onError: (err: Error) => setPreviewOutcome({ error: err }),
   });
-  const previewData = preview.data ?? null;
+  const previewData = previewOutcome?.data ?? null;
+  const previewError = previewOutcome?.error ?? null;
+  const previewPending = previewOutcome === null;
   const identifier = previewData?.identifier ?? file?.identifier ?? '';
 
   // Promote opens straight on the preview with the file already in hand, so
@@ -472,6 +488,7 @@ function ConfigImportModal({
     const asFile = parsed as AgentConfigFile;
     setFile(asFile);
     setStage('preview');
+    setPreviewOutcome(null);
     preview.mutate(asFile);
   }
 
@@ -524,16 +541,16 @@ function ConfigImportModal({
 
       {stage === 'preview' && (
         <div className="space-y-3">
-          {preview.isPending && (
+          {previewPending && (
             <div className="flex items-center gap-2 py-6 text-[12px] text-t3">
               <Spinner /> Checking what this file would do in {where}…
             </div>
           )}
 
-          {preview.isError && (
+          {previewError && (
             <ErrorPanel
               title="This file was refused"
-              error={preview.error as Error}
+              error={previewError}
               onBack={seedFile ? undefined : () => setStage('file')}
             />
           )}
