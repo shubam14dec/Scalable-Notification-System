@@ -91,8 +91,10 @@ not (no real mousedown): promote menu closed itself before item click
 (missing portal-ref check vs its AddButton precedent) and the promote
 preview froze on "Checking…" (StrictMode detaches an effect-fired
 mutation's observer — UI must render from callback-written state, see
-skill ledger). Both fixed + verified by headless-Edge probe running
-the FULL promote trip. Next: push on his word (release 0.8.7).
+skill ledger). Both fixed; his re-test passed. Plus env-switcher
+select snapping back to stale value (localStorage not reactive →
+setEnv now dispatches, Shell subscribes). SHIPPED: pushed 2026-08-27,
+CI+gate green ×3, 0.8.7 published (PR #21 merged). Phase A10 CLOSED.
 
 ### TEST-HEALTH — model-routing load flake (added 2026-08-26)
 - [ ] model-routing.test.ts's two load-flaky tests ("SAFE tool keeps
@@ -543,9 +545,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A7. Guardrails completion — SHIPPED 2026-08-24, review above.
 - [x] A8. Per-customer message limits — SHIPPED 2026-08-25, review
       above (rescoped by user to this single item).
-- [x] A10. Kill-switch + config-as-code — BUILT 2026-08-26, review
-      above (rescoped by user: handoff-SLA + active-alerting removed);
-      awaiting user E2E + push.
+- [x] A10. Kill-switch + config-as-code — SHIPPED 2026-08-27 (0.8.7),
+      review above (rescoped by user: handoff-SLA + active-alerting
+      removed).
 - [ ] A11. Tool approval via workflow — deferred tool call fires a real
       notification; approve from ANY channel; webhook resumes (Tier B,
       composes buttons + trigger machinery; very demo-worthy).
