@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -154,6 +154,11 @@ function ThemeToggle() {
   );
 }
 
+function subscribeToEnv(onChange: () => void) {
+  window.addEventListener('asyncify:env-changed', onChange);
+  return () => window.removeEventListener('asyncify:env-changed', onChange);
+}
+
 export default function Shell() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -166,7 +171,12 @@ export default function Shell() {
   const environments = me?.organizations.flatMap((o) =>
     o.environments.map((e) => ({ ...e, orgName: o.name })),
   );
-  const currentEnv = environments?.find((e) => e.id === session.envId) ?? environments?.[0];
+  // The selected env lives in localStorage, which React cannot see — subscribe
+  // to setEnv's event so the switcher re-renders on EVERY change, including
+  // ones made elsewhere (a promote's "switch and open it"). Without this the
+  // controlled <select> silently snaps back to its stale value.
+  const envId = useSyncExternalStore(subscribeToEnv, () => session.envId);
+  const currentEnv = environments?.find((e) => e.id === envId) ?? environments?.[0];
 
   useEffect(() => {
     if (currentEnv && session.envId !== currentEnv.id) session.setEnv(currentEnv.id);

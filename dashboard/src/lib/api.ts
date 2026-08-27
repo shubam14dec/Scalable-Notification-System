@@ -26,6 +26,12 @@ export const session = {
   },
   setEnv(envId: string) {
     localStorage.setItem(KEYS.env, envId);
+    // localStorage is not reactive: anything RENDERING the selected env (the
+    // Shell's switcher) must hear about this, or a controlled <select> snaps
+    // back to the stale value while the data pages move on (caught in A10
+    // manual E2E). One event covers every setEnv call site — the switcher
+    // itself, login, and a cross-env promote's "switch and open it".
+    window.dispatchEvent(new Event('asyncify:env-changed'));
   },
   clear() {
     Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
