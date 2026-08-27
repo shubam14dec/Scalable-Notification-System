@@ -819,8 +819,11 @@ function PreviewBody({
         <p className="text-[11px] text-warn">
           This agent's prompt refers to {preview.missingWorkflows.length} workflow
           {preview.missingWorkflows.length === 1 ? '' : 's'} {where} does not have:{' '}
-          {preview.missingWorkflows.join(', ')}. The import goes ahead — those triggers will fail
-          until you create them here.
+          {preview.missingWorkflows.join(', ')}. Applying will be refused until{' '}
+          {preview.missingWorkflows.length === 1 ? 'it exists' : 'they exist'} there — an agent
+          whose prompt triggers a workflow that doesn't exist would fail in front of a customer.
+          Create {preview.missingWorkflows.length === 1 ? 'it' : 'them'} in {where}, then run this
+          again.
         </p>
       )}
       {preview.missingKnowledge.length > 0 && (
