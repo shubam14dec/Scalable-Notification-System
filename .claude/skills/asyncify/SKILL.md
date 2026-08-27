@@ -318,7 +318,9 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   ref — the portal is not inside the anchor, so item mousedown counted
   as outside and unmounted the menu before its click fired; jsdom's
   fireEvent.click sends no real mousedown, so tests can't catch either
-  bug — headless-browser probes (puppeteer-core + Edge) can.
+  bug — only a real browser can. Verification of UI fixes is the USER's
+  manual E2E, by his explicit rule (2026-08-27): fix → tsc → commit →
+  hand him numbered test steps; don't run headless-browser probes.
 - **Outbound-URL SSRF guard** (Phase 9): every tenant-supplied URL our
   servers dial must pass `src/core/safe-url.ts` — write-time
   `assertSafeOutboundUrl` in the route + connect-time `safeDispatcher()`
