@@ -188,11 +188,21 @@ function PromoteMenu({ onPick }: { onPick: (env: Environment) => void }) {
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const anchor = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    // The menu lives in a portal, so it is NOT inside the anchor — a mousedown
+    // on an item must not count as "outside" (it would unmount the menu before
+    // mouseup, and the item's click would never fire). Same pair of checks as
+    // WorkflowCanvas's AddButton, this menu's precedent.
     const close = (e: MouseEvent) => {
-      if (!anchor.current?.contains(e.target as Node)) setOpen(false);
+      if (
+        !anchor.current?.contains(e.target as Node) &&
+        !menuRef.current?.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
     };
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     window.addEventListener('mousedown', close);
@@ -226,6 +236,7 @@ function PromoteMenu({ onPick }: { onPick: (env: Environment) => void }) {
         rect &&
         createPortal(
           <div
+            ref={menuRef}
             role="menu"
             className="fixed z-50 w-[220px] rounded-lg border border-bd bg-surface p-1 shadow-lg"
             style={{
