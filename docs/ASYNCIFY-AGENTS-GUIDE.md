@@ -1540,6 +1540,18 @@ paused and disabled are different facts about the same agent.
 **The drill.** Pause → the customers get one honest line and land in your
 queue → the humans hold the line → fix it → **verify** → Resume.
 
+**The *fix it* step starts from evidence, not from guesswork.** A turn that dies
+mid-flight — the model provider times out, Priya's service answers with the wrong
+shape, a tool endpoint stops responding — leaves its own record in the
+transcript. The note on that turn carries the **partial trace**: how far the turn
+got before it stopped, and the error that stopped it, marked *crashed mid-turn —
+partial trace* in the Turn Inspector. So the review begins where the incident
+actually is — Sam opens the conversation the customer complained about and reads
+the failure, instead of reconstructing it from three log files and an approximate
+timestamp. (The one thing a trace can't survive is the worker being killed
+outright, which takes the in-flight turn's events with it; that turn still ends at
+the plain *"agent unreachable"* note.)
+
 That verify step is the one worth spelling out, because it's the step a naive
 kill-switch makes impossible: **evals run through a paused agent on purpose.**
 The eval driver carries an explicit exemption from the hold (§10), so Priya can

@@ -1919,6 +1919,10 @@ export function registerAgentRoutes(app: FastifyInstance) {
           deletedBy: m.deleted_by,
           usage: usageOf(m),
           trace: (m.raw as { trace?: unknown } | null)?.trace,
+          // A13: this row is the note of a turn that DIED — its `trace` stops
+          // where the turn stopped. Sent only when true so every other row (and
+          // every row written before A13) stays byte-identical on the wire.
+          crashed: (m.raw as { crashed?: unknown } | null)?.crashed === true ? true : undefined,
           buttons: (m.raw as { buttons?: unknown } | null)?.buttons,
           clicked: Boolean((m.raw as { action?: unknown } | null)?.action),
           // D5/D8: operator (human teammate) attribution — {name} — so the

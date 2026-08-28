@@ -554,6 +554,27 @@ Redis tallies; a worker retry can re-count, so they can drift slightly high. The
 are circuit breakers, never exact quotas — Postgres (the tool-call rows,
 `raw.usage`) stays the auditable truth.
 
+### What the turn trace shows — and what it can't
+
+Every traced turn stores the same object under `raw.trace` on the transcript row
+the turn produced, and the dashboard's **Turn Inspector** is the expander on that
+row. What lands there depends on how the turn ended:
+
+| The turn… | Where the trace lives | What you see |
+|---|---|---|
+| **finished** (a reply, or a note instead of one) | `raw.trace` on the reply row — or on the turn's note when there was no reply | every model call (duration, tokens, model, stop reason), each tool call it triggered, the bridge POST for a bridge agent, and the turn's total |
+| **crashed mid-way** | `raw.trace` on the turn's note — same key, plus `raw.crashed: true` | how far it got, then the event that ended it: *turn failed at 3.2s · <the error>*. The Inspector marks the section **crashed mid-turn — partial trace** |
+| **was killed outright** (the worker process died — OOM, SIGKILL, an evicted container) | nothing | the plain note *"agent unreachable — this message was not answered"*, with no trace. The events were still in memory when the process stopped existing; writing each one as it happened would put a database write on the hot path of every model call |
+| **failed before it started** — a *managed* agent with no model credentials, or a blocked base URL | nothing | the note names the configuration fault; there was no timeline yet to be partial about. (A *bridge* agent whose URL is missing or blocked does get a trace — the ending event alone, and **no bridge POST**, because nothing was ever dialed) |
+
+**Tool durations follow the same honesty rule.** A managed agent's tools are
+dispatched by this platform, so the worker wall-clocks each signed POST and the
+**Health** view averages it (see *Tool timing* above); a blank there means no
+timed call in that window yet. A **bridge** agent's tools run inside your own
+service — this platform never dials them, has no clock on them, and records no
+per-tool rows for them at all, so its Health view simply has no tool-timing
+table rather than pretending to numbers it never measured.
+
 ### Per-agent daily token budget
 
 Separately from any tool, an agent can carry a **daily token budget**

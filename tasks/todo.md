@@ -28,14 +28,32 @@ the real work.
       happy-path totalMs). Agent caught: dashboard else-fallthrough
       paints NaN for unknown variants (slice B MUST ship the renderer
       arm), ledger's frozen-union line amended by manager.
-- [ ] Slice B — dashboard + docs: inspector renders partial traces
-      ("crashed mid-turn — partial trace" marker, new error event
-      type); health panel bridge-tool dash becomes "timed by your
-      service" (labels rule); AGENT-TOOLS trace truth-table + guide
-      incident sentence; todo close-out.
-CUT: bridge-reported durations (protocol+SDK for an unmeasured number),
-incremental per-step trace persistence (happy-path write per model call
-to cover only SIGKILL, which the dead note already marks).
+- [x] Slice B — DONE 2026-08-28: inspector error-event arm (turn
+      failed at Xs · message, red, always last — the NaN fallthrough
+      hazard closed); system rows RENDER TRACES now (they never did —
+      slice A's crashed trace would have been invisible; note-only
+      turns' traces now visible too, accepted as P21 working as
+      intended); raw.crashed → API mapper (sent only when true, every
+      pre-A13 row byte-identical on the wire); AGENT-TOOLS 4-row
+      trace truth-table + guide §13 crashed-turn paragraph.
+      MANAGER RULING on my own spec error: the "timed by your
+      service" bridge label was built as specced but the agent proved
+      the premise false — bridge agents get NO tool rows at all
+      (cmp-report's null-duration rows were ~48 TEST-FIXTURE managed
+      agents with stubbed tools, not his bridge agent), so the label
+      could only ever appear on a repointed agent where it would
+      MISATTRIBUTE rows we timed. Label reverted; docs state the
+      no-table truth instead.
+
+PHASE REVIEW (built 2026-08-28; awaiting user E2E + push): suite
+1124→1132 (verified by manager's own run), root+dashboard tsc clean.
+A crashed turn now leaves its partial trace on the dead/error note
+(same raw.trace key, raw.crashed marker, winner-takes-it dedupe with
+the DLQ hook, SIGKILL limit stated); the inspector renders it with the
+death moment in red; docs tell the truth incl. what the trace CAN'T
+show. Premise correction recorded: G4 already timed managed tools —
+the backlog item's "avgMs null" was test-fixture pollution misread.
+CUT: bridge-reported durations, per-step trace persistence.
 
 ### Phase A10 — kill-switch + config-as-code (plan approved 2026-08-26;
 user rescoped the A10 set: handoff-SLA + active-alerting REMOVED)

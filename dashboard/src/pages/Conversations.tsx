@@ -56,7 +56,15 @@ type TraceEvent =
       cacheWrite?: number;
     }
   | { t: 'tool_call'; name: string; ms: number; ok: boolean; paused?: boolean }
-  | { t: 'bridge_post'; ms: number; status: number; ok: boolean };
+  | { t: 'bridge_post'; ms: number; status: number; ok: boolean }
+  /**
+   * A13 — the error that ENDED the turn. Always last in `events`, and present
+   * only on a trace that reached the transcript through a failure path. `atMs`
+   * is an OFFSET from the start of the turn (the moment it stopped), not a
+   * duration like the `ms` on every variant above — so it is rendered as
+   * "turn failed at 3.2s", never as a span.
+   */
+  | { t: 'error'; atMs: number; message: string };
 
 interface Trace {
   totalMs: number;
@@ -70,6 +78,12 @@ interface TranscriptMessage {
   createdAt: string;
   /** The turn's execution trace — drives the expandable "Turn details". */
   trace?: Trace | null;
+  /**
+   * A13 — set on the system note of a turn that DIED: its `trace` stops where
+   * the turn stopped instead of describing a finished turn. Absent everywhere
+   * else, including on notes from turns that ended normally.
+   */
+  crashed?: boolean;
   /** Buttons the agent offered under this reply. */
   buttons?: Array<{ id: string; label: string }>;
   /** A card the agent offered under this reply (select choices or a text input). */
@@ -273,16 +287,23 @@ function Dot({ color }: { color: string }) {
 }
 
 /**
- * The usage line for a traced agent turn, doubling as a toggle into "Turn
- * details" — one row per model call, its tool calls (indented), and the bridge
- * POST. Collapsed by default; failure shows via a dot, never colored text.
+ * The usage line for a traced turn, doubling as a toggle into "Turn details" —
+ * one row per model call, its tool calls (indented), and the bridge POST.
+ * Collapsed by default; a failed step shows via a dot, never colored text.
+ *
+ * The one exception is A13's terminal `error` event: it is not a step that went
+ * wrong inside a turn that still finished, it is the turn's death, so it gets
+ * the `--err` status colour. `crashed` marks the whole section as the partial
+ * trace of a turn that never reached the customer.
  */
 function MessageTrace({
   trace,
+  crashed,
   expanded,
   onToggle,
 }: {
   trace: Trace;
+  crashed?: boolean;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -297,6 +318,9 @@ function MessageTrace({
   let modelN = 0;
   return (
     <div className="mt-1.5">
+      {crashed && (
+        <p className="mb-0.5 text-[11px] text-t3">crashed mid-turn — partial trace</p>
+      )}
       <button
         type="button"
         aria-expanded={expanded}
@@ -354,6 +378,18 @@ function MessageTrace({
                       <Mono className="text-t3">failed</Mono>
                     </span>
                   )}
+                </div>
+              );
+            }
+            // A13: the turn's death. `atMs` is WHEN it happened, not how long
+            // it took, so it reads as a moment ("turn failed at 3.2s") — and it
+            // is always the last event, which is why it closes the list.
+            if (e.t === 'error') {
+              return (
+                <div key={i} className="text-[11px]">
+                  <Mono className="break-words text-err">
+                    turn failed at {fmtMs(e.atMs)} · {e.message}
+                  </Mono>
                 </div>
               );
             }
@@ -682,9 +718,26 @@ export function ConversationDetailPage() {
             >
             {data.messages.map((m) =>
               m.role === 'system' ? (
-                <p key={m.id} className="my-2 text-center text-[11px] text-t3">
-                  {m.content} · {timeAgo(m.createdAt)}
-                </p>
+                // A13: a note is a turn too — and a crashed turn's note is the
+                // ONLY row that carries how far the turn got. So the note keeps
+                // its centered one-liner and gains the same "Turn details"
+                // expander an agent reply has, whenever the row carries a trace
+                // (a traceless note renders exactly as it always did).
+                <div key={m.id} className="my-2 flex flex-col items-center">
+                  <p className="text-center text-[11px] text-t3">
+                    {m.content} · {timeAgo(m.createdAt)}
+                  </p>
+                  {m.trace && m.trace.events.length > 0 && (
+                    <div className="min-w-0 max-w-full text-left">
+                      <MessageTrace
+                        trace={m.trace}
+                        crashed={m.crashed}
+                        expanded={expandedTraces.has(m.id)}
+                        onToggle={() => toggleTrace(m.id)}
+                      />
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div
                   key={m.id}
