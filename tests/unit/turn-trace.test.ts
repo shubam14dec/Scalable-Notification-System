@@ -17,7 +17,7 @@ import { buildApp } from '../../src/api/app';
 import { closeQueues } from '../../src/shared/queues';
 import { redis } from '../../src/shared/redis';
 import { pool } from '../../src/db/pool';
-import { runManagedTurn, type TurnTraceEvent } from '../../src/core/managed-brain';
+import { runManagedTurn, partialTraceOf, type TurnTraceEvent } from '../../src/core/managed-brain';
 import {
   getAgentById,
   getConversation,
@@ -252,15 +252,20 @@ describe('runManagedTurn trace', () => {
     expect(res.trace.totalMs).toBeGreaterThanOrEqual(0);
   });
 
-  test('(g) a transient model failure propagates; the trace is not returned on a thrown turn', async () => {
-    // The catch block pushes a failed model_call event onto the trace, but the
-    // turn rethrows (TransientError) — so no trace is returned here. A thrown
-    // turn's trace survives only if a later persist point runs, and a crash has
-    // none (managed-brain D7). We assert the propagation; there is nothing to
-    // skip — this path is reachable.
+  test('(g) a transient model failure propagates AND carries its partial trace (A13)', async () => {
+    // There is still no RETURN value on a thrown turn — the trace rides the
+    // error instead (A13 replaced D7's "a crash has no persist point"): the
+    // failed model_call this catch pushed, plus the fatal error event, pinned to
+    // an error that is otherwise untouched.
     throwMode = true;
     try {
-      await expect(runManagedTurn(agent, conversation, subscriber, [], inbound())).rejects.toThrow(/brain call failed/);
+      const err = await runManagedTurn(agent, conversation, subscriber, [], inbound()).catch((e) => e);
+      expect((err as Error).message).toMatch(/brain call failed/);
+      const partial = partialTraceOf(err)!;
+      expect(partial).toBeDefined();
+      expect(partial.events.map((e) => e.t)).toEqual(['model_call', 'error']);
+      expect(partial.events[0]).toMatchObject({ t: 'model_call', stopReason: 'error' });
+      expect(partial.totalMs).toBeGreaterThanOrEqual(0);
     } finally {
       throwMode = false;
     }

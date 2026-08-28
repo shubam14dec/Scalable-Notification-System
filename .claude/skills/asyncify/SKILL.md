@@ -433,9 +433,12 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   worse than misses) -> ONE in-turn corrective re-ask -> platformNote-
   tagged deterministic fallback if it leaks twice (fold mechanism from
   the budget note — never replayed/imitable). Record via breadcrumb
-  raw flag {reasoningLeak:true}, NEVER a new TurnTraceEvent variant:
-  the trace union is frozen and the dashboard renders unknown events
-  via an else-fallthrough (would paint NaN).
+  raw flag {reasoningLeak:true}, NEVER a new TurnTraceEvent variant
+  for something a raw flag can carry. A variant is only for a real
+  event on the turn's timeline (first exception: A13's `error`), and
+  it ships with its dashboard renderer arm IN THE SAME PHASE — the
+  trace renderer's else-fallthrough paints "bridge POST · NaN ·
+  undefined" for any variant it doesn't know.
 - **FCM web SW must NOT showNotification for notification payloads**
   (Phase 20 E2E, user counted 4 banners for 1 trigger): the Firebase SDK
   AUTO-displays every notification-carrying push (title/body/image, and

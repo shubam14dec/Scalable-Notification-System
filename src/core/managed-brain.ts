@@ -113,20 +113,70 @@ export interface TurnUsage {
 }
 
 /**
- * One event in a turn's execution trace (FROZEN shape — dashboard + API slices
- * build against it). Discriminated on `t`: a model round, a tool call, or the
- * bridge POST (emitted by the bridge runtime in the conversation processor, not
- * here). A union must be a `type`, not an `interface`.
+ * One event in a turn's execution trace (dashboard + API slices build against
+ * it). Discriminated on `t`: a model round, a tool call, the bridge POST
+ * (emitted by the bridge runtime in the conversation processor, not here), or —
+ * A13 — the error that ended the turn. A union must be a `type`, not an
+ * `interface`.
+ *
+ * The union was FROZEN through A12 for one concrete reason: the dashboard's
+ * trace renderer identifies model_call and tool_call and treats EVERYTHING ELSE
+ * as a bridge_post, so an unknown variant paints "bridge POST · NaN ·
+ * undefined". `error` is the first variant added since, and it is added with
+ * that debt named: it appears ONLY on a crashed turn's note — rows that carried
+ * no trace at all before A13 — and the renderer arm for it is A13 slice B. The
+ * rule the freeze really encoded still stands: never add a variant to record
+ * something a raw flag can carry (see the reasoningLeak breadcrumb); a variant
+ * is for a real event on the turn's timeline, which the fatal error is.
  */
 export type TurnTraceEvent =
   | { t: 'model_call'; ms: number; inputTokens: number; outputTokens: number; stopReason: string | null; model: string; cacheRead?: number; cacheWrite?: number }
   | { t: 'tool_call'; name: string; ms: number; ok: boolean; paused?: true }
-  | { t: 'bridge_post'; ms: number; status: number; ok: boolean };
+  | { t: 'bridge_post'; ms: number; status: number; ok: boolean }
+  // A13: always LAST in the events array, and only present on a trace that
+  // reached the transcript through a failure path. `atMs` is an OFFSET from the
+  // start of the turn, deliberately not named `ms` like the durations above:
+  // the error has no span of its own, it is the moment the turn stopped.
+  | { t: 'error'; atMs: number; message: string };
 
 /** A turn's execution trace: wall-clock total + the ordered events. */
 export interface TurnTrace {
   totalMs: number;
   events: TurnTraceEvent[];
+}
+
+/**
+ * A13 — the partial trace of a turn that DIED, carried on the thrown error.
+ *
+ * A turn's events accumulate in memory and, before A13, were persisted only
+ * when the turn finished: every failure path wrote a traceless note, so the
+ * Turn Inspector went blind at exactly the moment someone needed to see how far
+ * the turn got. The trace now rides the error itself.
+ *
+ * A SYMBOL property, not a subclass and not a field: the error keeps its own
+ * class, message and cause (a PermanentError stays `instanceof PermanentError`,
+ * which the processor's two catch blocks branch on), and because the property
+ * is non-enumerable and symbol-keyed, nothing that logs, serializes or
+ * structured-clones an error can accidentally start emitting a whole trace.
+ */
+const PARTIAL_TRACE = Symbol('asyncify.partialTrace');
+
+/** Attach a failed turn's partial trace to the error being thrown; returns it. */
+export function attachPartialTrace<E>(err: E, trace: TurnTrace): E {
+  if (err !== null && typeof err === 'object') {
+    Object.defineProperty(err, PARTIAL_TRACE, {
+      value: trace,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return err;
+}
+
+/** The partial trace a thrown turn left behind, or undefined for any other error. */
+export function partialTraceOf(err: unknown): TurnTrace | undefined {
+  if (err === null || typeof err !== 'object') return undefined;
+  return (err as Record<symbol, TurnTrace | undefined>)[PARTIAL_TRACE];
 }
 
 /** A single tappable choice attached to a reply (present_buttons tool). */
@@ -788,53 +838,75 @@ export async function runManagedTurn(
     state: { resolved: false },
   };
 
-  // ---- Phase A6: the router ----
-  // PRECEDENCE — candidate > routing > agent default. A candidate turn is an
-  // eval/canary run grading one SPECIFIC config; rerouting it to a cheap model
-  // would grade a config nobody asked about and quietly corrupt the scores (and
-  // a pre-save check that passed on the cheap model proves nothing about the
-  // edit). So a candidate switches the router off for that turn — UNLESS the
-  // candidate names a routing config of its own (slice B), in which case the
-  // router is part of what is being graded and that config is what runs. The
-  // rule is the same one it always was, applied to one more field: an eval
-  // grades the config it was GIVEN.
-  const strongModel = opts?.candidate?.model ?? agent.model ?? DEFAULT_MODEL;
-  // The absent/null/object precedence lives in cheapModelFor (above), shared
-  // with A7's topic gate so the two can never drift; '' means "routing does not
-  // apply to this turn", which is exactly today's path.
-  const cheapModel = cheapModelFor(agent.routing, opts?.candidate);
+  // A13: everything from here on is wrapped so a turn that DIES still hands its
+  // caller what it managed to do. The wrapper starts below the trace
+  // declarations on purpose — a failure above them (no credentials, a blocked
+  // base URL, an unreachable database) happened before the turn had a timeline
+  // to show, and moving `start` up to cover it would silently redefine
+  // `totalMs` on every SUCCESSFUL turn to include setup. Nothing about the
+  // happy path changes here: this try adds no work and returns the same values.
+  try {
+    // ---- Phase A6: the router ----
+    // PRECEDENCE — candidate > routing > agent default. A candidate turn is an
+    // eval/canary run grading one SPECIFIC config; rerouting it to a cheap model
+    // would grade a config nobody asked about and quietly corrupt the scores (and
+    // a pre-save check that passed on the cheap model proves nothing about the
+    // edit). So a candidate switches the router off for that turn — UNLESS the
+    // candidate names a routing config of its own (slice B), in which case the
+    // router is part of what is being graded and that config is what runs. The
+    // rule is the same one it always was, applied to one more field: an eval
+    // grades the config it was GIVEN.
+    const strongModel = opts?.candidate?.model ?? agent.model ?? DEFAULT_MODEL;
+    // The absent/null/object precedence lives in cheapModelFor (above), shared
+    // with A7's topic gate so the two can never drift; '' means "routing does not
+    // apply to this turn", which is exactly today's path.
+    const cheapModel = cheapModelFor(agent.routing, opts?.candidate);
 
-  if (cheapModel.length === 0) {
-    // Routing off / misconfigured / overridden: byte-identical to pre-A6 — one
-    // attempt on the agent's model, and NO `routing` key on the result.
-    return mustFinish(await runTurnAttempt(ctx, strongModel, false));
+    if (cheapModel.length === 0) {
+      // Routing off / misconfigured / overridden: byte-identical to pre-A6 — one
+      // attempt on the agent's model, and NO `routing` key on the result.
+      return mustFinish(await runTurnAttempt(ctx, strongModel, false));
+    }
+
+    const cheap = await runTurnAttempt(ctx, cheapModel, true);
+    if (cheap.outcome === 'done') {
+      return { ...cheap.result, routing: { model: cheapModel, escalated: false } };
+    }
+
+    // ESCALATION. The cheap attempt executed nothing consequential (the safe-tool
+    // law is checked before any tool runs), so the turn is re-run from scratch: a
+    // fresh copy of baseMessages, a fresh MAX_MODEL_CALLS budget — it is a new
+    // turn, and the cheap attempt's calls do not spend the strong model's rounds.
+    //
+    // WORST CASE, stated plainly: one wasted cheap round-trip. Cost is
+    // (cheap turn + strong turn) ≈ 1.05-1.15x a plain strong turn, and latency is
+    // the cheap attempt's wall-clock added in front of the normal turn — usually
+    // the smallest, fastest call of the turn, since escalation is decided on the
+    // FIRST response that asks for a tool. The win is that tier-1 traffic (chat
+    // that never reaches for anything) never pays for the strong model at all.
+    const strong = mustFinish(await runTurnAttempt(ctx, strongModel, false));
+    return {
+      ...strong,
+      routing: {
+        model: strongModel,
+        escalated: true,
+        ...(cheap.trigger ? { trigger: cheap.trigger } : {}),
+      },
+    };
+  } catch (err) {
+    // The turn's own record of its death, appended to the events the attempt(s)
+    // already pushed (a failed model call has ALREADY traced its own
+    // stopReason:'error' round above — this event is the classified outcome, not
+    // a duplicate of it). Then the error propagates untouched: same class, same
+    // message, same cause, so every existing catch — PermanentError → transcript
+    // note, anything else → BullMQ retry — behaves exactly as before.
+    events.push({
+      t: 'error',
+      atMs: Date.now() - start,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    throw attachPartialTrace(err, trace());
   }
-
-  const cheap = await runTurnAttempt(ctx, cheapModel, true);
-  if (cheap.outcome === 'done') {
-    return { ...cheap.result, routing: { model: cheapModel, escalated: false } };
-  }
-
-  // ESCALATION. The cheap attempt executed nothing consequential (the safe-tool
-  // law is checked before any tool runs), so the turn is re-run from scratch: a
-  // fresh copy of baseMessages, a fresh MAX_MODEL_CALLS budget — it is a new
-  // turn, and the cheap attempt's calls do not spend the strong model's rounds.
-  //
-  // WORST CASE, stated plainly: one wasted cheap round-trip. Cost is
-  // (cheap turn + strong turn) ≈ 1.05-1.15x a plain strong turn, and latency is
-  // the cheap attempt's wall-clock added in front of the normal turn — usually
-  // the smallest, fastest call of the turn, since escalation is decided on the
-  // FIRST response that asks for a tool. The win is that tier-1 traffic (chat
-  // that never reaches for anything) never pays for the strong model at all.
-  const strong = mustFinish(await runTurnAttempt(ctx, strongModel, false));
-  return {
-    ...strong,
-    routing: {
-      model: strongModel,
-      escalated: true,
-      ...(cheap.trigger ? { trigger: cheap.trigger } : {}),
-    },
-  };
 }
 
 /**
@@ -894,9 +966,11 @@ async function runTurnAttempt(
         }),
       );
     } catch (err) {
-      // Trace the failed call (elapsed, no tokens) before classifying — D7: the
-      // trace only survives if a LATER persist point runs, and a thrown call is
-      // rethrown exactly as before (no new persistence path for crashes).
+      // Trace the failed call (elapsed, no tokens) before classifying. A13: this
+      // event is why a crashed turn is worth persisting at all — whatever this
+      // catch throws next leaves runManagedTurn through the wrapper below, which
+      // appends the fatal `error` event and pins the whole partial trace to the
+      // error for the processor to write onto the crash note.
       events.push({ t: 'model_call', ms: Date.now() - callStart, inputTokens: 0, outputTokens: 0, stopReason: 'error', model });
       // A6 ERROR-ESCALATION. A cheap model that 400s on an unknown id, rejects
       // the key, or returns something unparseable is a ROUTING fault, and a

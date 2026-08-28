@@ -6,6 +6,37 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A13 — Turn Inspector truthful on crashes + bridge-tool labeling
+(plan approved 2026-08-28)
+PREMISE CORRECTION found during planning: the backlog's "per-tool avgMs
+currently null" was STALE — Phase 22 G4 already stopwatches BOTH managed
+paths (30/30 recent managed rows carry duration_ms); the only nulls are
+BRIDGE-reported calls (cmp-report's refund, 129/129 null), where the
+customer's service runs the tool and no wall-clock exists on our side.
+So item 1 shrinks to honest labeling; item 2 (crash-mid-turn traces) is
+the real work.
+- [x] Slice A — DONE 2026-08-28 (suite 1124→1132, verified by
+      manager's own run): symbol-keyed carrier (attachPartialTrace /
+      partialTraceOf — error keeps its class, nothing serializing an
+      error leaks a trace); `{t:'error', atMs, message}` event (atMs
+      offset, NOT ms — ms means duration elsewhere); trace rides
+      raw.trace + raw.crashed on the dead note under the SAME dedupe
+      key as the DLQ hook (extracted DEAD_TURN_NOTE constant, two
+      writers can't drift); bridge failure traces never invent a POST
+      that wasn't dialed; setup-phase failures stay traceless BY
+      CHOICE (no timeline existed — hoisting start would change
+      happy-path totalMs). Agent caught: dashboard else-fallthrough
+      paints NaN for unknown variants (slice B MUST ship the renderer
+      arm), ledger's frozen-union line amended by manager.
+- [ ] Slice B — dashboard + docs: inspector renders partial traces
+      ("crashed mid-turn — partial trace" marker, new error event
+      type); health panel bridge-tool dash becomes "timed by your
+      service" (labels rule); AGENT-TOOLS trace truth-table + guide
+      incident sentence; todo close-out.
+CUT: bridge-reported durations (protocol+SDK for an unmeasured number),
+incremental per-step trace persistence (happy-path write per model call
+to cover only SIGKILL, which the dead note already marks).
+
 ### Phase A10 — kill-switch + config-as-code (plan approved 2026-08-26;
 user rescoped the A10 set: handoff-SLA + active-alerting REMOVED)
 KILL-SWITCH: agents.paused_at timestamptz (null = live; deliberately

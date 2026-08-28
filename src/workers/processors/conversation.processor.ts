@@ -15,9 +15,12 @@ import {
   runManagedTurn,
   postCustomToolCall,
   deniedResult,
+  attachPartialTrace,
+  partialTraceOf,
   DEFAULT_MODEL,
   type TurnUsage,
   type TurnTrace,
+  type TurnTraceEvent,
   type TurnRouting,
   type CandidateConfig,
 } from '../../core/managed-brain';
@@ -191,6 +194,13 @@ const PAUSED_HOLD_NOTE =
   'Our team is taking over this conversation — a person will be with you shortly.';
 /** Minimum wall-clock gap between plan-card progress edits (throttle floor). */
 const PLAN_CARD_EDIT_SPACING_MS = 1000;
+/**
+ * What the transcript says when a turn ran out of attempts. TWO writers race for
+ * this row under the same dedupe key — the DLQ hook (onConversationDead) and
+ * A13's final-attempt write in processTurn — so the wording lives in one place:
+ * whichever wins, the customer-visible sentence is identical.
+ */
+const DEAD_TURN_NOTE = 'agent unreachable — this message was not answered';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -239,11 +249,69 @@ export async function processConversation(job: Job<ConversationJobData>): Promis
   if (job.data.kind === 'deliver') return processDeliver(job.data);
   if (job.data.kind === 'resolved') return processResolved(job.data);
   if (job.data.kind === 'tool-decision') return processToolDecision(job.data);
-  return processTurn(job.data);
+  // A13: the turn hop is the only one that needs the JOB and not just its data —
+  // a crashed turn's partial trace is worth persisting on the LAST attempt, and
+  // only the job knows which attempt this is.
+  return processTurn(job.data, job);
+}
+
+/**
+ * A13 — is this the last attempt BullMQ will make at this job?
+ *
+ * Turn jobs are enqueued with `attempts: 5` at every call site. Both fallbacks
+ * are deliberate rather than defensive: a job with no `attempts` gets exactly
+ * one run by BullMQ's own default, so "attempt 1 of 1" IS the final attempt, and
+ * that is also what a hand-built job object in a test means.
+ */
+function isFinalAttempt(job: Job<ConversationJobData>): boolean {
+  return (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+}
+
+/**
+ * A13 — persist a crashed turn's partial trace on its LAST attempt, then let the
+ * error keep going.
+ *
+ * The row is the DEAD NOTE itself, under the same `dead-<messageId>` dedupe key
+ * onConversationDead uses: the two writers race, the winner takes the row, and
+ * the loser's insert no-ops on the dedupe conflict (insertConversationMessage is
+ * `on conflict do nothing`). The transcript can therefore never show two dead
+ * notes, and the copy that carries the trace is the one that gets there first —
+ * this one, because it runs before the job is marked failed.
+ *
+ * Best-effort by construction: a failure to write bookkeeping must never mask
+ * the error that actually killed the turn, and must never turn a retryable
+ * failure into a different one.
+ *
+ * THE LIMIT, stated where the write happens: this only fires if the process
+ * lives long enough to run this catch. A hard kill — OOM, SIGKILL, an evicted
+ * container — takes the in-memory trace with it, the job is later reclaimed as
+ * stalled, and the turn ends at onConversationDead's plain traceless dead note,
+ * exactly as every crash did before A13. In-memory traces cannot survive a
+ * process that stops existing; persisting events as they happen would be a
+ * write per model call on the hot path, which lesson §5 rules out.
+ */
+async function noteCrashedTurn(
+  conversation: Conversation,
+  messageId: string,
+  err: unknown,
+  job: Job<ConversationJobData>,
+): Promise<void> {
+  const partial = partialTraceOf(err);
+  // No trace = nothing this row could say that the DLQ hook's own note doesn't
+  // already say, so the crash path stays untouched for every other failure.
+  if (!partial || !isFinalAttempt(job)) return;
+  await insertConversationMessage({
+    conversationId: conversation.id,
+    tenantId: conversation.tenant_id,
+    role: 'system',
+    content: DEAD_TURN_NOTE,
+    dedupeKey: `dead-${messageId}`,
+    raw: { trace: partial, crashed: true },
+  }).catch((e) => logger.warn({ err: e }, 'failed to record a crashed turn trace'));
 }
 
 /** The inbound-turn hop (default kind): dispatch one user turn, apply the reply. */
-async function processTurn(data: ConversationJobData): Promise<void> {
+async function processTurn(data: ConversationJobData, job: Job<ConversationJobData>): Promise<void> {
   if (!data.messageId) return;
   const { tenantId, conversationId, messageId } = data;
 
@@ -1151,7 +1219,20 @@ async function processTurn(data: ConversationJobData): Promise<void> {
             /* best-effort — the systemNote below is the durable record */
           }
         }
-        await systemNote(conversation, messageId, 0, err.message);
+        // A13: the note carries how far the turn got, under the SAME `raw.trace`
+        // key the successful paths use (the reply row and the turn-note
+        // breadcrumb above), so every trace reader is already pointed at it and
+        // the inspector needs no second lookup. `crashed` is the flag that says
+        // this trace ends in a death rather than a delivery — a raw flag, the
+        // reasoningLeak idiom, not a second shape for the trace itself.
+        const partial = partialTraceOf(err);
+        await systemNote(
+          conversation,
+          messageId,
+          0,
+          err.message,
+          partial ? { trace: partial, crashed: true } : undefined,
+        );
         logExec({
           tenantId,
           transactionId: `conv-${conversationId}`,
@@ -1160,6 +1241,10 @@ async function processTurn(data: ConversationJobData): Promise<void> {
         });
         return;
       }
+      // Retryable: the job must still fail so BullMQ's accounting stays honest.
+      // On the LAST attempt, the dead note is written here first — while the
+      // trace is still in memory (see noteCrashedTurn).
+      await noteCrashedTurn(conversation, messageId, err, job);
       throw err;
     }
     // A8: the limit is INGRESS protection, not brain config, so it applies to a
@@ -1188,7 +1273,17 @@ async function processTurn(data: ConversationJobData): Promise<void> {
       // (missing/blocked bridge URL) can't be fixed by retrying — surface
       // it in the transcript and stop, instead of burning attempts.
       if (err instanceof PermanentError) {
-        await systemNote(conversation, messageId, 0, err.message);
+        // A13, same contract as the managed branch: raw.trace + raw.crashed.
+        // For a bridge agent the trace is the attempted POST (status 0 when the
+        // dial itself failed) plus the error — see bridgeFailureTrace.
+        const partial = partialTraceOf(err);
+        await systemNote(
+          conversation,
+          messageId,
+          0,
+          err.message,
+          partial ? { trace: partial, crashed: true } : undefined,
+        );
         logExec({
           tenantId,
           transactionId: `conv-${conversationId}`,
@@ -1197,6 +1292,7 @@ async function processTurn(data: ConversationJobData): Promise<void> {
         });
         return;
       }
+      await noteCrashedTurn(conversation, messageId, err, job);
       throw err;
     }
   }
@@ -1636,22 +1732,55 @@ async function dispatchToBridge(
   });
 
   // D4 bridge parity: wall-clock the signed outbound POST and emit a bridge_post
-  // event — the bridge runtime's twin of the managed model_call trace. Built
-  // only on the success (2xx) path: postSignedToBridge throws on non-2xx /
-  // network / config failures, and those paths write no reply row for the trace
-  // to ride (the agent-unreachable DLQ note is out of reach — see report).
+  // event — the bridge runtime's twin of the managed model_call trace.
+  //
+  // A13: the failure paths are traced too. postSignedToBridge pins a partial
+  // trace to everything it throws (see bridgeFailureTrace); this function owns
+  // the one failure it can reach on its own — a 2xx whose BODY is not a bridge
+  // response — and that trace carries the real bridge_post event plus the error,
+  // which is precisely the pair that tells an operator "your service answered,
+  // fast, with the wrong shape".
   const postStart = Date.now();
   const response = await postSignedToBridge(agent, rawBody);
   const postMs = Date.now() - postStart;
-  const trace: TurnTrace = {
-    totalMs: postMs,
-    events: [{ t: 'bridge_post', ms: postMs, status: response.status, ok: response.ok }],
-  };
+  const post: TurnTraceEvent = { t: 'bridge_post', ms: postMs, status: response.status, ok: response.ok };
+  const trace: TurnTrace = { totalMs: postMs, events: [post] };
   const parsed = BridgeResponseSchema.safeParse(await response.json().catch(() => null));
   if (!parsed.success) {
-    throw new Error(`bridge returned an invalid response for agent ${agent.identifier}`);
+    const err = new Error(`bridge returned an invalid response for agent ${agent.identifier}`);
+    const atMs = Date.now() - postStart;
+    throw attachPartialTrace(err, {
+      totalMs: atMs,
+      events: [post, { t: 'error', atMs, message: err.message }],
+    });
   }
   return { ...parsed.data, trace };
+}
+
+/**
+ * A13 — the partial trace for a bridge POST that never produced a reply.
+ *
+ * The bridge_post event mirrors the success path's shape EXACTLY: same `t`,
+ * same fields, and still no URL and no host. The frozen event has never carried
+ * the endpoint, and a failure is not the place to start leaking a tenant's
+ * internal hostname into a transcript row the dashboard renders. `status: 0`
+ * means "we dialed and got no HTTP answer at all" (connect refused, timeout,
+ * DNS); a config fault that never dialed passes `dialed: false` and emits no
+ * bridge_post event, because inventing a POST that never left the process is
+ * exactly the kind of lie a trace exists to prevent.
+ *
+ * Wall-clock is measured from the start of the transport call — the only clock
+ * this runtime has, since the bridge is a black box between the two.
+ */
+function bridgeFailureTrace(startedAt: number, message: string, dialed: boolean, status = 0): TurnTrace {
+  const ms = Date.now() - startedAt;
+  return {
+    totalMs: ms,
+    events: [
+      ...(dialed ? [{ t: 'bridge_post', ms, status, ok: false } as TurnTraceEvent] : []),
+      { t: 'error', atMs: ms, message },
+    ],
+  };
 }
 
 /**
@@ -1665,8 +1794,15 @@ async function postSignedToBridge(
   agent: Agent,
   rawBody: string,
 ): Promise<Awaited<ReturnType<typeof safeFetch>>> {
+  // A13: every throw below leaves with the partial trace of the attempt pinned
+  // to it, so the turn's crash note can show what the bridge did (or that it
+  // was never dialed). Nothing on the success path changes.
+  const started = Date.now();
+  const traced = <E extends Error>(err: E, dialed: boolean, status = 0): E =>
+    attachPartialTrace(err, bridgeFailureTrace(started, err.message, dialed, status));
+
   if (!agent.bridge_url) {
-    throw new PermanentError(`bridge agent ${agent.identifier} has no bridge URL`);
+    throw traced(new PermanentError(`bridge agent ${agent.identifier} has no bridge URL`), false);
   }
   // SSRF gate, both halves: the assert catches literal private IPs (which
   // bypass custom DNS lookup), the dispatcher re-checks every resolved
@@ -1675,7 +1811,8 @@ async function postSignedToBridge(
     await assertSafeOutboundUrl(agent.bridge_url, { resolve: false });
   } catch (err) {
     if (err instanceof UnsafeOutboundUrlError) {
-      throw new PermanentError(`bridge URL blocked: ${err.message}`);
+      // Refused at write-time: nothing left this process, so no bridge_post.
+      throw traced(new PermanentError(`bridge URL blocked: ${err.message}`), false);
     }
     throw err;
   }
@@ -1705,15 +1842,21 @@ async function postSignedToBridge(
     // undici wraps connect-time failures ("fetch failed" → cause chain).
     for (let e: unknown = err; e instanceof Error; e = e.cause) {
       if (e instanceof UnsafeOutboundUrlError) {
-        throw new PermanentError(`bridge URL blocked: ${e.message}`);
+        // The connect-time half of the gate: the POST WAS attempted and the
+        // dispatcher killed it mid-dial, so it is traced as a dialed failure.
+        throw traced(new PermanentError(`bridge URL blocked: ${e.message}`), true);
       }
     }
-    throw err;
+    throw err instanceof Error ? traced(err, true) : err;
   } finally {
     clearTimeout(timer);
   }
   if (!response.ok) {
-    throw new Error(`bridge responded ${response.status} for agent ${agent.identifier}`);
+    throw traced(
+      new Error(`bridge responded ${response.status} for agent ${agent.identifier}`),
+      true,
+      response.status,
+    );
   }
   return response;
 }
@@ -2457,9 +2600,7 @@ export async function onConversationDead(job: Job): Promise<void> {
   if (!data.tenantId || !data.conversationId || !data.messageId) return;
 
   const deadNote =
-    data.kind === 'deliver'
-      ? 'agent message could not be delivered'
-      : 'agent unreachable — this message was not answered';
+    data.kind === 'deliver' ? 'agent message could not be delivered' : DEAD_TURN_NOTE;
 
   // Turn-ish dead job: the plan-card reply row may be frozen mid-progress
   // (⏳/✓/✗). Best-effort rewrite it to the dead note so the user isn't left
@@ -2487,6 +2628,11 @@ export async function onConversationDead(job: Job): Promise<void> {
     }
   }
 
+  // A13: this insert now NO-OPS whenever the final attempt already wrote the
+  // same row with its partial trace attached (same dedupe key, dedupe conflict
+  // = do nothing). That is the intended outcome — the richer row wins and the
+  // transcript still shows exactly one dead note. When the process was killed
+  // mid-turn there is no such row and this stays the only record, traceless.
   await insertConversationMessage({
     conversationId: data.conversationId,
     tenantId: data.tenantId,
