@@ -548,11 +548,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A10. Kill-switch + config-as-code — SHIPPED 2026-08-27 (0.8.7),
       review above (rescoped by user: handoff-SLA + active-alerting
       removed).
-- [ ] A11. Tool approval via workflow — deferred tool call fires a real
-      notification; approve from ANY channel; webhook resumes (Tier B,
-      composes buttons + trigger machinery; very demo-worthy).
-- [ ] A12. @asyncify-hq/agent-toolkit — workflows-as-LLM-tools + MCP
-      server + HITL wrapper (wraps the trigger API; cheap).
+- (REMOVED at user's instruction 2026-08-28) A11 tool-approval-via-
+      workflow and A12 @asyncify-hq/agent-toolkit — cut from the
+      backlog; do not re-pitch.
 - [ ] A13. P21 leftovers: agent_tool_calls execution-duration column
       (per-tool avgMs currently null); crash-mid-turn traces (D7).
 - [ ] A14. Channel polish cluster: Slack OAuth one-click install (13b) +
