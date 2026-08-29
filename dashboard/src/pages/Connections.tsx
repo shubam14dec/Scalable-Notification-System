@@ -34,6 +34,11 @@ interface Connection {
     /** Slack quick-setup only: 'on' when a refresh token keeps URLs current,
      *  'broken' once that token expired. Absent on manual/plain connections. */
     manifestAutoUpdate?: 'on' | 'broken';
+    /** Slack only: how the connection was made. 'quick' rows were built by
+     *  apps.manifest.create and can accept config-token repairs; 'manual' rows
+     *  are a pasted bot token and cannot. A string, not a flag — a future
+     *  provenance slots in without changing this type. */
+    setup?: 'quick' | 'manual';
   };
   agent: { identifier: string; name: string };
   webhook: {
@@ -958,9 +963,12 @@ function SlackManual({
  * Manifest auto-update state + repair, in a slack row's expanded section.
  * 'broken' gets a warning with an always-visible paste-and-re-arm field;
  * healthy rows get a quiet "re-arm auto-update" action that reveals the same
- * field (idempotent — a fresh refresh token is legitimate any time). Manual
- * slack rows can't be told apart client-side (both carry appId), so the
- * action renders there too and the API's 409 explains itself inline.
+ * field (idempotent — a fresh refresh token is legitimate any time).
+ *
+ * QUICK-SETUP ROWS ONLY — the caller gates on config.setup. A manual (pasted
+ * bot token) connection has no config-token chain to re-arm, so the endpoint
+ * can only ever answer 409; it gets nothing here rather than a control whose
+ * single outcome is an error.
  */
 function SlackAutoUpdate({ conn, onUpdated }: { conn: Connection; onUpdated: () => void }) {
   const broken = conn.config.manifestAutoUpdate === 'broken';
@@ -1530,7 +1538,9 @@ export default function ConnectionsPage() {
                       <tr>
                         <td className={`${td} pt-0`} colSpan={6}>
                           <div className="space-y-3">
-                            <SlackAutoUpdate conn={c} onUpdated={invalidate} />
+                            {c.config.setup === 'quick' && (
+                              <SlackAutoUpdate conn={c} onUpdated={invalidate} />
+                            )}
                             {c.webhook.eventsUrl && (
                               <Field label="Events URL — Event Subscriptions → Request URL">
                                 <CopyField value={c.webhook.eventsUrl} />

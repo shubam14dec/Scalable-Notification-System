@@ -440,8 +440,10 @@ create index if not exists link_tokens_expiry_idx
 -- {publicUrl}/handoff/<token>, pastes the BotFather message, and the
 -- parsed bot token is SEALED into payload until the authed dashboard
 -- poll reads it exactly once (payload nulled on read). Token stored
--- hashed only; used_at set atomically on paste; expired rows purged by
--- the inactivity-sweep tick alongside link tokens.
+-- hashed only; used_at set atomically on paste. Expired rows are purged
+-- tenant-wide by the inactivity-sweep tick alongside link tokens
+-- (purgeDeadSetupHandoffs), one indexed delete, 1 hour after expires_at —
+-- the grace keeps a just-finished session readable by the dashboard poll.
 create table if not exists setup_handoffs (
   id             uuid primary key default gen_random_uuid(),
   tenant_id      uuid not null references tenants(id),

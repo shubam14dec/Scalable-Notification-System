@@ -6,6 +6,35 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A14 — channel polish, rescoped (plan approved 2026-08-30)
+Investigation found 2 of 6 backlog items ALREADY SHIPPED (telegram QR
+= Phase 17 both flavors; welcome message live on widget/telegram/slack)
+and 1 near-moot. Shipping three honesty/hygiene fixes in ONE slice:
+- [x] Slice DONE 2026-08-30 (suite 1132→1140, verified by manager's
+      own run; root+dashboard tsc clean):
+      1. welcomeMessage '' → 400 naming "send null" via the SHARED
+      schema (create+patch+import refuse with identical zod paths —
+      proven by a BAD_KNOBS row); dashboard already sent null for
+      blank, unchanged. sdk-node doc comment deferred (not worth a
+      release cycle alone — next slice touching that package adds it).
+      2. setup:'quick'|'manual' from the SEALED CREDS shape
+      (clientId&&appId — the same pair the re-arm endpoint tests, so
+      flag and 409 can never disagree; creds not config, since manual
+      rows can carry appId in config; unreadable creds → 'manual',
+      conservative). Re-arm affordance renders only on 'quick'.
+      3. purgeDeadSetupHandoffs in NEW src/db/handoffs.repo.ts
+      (agent's right call — identities.repo's scope is subscriber
+      identities; worker can't import an api route), piggybacked in
+      the sweep, 1h grace documented as LOAD-BEARING (dashboard poll
+      must outlive the token), mint-time purge deleted, schema.sql
+      comment now true.
+CUT: Slack CMD+A paste parser (quick-setup made the manual tab a
+fallback; polishing it is effort pointed backwards).
+PARKED — user directive 2026-08-30: "Add to Slack" one-click OAuth
+install (A14b) revives ONCE PROD IS DEPLOYED — needs a stable
+redirect URL + Slack distribution review + team_id-dispatch webhook
+rewrite; structurally impossible on rotating quick-tunnels.
+
 ### Phase A13 — SHIPPED 2026-08-29 (review)
 Turn Inspector truthful on crashes (plan approved 2026-08-28)
 PREMISE CORRECTION found during planning: the backlog's "per-tool avgMs

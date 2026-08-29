@@ -10,7 +10,7 @@ import { sealSecret, openSecret } from '../../auth/secret-box';
 import { telegram, type TelegramUpdate } from '../../channels/telegram';
 import type { Card } from '../../shared/cards';
 import { emailWebhookUrl } from './email-channel';
-import { slackWebhookUrls } from './slack';
+import { slackSetupKind, slackWebhookUrls } from './slack';
 import { upsertSubscriber } from '../../db/repositories';
 import { hashLinkToken } from './identities';
 import {
@@ -154,6 +154,7 @@ export async function connectionWebhookState(c: AgentConnection): Promise<{
   createdAt: string;
 }> {
   let webhook: unknown = null;
+  let config: Record<string, unknown> = c.config;
   if (c.channel === 'telegram') {
     try {
       const info = await telegram.getWebhookInfo(credentials(c).botToken);
@@ -175,8 +176,20 @@ export async function connectionWebhookState(c: AgentConnection): Promise<{
     // Like email: the USER pastes these into the Slack app config, so they
     // stay statically rebuildable here (no secret in them — routing is by id).
     webhook = await slackWebhookUrls(c.id);
+    // A14: provenance rides on the config bag so the dashboard can offer the
+    // quick-setup-only repairs (re-arm auto-update) on rows that can accept
+    // them — a control whose only possible answer is 409 should not exist.
+    //
+    // COST, deliberate and accepted: slackSetupKind DECRYPTS the sealed
+    // credential for every slack row on a per-tenant list endpoint. That
+    // endpoint already makes a live network round trip to Telegram per telegram
+    // row, so an in-process AES-GCM open on a handful of slack rows is not the
+    // expensive thing here — and the alternative (denormalising provenance into
+    // the config column) would need a backfill and could drift from the sealed
+    // truth the repair endpoints actually test.
+    config = { ...c.config, setup: slackSetupKind(c) };
   }
-  return { channel: c.channel, status: c.status, config: c.config, webhook, createdAt: c.created_at };
+  return { channel: c.channel, status: c.status, config, webhook, createdAt: c.created_at };
 }
 
 export function registerTelegramRoutes(app: FastifyInstance) {

@@ -15,6 +15,7 @@ import { runInactivitySweep } from '../../src/workers/inactivity-sweep';
 
 let app: FastifyInstance;
 let apiKey = '';
+let tenantId = '';
 
 const json = (res: { body: string }) => JSON.parse(res.body);
 
@@ -93,9 +94,11 @@ beforeAll(async () => {
   });
   const dev = json(signup).environments.find((e: { name: string }) => e.name === 'Development');
   apiKey = dev.apiKey;
+  tenantId = dev.id;
 });
 
 afterAll(async () => {
+  await pool.query('delete from setup_handoffs where tenant_id = $1', [tenantId]).catch(() => {});
   await app.close();
   await closeQueues();
   await redis.quit();
@@ -224,6 +227,65 @@ describe('the sweep', () => {
     // Still resolved, but with NO auto-resolve breadcrumb/summary rewrite.
     expect(detail.conversation.status).toBe('resolved');
     expect(detail.messages.some((m: { content: string }) => m.content.includes('auto-resolved'))).toBe(false);
+  });
+});
+
+/**
+ * A14: the sweep's piggybacked hygiene for phone-handoff sessions. Rows are
+ * minted through the REAL endpoint (never hand-inserted) and only their
+ * expires_at is backdated — the same "fake the clock, never the path" rule the
+ * conversation tests above follow.
+ */
+describe('the piggybacked setup_handoffs purge', () => {
+  const mint = async (): Promise<string> => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/ops/handoffs',
+      headers: { 'x-api-key': apiKey },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(201);
+    return json(res).handoffId as string;
+  };
+  const expireBy = async (id: string, minutesAgo: number) => {
+    await pool.query(
+      `update setup_handoffs set expires_at = now() - make_interval(mins => $2) where id = $1`,
+      [id, minutesAgo],
+    );
+  };
+  const exists = async (id: string): Promise<boolean> =>
+    (await pool.query('select 1 from setup_handoffs where id = $1', [id])).rowCount === 1;
+
+  test('rows past expires_at + 1h are purged; the grace window and live rows survive', async () => {
+    const dead = await mint();
+    const inGrace = await mint();
+    const live = await mint();
+    await expireBy(dead, 61); // just past the 1h grace
+    await expireBy(inGrace, 59); // expired, but a poll could still be coming
+    // `live` keeps its real 5-minute expiry.
+
+    await runInactivitySweep();
+
+    expect(await exists(dead)).toBe(false);
+    expect(await exists(inGrace)).toBe(true);
+    expect(await exists(live)).toBe(true);
+
+    await pool.query('delete from setup_handoffs where id = any($1)', [[inGrace, live]]);
+  });
+
+  test('minting no longer purges — only the sweep does', async () => {
+    const dead = await mint();
+    await expireBy(dead, 61);
+
+    // A second mint used to opportunistically delete this tenant's dead rows.
+    const fresh = await mint();
+    expect(await exists(dead)).toBe(true);
+
+    await runInactivitySweep();
+    expect(await exists(dead)).toBe(false);
+    expect(await exists(fresh)).toBe(true); // the sweep only takes the dead ones
+
+    await pool.query('delete from setup_handoffs where id = $1', [fresh]);
   });
 });
 

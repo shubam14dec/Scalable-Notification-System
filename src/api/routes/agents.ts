@@ -164,8 +164,21 @@ const SuggestedPromptSchema = z.object({
   message: z.string().min(1).max(200),
 });
 
-/** Shared by create + patch. null clears; absent leaves untouched. */
-const welcomeMessageSchema = z.string().max(2000).nullable().optional();
+/**
+ * Shared by create + patch. null clears; absent leaves untouched.
+ *
+ * An EMPTY STRING is refused rather than accepted-and-ignored. The repo writes
+ * this column through a `''`-means-clear sentinel (conversations.repo.ts), so a
+ * caller who sends `""` — a blank form field, a template that rendered to
+ * nothing — would silently WIPE the greeting instead of being told the value is
+ * meaningless. Clearing is an explicit act: send null.
+ */
+const welcomeMessageSchema = z
+  .string()
+  .min(1, 'welcomeMessage cannot be empty — to clear the welcome message, send null')
+  .max(2000)
+  .nullable()
+  .optional();
 const suggestedPromptsSchema = z.array(SuggestedPromptSchema).max(6).nullable().optional();
 
 /**

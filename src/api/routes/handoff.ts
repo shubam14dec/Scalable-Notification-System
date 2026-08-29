@@ -6,7 +6,6 @@ import { pool } from '../../db/pool';
 import { redis } from '../../shared/redis';
 import { getPublicUrl } from '../../config/public-url';
 import { sealSecret, openSecret } from '../../auth/secret-box';
-import { logger } from '../../shared/logger';
 import { logExec } from '../../core/execution-log';
 import { parseBotFatherToken } from '../../shared/botfather';
 
@@ -145,18 +144,9 @@ export function registerHandoffRoutes(app: FastifyInstance) {
     }
     const channel = parsed.data.channel ?? 'telegram';
 
-    // Opportunistic hygiene: the shared inactivity sweep lives outside this
-    // slice's files, so drop this tenant's long-expired rows here instead of
-    // in the sweep (see the divergence note in the slice report).
-    await pool
-      .query(
-        `delete from setup_handoffs
-          where tenant_id = $1 and expires_at < now() - interval '1 hour'`,
-        [req.tenant.id],
-      )
-      .catch((err) =>
-        logger.warn({ err: (err as Error).message }, 'handoff opportunistic purge failed'),
-      );
+    // A14: no opportunistic purge here. Expired rows are swept tenant-wide by
+    // the inactivity sweep (purgeDeadSetupHandoffs, 1h grace) — a tenant that
+    // stops minting used to leak its dead rows forever.
 
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(Date.now() + HANDOFF_TTL_MS);

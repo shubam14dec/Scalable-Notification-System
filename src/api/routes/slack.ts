@@ -66,6 +66,43 @@ export function credentials(connection: AgentConnection): SlackCredentials {
 }
 
 /**
+ * How this Slack connection came to exist — the provenance the listing surfaces
+ * so the dashboard can offer quick-setup-only repairs (re-arm auto-update) on
+ * the rows that can actually accept them.
+ *
+ * A STRING, not a boolean: a third provenance (a hosted OAuth install) is a
+ * plausible next channel, and it must be able to slot in without every reader
+ * of this field changing type.
+ */
+export type SlackSetupKind = 'quick' | 'manual';
+
+/**
+ * The discriminator is the SEALED CREDENTIAL SHAPE, because that is what the
+ * repair endpoints themselves test:
+ *
+ *   quick-setup  — apps.manifest.create returned the app's OWN OAuth
+ *                  credentials, so the row seals { clientId, clientSecret,
+ *                  signingSecret, appId } (+ botToken after the install).
+ *   manual       — the admin pasted a bot token, so the row seals exactly
+ *                  { botToken, signingSecret } and nothing else.
+ *
+ * `clientId && appId` is the same pair PUT /v1/connections/:id/slack/config-token
+ * checks before it answers 409 — so the flag the dashboard reads and the
+ * endpoint's own verdict can never disagree. Unreadable creds read as 'manual':
+ * the conservative answer hides an affordance rather than offering one that
+ * cannot work.
+ */
+export function slackSetupKind(connection: AgentConnection): SlackSetupKind {
+  let creds: { clientId?: string; appId?: string };
+  try {
+    creds = JSON.parse(openSecret(connection.credentials));
+  } catch {
+    return 'manual';
+  }
+  return creds.clientId && creds.appId ? 'quick' : 'manual';
+}
+
+/**
  * The two URLs a Slack app must be pointed at. Unlike telegram (we register
  * the webhook), the USER pastes these into the Slack app config — so they are
  * static and rebuildable here (email-shaped). connectionId is the routing key.

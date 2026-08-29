@@ -533,6 +533,10 @@ describe('A10 slice B: one law per rule (the A7 identity doctrine)', () => {
     ['a reply cap below the floor', { maxTokens: 10 }],
     ['an idle backstop past the ceiling', { autoResolveMinutes: 999_999 }],
     ['a context tail longer than its trigger', { context: { triggerTurns: 4, tailTurns: 9 } }],
+    // A14: '' is the repo's wire form for "clear the greeting", so it must be
+    // refused at the schema — and the import must refuse it in exactly the same
+    // words, because it rides the very same object.
+    ['an empty welcome message (clearing is an explicit null)', { welcomeMessage: '' }],
   ];
 
   test.each(BAD_KNOBS)('%s is refused by BOTH the save route and the import', async (_name, bad) => {

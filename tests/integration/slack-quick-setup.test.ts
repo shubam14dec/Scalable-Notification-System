@@ -229,8 +229,12 @@ describe('quick-setup happy path', () => {
     expect(creds.clientId).toBe('CID.123456');
     expect(creds.appId).toBe('A0QUICK01');
     expect(creds.configRefreshToken).toBe('xoxe-refresh-0');
+
+    // A14: the listing declares the provenance, read from those sealed creds.
+    expect(row.config.setup).toBe('quick');
   });
 });
+
 
 describe('quick-setup config-token error mapping', () => {
   test('invalid_auth → friendly 12-hours 400, stub row removed', async () => {
@@ -530,5 +534,37 @@ describe('config-token chain repair (PUT .../slack/config-token)', () => {
     expect(refreshAfter).toBe(`xoxe-refresh-${rotateCounter}`);
     expect(refreshAfter).not.toBe(refreshBefore);
     expect((await configOf(quickConnId)).manifestAutoUpdate).toBe('on');
+  });
+});
+
+/**
+ * A14: GET /v1/connections says how each slack connection was made, so the
+ * dashboard offers config-token repairs only where they can succeed. The flag
+ * is derived from the SEALED credential shape — the same clientId+appId pair
+ * PUT .../slack/config-token tests — so the listing and the endpoint's own 409
+ * can never disagree. That pairing is asserted here, not trusted: it is the
+ * entire justification for the field.
+ *
+ * Runs last on purpose: the quick row must already have been through the OAuth
+ * install, so this also proves the sealed botToken the callback adds does not
+ * change the answer.
+ */
+describe('slack setup provenance (A14)', () => {
+  test('the quick-setup row is setup:quick, still so after the install sealed a bot token', async () => {
+    expect((await connectionById(quickConnId)).config.setup).toBe('quick');
+    expect((await unsealCreds(quickConnId)).botToken).toBe('xoxb-installed-token-0123456789');
+  });
+
+  test('a manual (pasted bot token) row is setup:manual — and the repair it hides 409s', async () => {
+    expect((await connectionById(legacyConnId)).config.setup).toBe('manual');
+
+    const rearm = await app.inject({
+      method: 'PUT',
+      url: `/v1/connections/${legacyConnId}/slack/config-token`,
+      headers: headers(),
+      payload: { configRefreshToken: 'xoxe-whatever-token' },
+    });
+    expect(rearm.statusCode).toBe(409);
+    expect(json(rearm).error).toBe('not a quick-setup connection');
   });
 });

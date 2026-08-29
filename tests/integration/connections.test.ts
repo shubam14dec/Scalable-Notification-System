@@ -309,9 +309,14 @@ describe('1. connect + list', () => {
     expect(tgRow.agent).toEqual({ identifier: 'c1-agent', name: 'c1-agent' });
     expect(tgRow.webhook.expectedUrl).toContain(`/webhooks/telegram/${tg.connectionId}`);
 
+    // A14: `setup` is a SLACK-only provenance flag — non-slack configs are
+    // passed through untouched.
+    expect(tgRow.config.setup).toBeUndefined();
+
     const emRow = list.connections.find((c: { id: string }) => c.id === em.connectionId);
     expect(emRow.channel).toBe('email');
     expect(emRow.config.address).toBe('c1@inbound.postmarkapp.com');
+    expect(emRow.config.setup).toBeUndefined();
     expect(emRow.webhook.url).toContain(`/webhooks/email/${em.connectionId}`);
     expect(emRow.agent).toEqual({ identifier: 'c1-agent', name: 'c1-agent' });
   });
@@ -691,6 +696,9 @@ describe('11. slack connect + list', () => {
     expect(row.webhook.interactivityUrl).toContain(
       `/webhooks/slack/${sl.connectionId}/interactivity`,
     );
+    // A14: a pasted bot token is manual provenance — the dashboard shows no
+    // config-token re-arm for it, because there is no chain to re-arm.
+    expect(row.config.setup).toBe('manual');
   });
 });
 

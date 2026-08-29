@@ -262,11 +262,55 @@ describe('PATCH validation bounds', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  /**
+   * A14: '' is the repo's private wire form for "clear this column", so a
+   * caller sending one used to get a SILENT wipe. The API now says so out loud,
+   * and names the one thing that does clear it.
+   */
+  test('an empty welcome message is a 400 that says to send null instead', async () => {
+    const res = await patch({ welcomeMessage: '' });
+    expect(res.statusCode).toBe(400);
+    const issues = json(res).details as Array<{ path: string[]; message: string }>;
+    expect(issues.map((i) => i.path.join('.'))).toContain('welcomeMessage');
+    expect(issues.find((i) => i.path.join('.') === 'welcomeMessage')!.message).toContain(
+      'send null',
+    );
+  });
+
+  test('an empty welcome message is a 400 on CREATE too, not just PATCH', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents',
+      headers: headers(),
+      payload: {
+        identifier: 'welcome-empty-create',
+        name: 'Welcome Empty',
+        bridgeUrl,
+        welcomeMessage: '',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.stringify(json(res).details)).toContain('send null');
+    // Refused whole — no half-created agent left behind.
+    const after = await app.inject({
+      method: 'GET',
+      url: '/v1/agents/welcome-empty-create',
+      headers: headers(),
+    });
+    expect(after.statusCode).toBe(404);
+  });
+
   test('null clears both the welcome and the prompts', async () => {
     const res = await patch({ welcomeMessage: null, suggestedPrompts: null });
     expect(res.statusCode).toBe(200);
     expect(json(res).agent.welcomeMessage).toBeNull();
     expect(json(res).agent.suggestedPrompts).toBeNull();
+  });
+
+  test('a real string still stores after the clear', async () => {
+    const res = await patch({ welcomeMessage: 'Back on.' });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).agent.welcomeMessage).toBe('Back on.');
   });
 });
 

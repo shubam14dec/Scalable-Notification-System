@@ -4,6 +4,7 @@ import { logExec } from '../core/execution-log';
 import { inAppPubSubChannel } from '../providers/inapp';
 import { sweepInactiveConversations } from '../db/conversations.repo';
 import { purgeDeadLinkTokens } from '../db/identities.repo';
+import { purgeDeadSetupHandoffs } from '../db/handoffs.repo';
 import { expirePendingToolCalls } from '../db/agent-tools.repo';
 import { getQueue, QUEUE } from '../shared/queues';
 import { emitTenantEvent } from '../core/tenant-events';
@@ -113,6 +114,13 @@ export async function runInactivitySweep(): Promise<number> {
   // delete, no new timer.
   await purgeDeadLinkTokens().catch((err) =>
     logger.warn({ err: (err as Error).message }, 'link token purge failed'),
+  );
+
+  // Piggybacked (A14): dead phone-handoff sessions (1h grace past expires_at,
+  // see the repo comment) — the same shape, tenant-wide, so a tenant that stops
+  // minting handoffs no longer leaks its expired rows forever.
+  await purgeDeadSetupHandoffs().catch((err) =>
+    logger.warn({ err: (err as Error).message }, 'setup handoff purge failed'),
   );
 
   // Piggybacked: approval-gated tool calls past their 24h deadline flip to
