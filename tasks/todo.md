@@ -6,8 +6,8 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A13 — Turn Inspector truthful on crashes + bridge-tool labeling
-(plan approved 2026-08-28)
+### Phase A13 — SHIPPED 2026-08-29 (review)
+Turn Inspector truthful on crashes (plan approved 2026-08-28)
 PREMISE CORRECTION found during planning: the backlog's "per-tool avgMs
 currently null" was STALE — Phase 22 G4 already stopwatches BOTH managed
 paths (30/30 recent managed rows carry duration_ms); the only nulls are
@@ -602,8 +602,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - (REMOVED at user's instruction 2026-08-28) A11 tool-approval-via-
       workflow and A12 @asyncify-hq/agent-toolkit — cut from the
       backlog; do not re-pitch.
-- [ ] A13. P21 leftovers: agent_tool_calls execution-duration column
-      (per-tool avgMs currently null); crash-mid-turn traces (D7).
+- [x] A13. P21 leftovers — SHIPPED 2026-08-29, review above. (The
+      "avgMs currently null" half was a stale premise — G4 already
+      timed managed tools; only crash-mid-turn traces was real work.)
 - [ ] A14. Channel polish cluster: Slack OAuth one-click install (13b) +
       welcome message (+ empty-string sentinel); quickSetup flag on GET
       /v1/connections; Slack CMD+A paste parser; setup_handoffs purge →
