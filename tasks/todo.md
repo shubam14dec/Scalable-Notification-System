@@ -6,7 +6,9 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A14 — channel polish, rescoped (plan approved 2026-08-30)
+### Phase A14 — SHIPPED 2026-08-30 (review)
+Channel polish, rescoped (plan approved 2026-08-30; user E2E all
+three parts passed; pushed, CI + agent-evals gate green)
 Investigation found 2 of 6 backlog items ALREADY SHIPPED (telegram QR
 = Phase 17 both flavors; welcome message live on widget/telegram/slack)
 and 1 near-moot. Shipping three honesty/hygiene fixes in ONE slice:
@@ -634,10 +636,10 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 - [x] A13. P21 leftovers — SHIPPED 2026-08-29, review above. (The
       "avgMs currently null" half was a stale premise — G4 already
       timed managed tools; only crash-mid-turn traces was real work.)
-- [ ] A14. Channel polish cluster: Slack OAuth one-click install (13b) +
-      welcome message (+ empty-string sentinel); quickSetup flag on GET
-      /v1/connections; Slack CMD+A paste parser; setup_handoffs purge →
-      inactivity sweep; Telegram QR handoff.
+- [x] A14. Channel polish cluster — SHIPPED 2026-08-30, review above
+      (rescoped: 2 of 6 items were already shipped, paste parser cut,
+      Slack OAuth one-click PARKED as A14b until prod deploys — his
+      directive, recorded in the deploy checklist).
 - [ ] A15. CLI resilience: asyncify dev 60s reachability gate strands
       users on slow quick-tunnel-DNS days (2026-08-14, 2x 2026-08-19;
       clean 2026-08-21; flaked again 2026-08-22 ×2 and 2026-08-23 —
