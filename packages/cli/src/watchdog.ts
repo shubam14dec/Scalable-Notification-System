@@ -4,6 +4,8 @@
  * that health-checks THROUGH the tunnel and calls the pure core.
  */
 
+import { probeThroughPublicPath } from './tunnel';
+
 export interface WdState {
   /** Consecutive health-check failures since the last success. */
   failures: number;
@@ -112,6 +114,13 @@ export interface WatchdogOptions {
   fetchTimeoutMs?: number;
   now?: () => number;
   log?: (msg: string) => void;
+  /**
+   * One reachability check of the current tunnel URL → true when healthy.
+   * Defaults to the same public-DNS + pinned-HTTPS probe the startup gate uses,
+   * so a lagging LOCAL resolver can never make the watchdog rotate a tunnel that
+   * the rest of the internet is happily reaching. Injectable for tests.
+   */
+  probeFn?: (url: string) => Promise<boolean>;
 }
 
 export interface WatchdogController {
@@ -141,18 +150,16 @@ export function startWatchdog(opts: WatchdogOptions): WatchdogController {
     }
   }
 
+  const probe =
+    opts.probeFn ??
+    (async (url: string) =>
+      (await probeThroughPublicPath(url, { timeoutMs: fetchTimeout })).ok);
+
   async function checkHealth(): Promise<'health_ok' | 'health_fail'> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), fetchTimeout);
     try {
-      const res = await fetch(`${opts.getTunnelUrl()}/health`, {
-        signal: controller.signal,
-      });
-      return res.ok ? 'health_ok' : 'health_fail';
+      return (await probe(opts.getTunnelUrl())) ? 'health_ok' : 'health_fail';
     } catch {
       return 'health_fail';
-    } finally {
-      clearTimeout(timer);
     }
   }
 

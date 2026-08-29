@@ -13,6 +13,8 @@ export interface DevArgs {
   apiKeyIsSeedDefault: boolean;
   /** When true, never touch ./.env even if it exists. */
   envWrite: boolean;
+  /** Budget for the public-reachability gate, in ms (`--wait <seconds>`). */
+  waitMs: number;
 }
 
 export interface CreateAgentArgs {
@@ -25,6 +27,12 @@ export type ParsedArgs = DevArgs | CreateAgentArgs;
 
 /** The dev seed API key baked into the local stack (see MEMORY: agent:demo). */
 export const SEED_API_KEY = 'dev-api-key-123';
+
+/** Default budget for the tunnel reachability gate: 5 minutes. */
+export const DEFAULT_WAIT_SECONDS = 300;
+/** Accepted `--wait` range, in seconds. */
+export const MIN_WAIT_SECONDS = 5;
+export const MAX_WAIT_SECONDS = 3_600;
 
 /** Turn an arbitrary string into a safe [a-z0-9-] agent identifier. */
 export function slugify(input: string): string {
@@ -45,6 +53,21 @@ function parseIntFlag(name: string, raw: string | undefined): number {
 }
 
 /**
+ * Seconds → ms for the reachability gate, with a friendly range check. `source`
+ * names whatever supplied the value (`--wait` or the env var) so the error tells
+ * the user where to fix it.
+ */
+function parseWaitSeconds(source: string, raw: string | undefined): number {
+  const seconds = parseIntFlag(source, raw);
+  if (seconds < MIN_WAIT_SECONDS || seconds > MAX_WAIT_SECONDS) {
+    throw new Error(
+      `${source} expects ${MIN_WAIT_SECONDS}-${MAX_WAIT_SECONDS} seconds, got "${raw}"`,
+    );
+  }
+  return seconds * 1_000;
+}
+
+/**
  * Parse `argv` (the full process.argv). argv[2] selects the command; the rest
  * are flags/positionals. Unknown flags throw with the offending flag name.
  */
@@ -62,12 +85,16 @@ function parseDev(rest: string[]): DevArgs {
   let apiUrl = 'http://localhost:3000';
   let apiKey: string | undefined;
   let envWrite = true;
+  let waitMs: number | undefined;
 
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     switch (arg) {
       case '--port':
         port = parseIntFlag('--port', rest[++i]);
+        break;
+      case '--wait':
+        waitMs = parseWaitSeconds('--wait', rest[++i]);
         break;
       case '--api-url':
         if (rest[i + 1] === undefined) throw new Error('--api-url requires a value');
@@ -89,6 +116,12 @@ function parseDev(rest: string[]): DevArgs {
   const resolvedKey = apiKey ?? envKey ?? SEED_API_KEY;
   const apiKeyIsSeedDefault = apiKey === undefined && !envKey;
 
+  // Same precedence as the API key: flag > env var > built-in default.
+  const envWait = process.env.ASYNCIFY_WAIT;
+  const resolvedWaitMs =
+    waitMs ??
+    (envWait ? parseWaitSeconds('ASYNCIFY_WAIT', envWait) : DEFAULT_WAIT_SECONDS * 1_000);
+
   return {
     command: 'dev',
     port,
@@ -96,6 +129,7 @@ function parseDev(rest: string[]): DevArgs {
     apiKey: resolvedKey,
     apiKeyIsSeedDefault,
     envWrite,
+    waitMs: resolvedWaitMs,
   };
 }
 

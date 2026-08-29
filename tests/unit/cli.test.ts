@@ -6,7 +6,12 @@
  */
 import { afterEach, describe, expect, test } from 'vitest';
 import { parseArgs, SEED_API_KEY } from '../../packages/cli/src/args';
-import { parseTunnelUrl, waitForTunnelReady } from '../../packages/cli/src/tunnel';
+import {
+  parseTunnelUrl,
+  PublicDnsUnavailableError,
+  resolvePublicA,
+  waitForTunnelReady,
+} from '../../packages/cli/src/tunnel';
 import { rewritePublicUrlLine } from '../../packages/cli/src/env-file';
 import { planRewire, type Connection } from '../../packages/cli/src/rewire';
 import { initWatchdogState, tick, type WdEvent, type WdState } from '../../packages/cli/src/watchdog';
@@ -15,16 +20,20 @@ import { initWatchdogState, tick, type WdEvent, type WdState } from '../../packa
 const argv = (...parts: string[]): string[] => ['node', 'asyncify', ...parts];
 
 describe('parseArgs: dev', () => {
-  // parseDev consults process.env.ASYNCIFY_API_KEY for the key fallback, so we
-  // restore it around every test that depends on it.
+  // parseDev consults process.env.ASYNCIFY_API_KEY and ASYNCIFY_WAIT for its
+  // fallbacks, so we restore both around every test that depends on them.
   const savedEnvKey = process.env.ASYNCIFY_API_KEY;
+  const savedEnvWait = process.env.ASYNCIFY_WAIT;
   afterEach(() => {
     if (savedEnvKey === undefined) delete process.env.ASYNCIFY_API_KEY;
     else process.env.ASYNCIFY_API_KEY = savedEnvKey;
+    if (savedEnvWait === undefined) delete process.env.ASYNCIFY_WAIT;
+    else process.env.ASYNCIFY_WAIT = savedEnvWait;
   });
 
   test('dev with no flags → defaults, seed key when no env key', () => {
     delete process.env.ASYNCIFY_API_KEY;
+    delete process.env.ASYNCIFY_WAIT;
     const args = parseArgs(argv('dev'));
     expect(args).toEqual({
       command: 'dev',
@@ -33,7 +42,43 @@ describe('parseArgs: dev', () => {
       apiKey: SEED_API_KEY,
       apiKeyIsSeedDefault: true,
       envWrite: true,
+      // The reachability gate's budget: 5 minutes, in ms.
+      waitMs: 300_000,
     });
+  });
+
+  test('dev --wait <seconds> becomes waitMs in milliseconds', () => {
+    const args = parseArgs(argv('dev', '--wait', '600'));
+    if (args.command === 'dev') expect(args.waitMs).toBe(600_000);
+  });
+
+  test('dev picks up ASYNCIFY_WAIT when no flag given; the flag wins over it', () => {
+    process.env.ASYNCIFY_WAIT = '120';
+    const fromEnv = parseArgs(argv('dev'));
+    if (fromEnv.command === 'dev') expect(fromEnv.waitMs).toBe(120_000);
+    const fromFlag = parseArgs(argv('dev', '--wait', '45'));
+    if (fromFlag.command === 'dev') expect(fromFlag.waitMs).toBe(45_000);
+  });
+
+  test('dev --wait without a value throws', () => {
+    expect(() => parseArgs(argv('dev', '--wait'))).toThrow(/--wait requires a value/);
+  });
+
+  test('dev --wait with a non-integer throws', () => {
+    expect(() => parseArgs(argv('dev', '--wait', '2m'))).toThrow(/--wait expects an integer/);
+  });
+
+  test('dev --wait outside 5-3600 seconds throws naming the range', () => {
+    expect(() => parseArgs(argv('dev', '--wait', '2'))).toThrow(
+      /--wait expects 5-3600 seconds, got "2"/,
+    );
+    expect(() => parseArgs(argv('dev', '--wait', '99999'))).toThrow(/expects 5-3600 seconds/);
+  });
+
+  test('a bad ASYNCIFY_WAIT is rejected naming the env var, not the flag', () => {
+    delete process.env.ASYNCIFY_API_KEY;
+    process.env.ASYNCIFY_WAIT = 'soon';
+    expect(() => parseArgs(argv('dev'))).toThrow(/ASYNCIFY_WAIT expects an integer/);
   });
 
   test('dev --port sets the port (integer-validated)', () => {
@@ -272,7 +317,226 @@ describe('planRewire', () => {
   });
 });
 
-describe('waitForTunnelReady', () => {
+// ---------------------------------------------------------------------------
+// Phase A15 — the reachability gate now asks PUBLIC DNS.
+//
+// A poll is: resolve the host on 1.1.1.1 (then 8.8.8.8), then HTTPS-probe
+// /health at that IP with SNI+Host pinned to the hostname. Only when NO public
+// resolver answers at all does the poll degrade to the original plain-fetch
+// probe. Every dependency is injected; no test touches the network or a clock.
+// ---------------------------------------------------------------------------
+
+/** A DNS error carrying a c-ares style code, as node's Resolver rejects with. */
+function dnsError(code: string): NodeJS.ErrnoException {
+  const err = new Error(`queryA ${code}`) as NodeJS.ErrnoException;
+  err.code = code;
+  return err;
+}
+
+/**
+ * A resolver over a queued sequence of answers, recording (host, server) pairs.
+ * An entry is an address list, or a code string to reject with.
+ */
+function fakeResolver(sequence: Array<string[] | string>) {
+  let i = 0;
+  const calls: Array<{ host: string; server: string }> = [];
+  const fn = async (host: string, server: string): Promise<string[]> => {
+    calls.push({ host, server });
+    const answer = sequence[Math.min(i, sequence.length - 1)];
+    i += 1;
+    if (typeof answer === 'string') throw dnsError(answer);
+    return answer;
+  };
+  return { fn, calls };
+}
+
+/** A resolver that is never reachable — every server times out. */
+const deadResolvers = async (): Promise<string[]> => {
+  throw dnsError('ETIMEOUT');
+};
+
+// A sleep that never really waits; just counts invocations so we can assert
+// how many poll intervals elapsed.
+function fakeSleep() {
+  const waits: number[] = [];
+  const fn = (ms: number) => {
+    waits.push(ms);
+    return Promise.resolve();
+  };
+  return { fn, waits };
+}
+
+describe('resolvePublicA', () => {
+  test('returns the first IPv4 from the first resolver that answers', async () => {
+    const { fn, calls } = fakeResolver([['104.21.0.7', '172.67.0.9']]);
+    await expect(resolvePublicA('t.trycloudflare.com', { resolveFn: fn })).resolves.toBe(
+      '104.21.0.7',
+    );
+    // Only 1.1.1.1 was consulted; 8.8.8.8 is a fallback, not a second opinion.
+    expect(calls).toEqual([{ host: 't.trycloudflare.com', server: '1.1.1.1' }]);
+  });
+
+  test('NXDOMAIN is an ANSWER (null), not a resolver failure — no fallback query', async () => {
+    const { fn, calls } = fakeResolver(['ENOTFOUND']);
+    await expect(resolvePublicA('nope.trycloudflare.com', { resolveFn: fn })).resolves.toBeNull();
+    expect(calls).toHaveLength(1);
+  });
+
+  test('an empty answer is also null', async () => {
+    const { fn } = fakeResolver([[]]);
+    await expect(resolvePublicA('t.example', { resolveFn: fn })).resolves.toBeNull();
+  });
+
+  test('when 1.1.1.1 errors, 8.8.8.8 is used and its answer wins', async () => {
+    const { fn, calls } = fakeResolver(['ETIMEOUT', ['8.8.4.4']]);
+    await expect(resolvePublicA('t.example', { resolveFn: fn })).resolves.toBe('8.8.4.4');
+    expect(calls.map((c) => c.server)).toEqual(['1.1.1.1', '8.8.8.8']);
+  });
+
+  test('when every resolver errors it throws PublicDnsUnavailableError naming the host', async () => {
+    const { fn, calls } = fakeResolver(['ECONNREFUSED']);
+    await expect(resolvePublicA('t.example', { resolveFn: fn })).rejects.toThrow(
+      PublicDnsUnavailableError,
+    );
+    expect(calls.map((c) => c.server)).toEqual(['1.1.1.1', '8.8.8.8']);
+  });
+});
+
+describe('waitForTunnelReady: public-DNS path', () => {
+  /** A pinned probe over a queued sequence of booleans; records (url, ip). */
+  function fakeProbe(sequence: boolean[]) {
+    let i = 0;
+    const calls: Array<{ url: string; ip: string }> = [];
+    const fn = async (url: string, ip: string): Promise<boolean> => {
+      calls.push({ url, ip });
+      const ok = sequence[Math.min(i, sequence.length - 1)];
+      i += 1;
+      return ok;
+    };
+    return { fn, calls };
+  }
+
+  test('an A record on the first try → pinned probes → resolves on the streak', async () => {
+    const { fn: resolveFn } = fakeResolver([['104.21.0.7']]);
+    const { fn: pinnedProbeFn, calls } = fakeProbe([true]);
+    const { fn: sleepFn, waits } = fakeSleep();
+    const lines: string[] = [];
+
+    await expect(
+      waitForTunnelReady('https://t.example', {
+        resolveFn,
+        pinnedProbeFn,
+        sleepFn,
+        consecutive: 2,
+        maxWaitMs: 60_000,
+        intervalMs: 2_000,
+        onProgress: (l) => lines.push(l),
+      }),
+    ).resolves.toBeUndefined();
+
+    // Two pinned probes, both dialing the address public DNS handed us.
+    expect(calls).toEqual([
+      { url: 'https://t.example', ip: '104.21.0.7' },
+      { url: 'https://t.example', ip: '104.21.0.7' },
+    ]);
+    expect(waits).toEqual([2_000]);
+    expect(lines.some((l) => l.includes('104.21.0.7'))).toBe(true);
+    expect(lines.some((l) => l.includes('answered its first health check'))).toBe(true);
+    // Transitions only: each line is said once, never per poll.
+    expect(new Set(lines).size).toBe(lines.length);
+  });
+
+  test('NXDOMAIN for a while, then the record appears — elapsed accounting is by sleeps', async () => {
+    // 3 polls with no record, then the address shows up and answers twice.
+    const { fn: resolveFn } = fakeResolver([
+      'ENOTFOUND',
+      'ENOTFOUND',
+      'ENOTFOUND',
+      ['104.21.0.7'],
+    ]);
+    const { fn: pinnedProbeFn, calls } = fakeProbe([true]);
+    const { fn: sleepFn, waits } = fakeSleep();
+
+    await waitForTunnelReady('https://t.example', {
+      resolveFn,
+      pinnedProbeFn,
+      sleepFn,
+      consecutive: 2,
+      maxWaitMs: 60_000,
+      intervalMs: 2_000,
+    });
+
+    // No pinned probe is attempted while the name does not resolve.
+    expect(calls).toHaveLength(2);
+    // 5 polls total → 4 sleeps → 8s of budget spent.
+    expect(waits).toEqual([2_000, 2_000, 2_000, 2_000]);
+  });
+
+  test('a failed pinned probe resets the streak even though DNS resolves', async () => {
+    const { fn: resolveFn } = fakeResolver([['104.21.0.7']]);
+    const { fn: pinnedProbeFn, calls } = fakeProbe([true, false, true, true]);
+    const { fn: sleepFn } = fakeSleep();
+
+    await waitForTunnelReady('https://t.example', {
+      resolveFn,
+      pinnedProbeFn,
+      sleepFn,
+      consecutive: 2,
+      maxWaitMs: 60_000,
+      intervalMs: 2_000,
+    });
+    expect(calls).toHaveLength(4);
+  });
+
+  test('rejects after maxWaitMs with a message naming the URL', async () => {
+    const { fn: resolveFn } = fakeResolver(['ENOTFOUND']);
+    const { fn: pinnedProbeFn, calls } = fakeProbe([true]);
+    const { fn: sleepFn, waits } = fakeSleep();
+
+    await expect(
+      waitForTunnelReady('https://never.example', {
+        resolveFn,
+        pinnedProbeFn,
+        sleepFn,
+        consecutive: 2,
+        maxWaitMs: 6_000,
+        intervalMs: 2_000,
+      }),
+    ).rejects.toThrow(/never became publicly reachable[\s\S]*https:\/\/never\.example/);
+    expect(calls).toHaveLength(0);
+    expect(waits).toEqual([2_000, 2_000, 2_000]);
+  });
+
+  test('a long wait emits a progress heartbeat roughly every 30s, not every poll', async () => {
+    const { fn: resolveFn } = fakeResolver(['ENOTFOUND']);
+    const { fn: sleepFn } = fakeSleep();
+    const lines: string[] = [];
+
+    await expect(
+      waitForTunnelReady('https://slow.example', {
+        resolveFn,
+        pinnedProbeFn: async () => false,
+        sleepFn,
+        consecutive: 2,
+        maxWaitMs: 90_000,
+        intervalMs: 10_000,
+        onProgress: (l) => lines.push(l),
+      }),
+    ).rejects.toThrow(/never became publicly reachable/);
+
+    // 9 polls, but only the 30/60/90s marks speak up.
+    const heartbeats = lines.filter((l) => l.includes('still waiting'));
+    expect(heartbeats).toHaveLength(3);
+    expect(heartbeats[0]).toContain('30s of 90s');
+  });
+});
+
+// The original gate's behaviour, preserved verbatim as the fallback path: when
+// NO public resolver can be reached (corporate networks block outbound DNS), a
+// poll degrades to the plain `fetch` probe it always used. These four tests are
+// the pre-A15 suite with one addition — a resolver that is never reachable —
+// so they prove the gate is never WORSE than it was.
+describe('waitForTunnelReady: system-fetch fallback (no public resolver reachable)', () => {
   // A fake fetch that returns a queued sequence of outcomes. `true` → ok:true,
   // `false` → ok:false, 'throw' → rejects (mirrors a DNS/connection error).
   // Records how many times it was called.
@@ -289,31 +553,25 @@ describe('waitForTunnelReady', () => {
     return { fn, calls };
   }
 
-  // A sleep that never really waits; just counts invocations so we can assert
-  // how many poll intervals elapsed.
-  function fakeSleep() {
-    const waits: number[] = [];
-    const fn = (ms: number) => {
-      waits.push(ms);
-      return Promise.resolve();
-    };
-    return { fn, waits };
-  }
-
   test('resolves after `consecutive` successes in a row', async () => {
     const { fn: fetchFn, calls } = fakeFetch([true, true]);
     const { fn: sleepFn } = fakeSleep();
+    const lines: string[] = [];
     await expect(
       waitForTunnelReady('https://t.example', {
         fetchFn,
+        resolveFn: deadResolvers,
         sleepFn,
         consecutive: 2,
         maxWaitMs: 60_000,
         intervalMs: 2_000,
+        onProgress: (l) => lines.push(l),
       }),
     ).resolves.toBeUndefined();
     // Polls health twice (two successes), no third poll after the streak is met.
     expect(calls).toEqual(['https://t.example/health', 'https://t.example/health']);
+    // The degradation is announced exactly once, not once per poll.
+    expect(lines.filter((l) => l.includes('no public DNS server is reachable'))).toHaveLength(1);
   });
 
   test('a failure between successes resets the streak', async () => {
@@ -322,6 +580,7 @@ describe('waitForTunnelReady', () => {
     const { fn: sleepFn, waits } = fakeSleep();
     await waitForTunnelReady('https://t.example', {
       fetchFn,
+      resolveFn: deadResolvers,
       sleepFn,
       consecutive: 2,
       maxWaitMs: 60_000,
@@ -338,6 +597,7 @@ describe('waitForTunnelReady', () => {
     const { fn: sleepFn } = fakeSleep();
     await waitForTunnelReady('https://t.example', {
       fetchFn,
+      resolveFn: deadResolvers,
       sleepFn,
       consecutive: 2,
       maxWaitMs: 60_000,
@@ -354,6 +614,7 @@ describe('waitForTunnelReady', () => {
     await expect(
       waitForTunnelReady('https://never.example', {
         fetchFn,
+        resolveFn: deadResolvers,
         sleepFn,
         consecutive: 2,
         maxWaitMs: 6_000,

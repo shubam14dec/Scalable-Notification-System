@@ -19,6 +19,8 @@ Commands:
     --port <n>        Local port the Asyncify stack listens on (default 3000)
     --api-url <url>   Asyncify API base URL (default http://localhost:3000)
     --api-key <key>   Tenant API key (default: $ASYNCIFY_API_KEY, else dev seed)
+    --wait <seconds>  How long to wait for the new tunnel address to go live
+                      (default: $ASYNCIFY_WAIT, else 300)
     --no-env-write    Do not update PUBLIC_URL in ./.env
 
   create-agent <dir>

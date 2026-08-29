@@ -6,6 +6,21 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A15 — CLI tunnel gate resilience (plan approved 2026-08-30)
+Root cause (14 days of field data, 11 gate failures): the gate probes
+/health through the LOCAL resolver, so it times out on exactly the
+machines whose ISP DNS lags — while the world (and Telegram, whose
+negative caching the gate exists to protect) already resolves the
+host. Encode the runbook's proven protocol into the CLI:
+- [ ] resolve via PUBLIC resolver (node:dns Resolver → 1.1.1.1,
+      fallback 8.8.8.8, zero new deps) + pinned-IP HTTPS probe with
+      SNI; fallback to today's plain fetch when direct DNS is blocked
+      (worst case = status quo, never worse); budget 60s → 5min
+      default with --wait flag; progress lines while waiting; post-
+      rewire honesty note when local DNS still lags; watchdog reuses
+      the same gate (verify, don't assume); changeset (minor) same
+      commit; ~6-10 tests on the existing injected-fn rig.
+
 ### Phase A14 — SHIPPED 2026-08-30 (review)
 Channel polish, rescoped (plan approved 2026-08-30; user E2E all
 three parts passed; pushed, CI + agent-evals gate green)

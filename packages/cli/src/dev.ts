@@ -8,7 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 import type { DevArgs } from './args';
 import { apiFetch } from './api';
-import { spawnTunnel, waitForTunnelReady } from './tunnel';
+import { localDnsResolves, spawnTunnel, waitForTunnelReady } from './tunnel';
 import { runRewire } from './rewire';
 import { startWatchdog, type WatchdogController } from './watchdog';
 
@@ -33,6 +33,31 @@ function checkCloudflared(): Promise<string> {
       else reject(new Error(`cloudflared --version exited ${code}`));
     });
   });
+}
+
+/**
+ * The gate above proves the tunnel works from the PUBLIC internet's point of
+ * view, which is the only thing webhooks care about. This machine's own resolver
+ * can still be minutes behind — in which case the browser will fail to open the
+ * URL while Telegram and Slack are already delivering fine. Say so plainly once,
+ * so a failed browser test is not mistaken for a dead tunnel.
+ */
+async function noteLocalDnsLag(url: string): Promise<void> {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return;
+  }
+  if (await localDnsResolves(host)) return;
+  console.log(
+    [
+      '  ℹ Webhooks are live, but this computer cannot look up the address yet.',
+      '    Your own browser may fail to open it for a few more minutes - that is',
+      '    your network catching up, not the tunnel being down.',
+      '',
+    ].join('\n'),
+  );
 }
 
 export async function runDev(args: DevArgs): Promise<void> {
@@ -95,12 +120,16 @@ export async function runDev(args: DevArgs): Promise<void> {
   // Do NOT rewire until the tunnel is publicly reachable — registering the
   // hostname before its DNS record exists makes Telegram negative-cache
   // NXDOMAIN for minutes. See waitForTunnelReady.
+  const onProgress = (line: string) => console.log(`    ${line}`);
   try {
-    console.log('  waiting for the tunnel to be publicly reachable…');
-    await waitForTunnelReady(currentUrl);
+    console.log(
+      `  waiting for the tunnel to be publicly reachable (up to ${Math.round(args.waitMs / 1000)}s)…`,
+    );
+    await waitForTunnelReady(currentUrl, { maxWaitMs: args.waitMs, onProgress });
     console.log('  ✔ tunnel is publicly reachable\n');
   } catch (err) {
     console.error(`  ✖ ${(err as Error).message}`);
+    console.error('    Give it longer with --wait <seconds> if your network is slow to see new names.');
     process.exit(1);
   }
 
@@ -111,6 +140,8 @@ export async function runDev(args: DevArgs): Promise<void> {
     prevUrls,
     envWrite: args.envWrite,
   });
+
+  await noteLocalDnsLag(currentUrl);
 
   // ---- watchdog ----
   let watchdog: WatchdogController;
@@ -134,7 +165,7 @@ export async function runDev(args: DevArgs): Promise<void> {
       // Same DNS-race guard as initial start. A throw here is caught below and
       // handed to the watchdog's rotation-failure path — never crash the process.
       console.log('  waiting for the tunnel to be publicly reachable…');
-      await waitForTunnelReady(currentUrl);
+      await waitForTunnelReady(currentUrl, { maxWaitMs: args.waitMs, onProgress });
       console.log('  ✔ tunnel is publicly reachable\n');
       prevUrls = await runRewire({
         baseUrl: args.apiUrl,
@@ -143,6 +174,7 @@ export async function runDev(args: DevArgs): Promise<void> {
         prevUrls,
         envWrite: args.envWrite,
       });
+      await noteLocalDnsLag(currentUrl);
     } catch (err) {
       console.error(`  ✖ tunnel rotation failed: ${(err as Error).message}`);
       if (spawned !== null) {
