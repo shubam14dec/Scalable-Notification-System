@@ -45,7 +45,9 @@ the real work.
       MISATTRIBUTE rows we timed. Label reverted; docs state the
       no-table truth instead.
 
-PHASE REVIEW (built 2026-08-28; awaiting user E2E + push): suite
+PHASE REVIEW — SHIPPED 2026-08-29 (user E2E parts 1+2 passed — crashed
+trace rendered exactly as scripted, incl. his latency question answered
+from the trace itself; pushed, CI + agent-evals gate green): suite
 1124→1132 (verified by manager's own run), root+dashboard tsc clean.
 A crashed turn now leaves its partial trace on the dead/error note
 (same raw.trace key, raw.crashed marker, winner-takes-it dedupe with
