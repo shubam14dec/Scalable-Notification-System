@@ -6,20 +6,29 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A15 — CLI tunnel gate resilience (plan approved 2026-08-30)
+### Phase A15 — SHIPPED 2026-08-30 (review)
+CLI tunnel gate resilience (plan approved 2026-08-30; LIVE-VERIFIED
+same day: first clean CLI run since 08-22, on a lagging-DNS day —
+"public DNS now knows this address" in seconds, full auto-rewire incl.
+slack manifest, 15-min watchdog silence watch passed; CI green, PR #22
+opened for the cli minor release)
 Root cause (14 days of field data, 11 gate failures): the gate probes
 /health through the LOCAL resolver, so it times out on exactly the
 machines whose ISP DNS lags — while the world (and Telegram, whose
 negative caching the gate exists to protect) already resolves the
 host. Encode the runbook's proven protocol into the CLI:
-- [ ] resolve via PUBLIC resolver (node:dns Resolver → 1.1.1.1,
-      fallback 8.8.8.8, zero new deps) + pinned-IP HTTPS probe with
-      SNI; fallback to today's plain fetch when direct DNS is blocked
-      (worst case = status quo, never worse); budget 60s → 5min
-      default with --wait flag; progress lines while waiting; post-
-      rewire honesty note when local DNS still lags; watchdog reuses
-      the same gate (verify, don't assume); changeset (minor) same
-      commit; ~6-10 tests on the existing injected-fn rig.
+- [x] DONE 2026-08-30 (suite 1140→1156, verified by manager's own
+      run + live proof): resolvePublicA with a THREE-state contract
+      (IPv4 / null=resolver answered no-such-name / throw=no resolver
+      reachable — the third state drives the fallback, which the spec
+      had missed); pinned probe agent:false (rotations land on new
+      edge IPs, a pooled socket would answer for the wrong host); the
+      4 original gate tests pass byte-identical AS the fallback suite
+      (= proof of never-worse); AGENT'S BIG FIND: the watchdog's own
+      plain-fetch probe was the WORSE half — it would rotate a
+      healthy tunnel on local-DNS lag and restart the race in a loop;
+      now on the public path. --wait 5-3600s + ASYNCIFY_WAIT, 30s
+      heartbeat, honesty note. Real E2E = every morning's start.
 
 ### Phase A14 — SHIPPED 2026-08-30 (review)
 Channel polish, rescoped (plan approved 2026-08-30; user E2E all
@@ -655,11 +664,10 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       (rescoped: 2 of 6 items were already shipped, paste parser cut,
       Slack OAuth one-click PARKED as A14b until prod deploys — his
       directive, recorded in the deploy checklist).
-- [ ] A15. CLI resilience: asyncify dev 60s reachability gate strands
-      users on slow quick-tunnel-DNS days (2026-08-14, 2x 2026-08-19;
-      clean 2026-08-21; flaked again 2026-08-22 ×2 and 2026-08-23 —
-      lifetime 1-for-5) — add --wait (default ~5min) or
-      keep-waiting-then-rewire.
+- [x] A15. CLI resilience — SHIPPED 2026-08-30, review above (final
+      tally: 11 gate failures in 14 days, root cause = local resolver
+      as the oracle; fixed with public-DNS + pinned probe, live-
+      verified same day).
 - [ ] A16. LANDING PAGE gains the quality ladder (user ask 2026-08-23:
       "these are the important aspects of production-grade AI agents —
       update the landing page by these features"). Repo: asyncify-site
