@@ -72,6 +72,10 @@ us — every rule earned by a concrete incident here. Both are binding.
 - Plan → `tasks/todo.md` with checkable items → verify the plan with the
   user → mark items complete as you go → add a short review section when
   done.
+- Phase close-out touches THREE spots in todo.md or it isn't closed
+  (missed one on A13, user caught it): the section header → "SHIPPED
+  <date> (review)", the review body, AND the backlog list line → [x]
+  with "review above".
 - Give a high-level summary of changes at each step; the final message of
   a turn carries everything the user needs.
 
