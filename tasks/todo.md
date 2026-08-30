@@ -6,6 +6,109 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase A16 — landing page: "05 · THE EDIT" (plan approved 2026-08-30)
+Repo: asyncify-site (sibling; push = deploy, so NEVER push without his
+word; verify with npm run build + preview). A NEW PINNED SCENE between
+04 agents and proof (proof renumbered 06) — the quality ladder told as
+a story, not a list (his call after rejecting the first "seven rows
+under the seal" plan): ONE prompt edit travels seven stations.
+Devices: the diff caret (the page's "agentic" caret, reused) makes the
+edit; the changed line is the chip that travels; a VERSION RAIL spine
+along the stage top gets stamped per station (flight recorder); a mono
+CLOCK in the caption rail (14:02 → day 5: scroll is time); title
+"Prompt edits are deploys." / "Watch one travel." Stations: 1 diff ·
+2 judged evals (score rolls, THEN the rule line draws, tick lands under
+the rule) · 3 CI gate (turnstile; red run bounces, torn margin ticket
+"caught · refund-path · silently broken 31 days" stays) · 4 pre-save
+(mini dashboard, everything dims EXCEPT Save anyway) · 5 canary (30
+dots, 3 peel, two judges race, promote; the switch is a REAL toggle
+10%→50%) · 6 routing (cheap chip answers hi, refund hits the barrier
+and escalates; cost ticker stalls) · 7 two gates on the scene-4 agent
+box (classifier stamps topic, rule stamps deny, hairline "never
+crosses"; outbound phone number redacted block by block) · 8 per-
+customer lanes (amber valve on ONE lane, four green delivered receipts,
+ghost strike through all five fades). LANDING = the rail prints itself
+as a receipt out of a serrated printer mouth. DOOR (his idea, better
+than my split-flap board): "tear here" whisper; click SNAPS the receipt
+across the teeth (the ticket PEELS, the receipt SNAPS — different
+physics, no repeated feel) and it falls in a damped wavy S — shrinking
+swings, tilting into each swing, a single reversing BOW (not a flag
+ripple — free paper bends, pinned cloth ripples), slows near the
+bottom, fades mid-flight while the page glides to proof. Scene-4
+ticket retargets to "Nº 05 · THE EDIT →". Rules: transform/opacity/
+drawn-line only, no bounce/loop, matchMedia-gated stills (list-of-
+cards per station; toggle = two stills), built in the deferred chain
+(TDZ trap!), PIN_SHARES_VH entry, no ✓ glyph (drawn ticks), Nº = U+00BA,
+mono only for measurement/object lettering, green only on delivered
+receipts, amber only on the throttle valve, no eyebrow, sr-only h2,
+first paint 0.4s + JS<150KB/CSS<12KB gzip budgets hold.
+- [x] Slice A — DONE 2026-08-30 (site commit, local; 1,105-line
+      edit.ts, 46 boot asserts, full-scene timeline authored —
+      STATION_AT for all 8 + landing/hold/end, so B–D fill reserved
+      units; EDIT_PIN_VH exported so the pin grows with the slices;
+      clock = crossfaded spans, score = digit column behind an
+      aperture, "min 4" not ≥ (font subset), gate retracts like the
+      site's other gates; gzip js 119/150, css 8.4/12). Bridge lines
+      and proof renumber deferred to slice C by spec. Awaiting his
+      visual pass on :5180.
+- [x] Slice B — DONE 2026-08-30 (site commit, local; edit.ts 1651→
+      3808 lines; his slice-A catch shipped first: run tally 0 of 3→
+      3 of 3, judge stays a verdict; toggle = real <button>, per-
+      NUMBER ownership scrub/pointer, asserted disjoint; promote
+      never touches pointer-owned state so a 50% flip stays true;
+      only green = 4 delivered receipts, only amber = the valve;
+      clock ordinals; STILL_VIEW for all 8; ~60 asserts re-run
+      offline; gzip js 129/150 — C must stay lean). Awaiting his
+      visual pass.
+- [x] Slice C — DONE 2026-08-30 (site commit, local; edit.ts 3808→
+      5112, asserts 107→155 executed against real markup in a
+      minimal-DOM runner; AGENT CAUGHT a Rollup constant-fold turning
+      a boot assert into an unconditional throw that DELETED the rest
+      of the builder — bundle shrank, scene would've been DOA — now a
+      DESIGN.md law + detection step; U+2192 not in the font subset
+      → "->" on the receipt + a subset assert over new lettering;
+      MotionPath in bundle, MorphSVG not → bow = skew+scaleY; gzip js
+      133.85/150). Awaiting his visual pass. Original scope note:
+      station 8 REWORK first (his slice-B note:
+      a real arriving flood + live rate counter; the valve labeled
+      with the real knob `per-customer limit · 5 / min`; a ledger
+      `received 12 · answered 5 · held 7` = the truthful record; the
+      four other lanes answered DURING the flood with latency stamps
+      + an `unaffected · 4 of 4 answered` bracket; the ghost flips
+      their green receipts to muted for a beat) across its full 16
+      units; then landing receipt printing out of a serrated mouth +
+      closing statement; tear-here door (SNAP not peel, damped wavy
+      fall with a reversing bow, glide); scene-4 ticket → THE EDIT;
+      proof → 06; #bridge-edit lines. JS cap for C: ~145 KB.
+- [x] Slice D — DONE 2026-08-31 (site commit, local): nine cards
+      (canary = 10%/50% twins + judged arms; landing = receipt drawn
+      already torn + real tear button), rail as a <ul>, reduced
+      branch = lede + the real last frame; two new DESIGN laws (ids
+      RENAMED per figure — a dropped clipPath url renders every
+      column cell; two source clones — world/frame share numbers at
+      identity); STILL_GONE 18 + 6 travellers asserted; 4 windows
+      moved by MEASURING landmarks; first-paint audit clean by grep;
+      og untouched (index.html diff = 3 comments); docs + README
+      port fix; gzip js 135.95/150, css 9.18/12.
+
+PHASE REVIEW (built 2026-08-30/31; his visual pass DONE across ~15
+review rounds on 08-31, every note folded in as site commits — rail
+brightness+8/8 checkbox ticks, receipt full anatomy incl. dot leaders
++ barcode + Asyncify wordmark + system-prompt header, ticket-parity
+tear with pinned corner and hover-down, eye-picked arrow with the
+head GENERATED from its curve at boot, Tear here serif at full ink,
+4s fall user-tuned, one glide experiment reverted at his call.
+AWAITING ONLY: push = deploy to asyncify.org, on his word): four
+slices + the review commits, edit.ts ~5,700 lines, ~155
+boot asserts run against the real markup offline, budgets held with
+14 KB JS spare. The site's own docs gained four laws from this phase
+(Rollup constant-fold deletes a builder; the font subset is a
+MEASUREMENT law; renamed-not-stripped ids in still clones; two source
+clones). His three review notes so far all became fixes (run tally
+counts along the way; station 8 shows the flood/the knob/the
+unaffected; the receipt IS the door, snap not peel, wind-fall). Scene
+4's ticket now hands the reader to 05; proof is 06.
+
 ### Phase A15 — SHIPPED 2026-08-30 (review)
 CLI tunnel gate resilience (plan approved 2026-08-30; LIVE-VERIFIED
 same day: first clean CLI run since 08-22, on a lagging-DNS day —
