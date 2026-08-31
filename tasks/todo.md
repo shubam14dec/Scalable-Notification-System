@@ -6,7 +6,9 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase A16 — landing page: "05 · THE EDIT" (plan approved 2026-08-30)
+### Phase A16 — SHIPPED 2026-08-31 (review)
+Landing page: "05 · THE EDIT" (plan approved 2026-08-30; pushed LIVE
+2026-08-31, 2bf02f9..86b4304, 70 commits → asyncify.org)
 Repo: asyncify-site (sibling; push = deploy, so NEVER push without his
 word; verify with npm run build + preview). A NEW PINNED SCENE between
 04 agents and proof (proof renumbered 06) — the quality ladder told as
@@ -91,17 +93,25 @@ first paint 0.4s + JS<150KB/CSS<12KB gzip budgets hold.
       og untouched (index.html diff = 3 comments); docs + README
       port fix; gzip js 135.95/150, css 9.18/12.
 
-PHASE REVIEW (built 2026-08-30/31; his visual pass DONE across ~15
-review rounds on 08-31, every note folded in as site commits — rail
-brightness+8/8 checkbox ticks, receipt full anatomy incl. dot leaders
-+ barcode + Asyncify wordmark + system-prompt header, ticket-parity
-tear with pinned corner and hover-down, eye-picked arrow with the
+PHASE REVIEW (built 2026-08-30/31; his visual pass DONE across ~30
+review rounds over two days, every note folded in as site commits —
+rail brightness+8/8 checkbox ticks, receipt full anatomy incl. dot
+leaders + barcode + Asyncify wordmark + system-prompt header,
+ticket-parity tear with pinned corner, eye-picked arrow with the
 head GENERATED from its curve at boot, Tear here serif at full ink,
-4s fall user-tuned, one glide experiment reverted at his call.
-AWAITING ONLY: push = deploy to asyncify.org, on his word): four
-slices + the review commits, edit.ts ~5,700 lines, ~155
-boot asserts run against the real markup offline, budgets held with
-14 KB JS spare. The site's own docs gained four laws from this phase
+4s fall user-tuned, one glide experiment reverted at his call; then
+the second window: the CI ticket moved INTO the caption rail from
+its station-3 arrival (own reserved slot below the caption box, one
+rung brighter; stage copy never appears), the version pile grew to
+FOUR real receipts at 220×88 (v2→v6, scores 3.9→4.4 ascending into
+the machine's 4.7) user-positioned left with a printer-anchored
+fixed-run pointer at his exact numbers, the receipt's hover posture
+became its REST (taut strip; hover adds one whisker step), and a
+page-wide scroll slow-down: scene 2 → 4 screens, scene 3 → 2.3,
+scene 5 → 4 (scene 4 and proof left at 3.0/1.5 by his call), pushed
+live 2026-08-31): four slices + the review commits, edit.ts ~6,000
+lines, ~155 boot asserts run against the real markup offline,
+budgets held (js ~140/150, css ~9.3/12). The site's own docs gained four laws from this phase
 (Rollup constant-fold deletes a builder; the font subset is a
 MEASUREMENT law; renamed-not-stripped ids in still clones; two source
 clones). His three review notes so far all became fixes (run tally
@@ -771,51 +781,11 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
       tally: 11 gate failures in 14 days, root cause = local resolver
       as the oracle; fixed with public-DNS + pinned probe, live-
       verified same day).
-- [ ] A16. LANDING PAGE gains the quality ladder (user ask 2026-08-23:
-      "these are the important aspects of production-grade AI agents —
-      update the landing page by these features"). Repo: asyncify-site
-      (sibling; live at asyncify.org via Cloudflare Pages auto-deploy
-      from github.com/shubam14dec/asyncify-site — pushing = deploying,
-      so verify locally first). Absorbs A2c. UPDATED 2026-08-26 (his
-      explicit reminder): the full arc is now SEVEN shipped phases —
-      "judge → CI gate → pre-save check → versioning + canary → model
-      routing → topic gate + reply rules → per-customer limits, all
-      live-tested" — the site must sell all seven, each with its proven
-      one-liner:
-      · A2 judged evals — "test your prompt like code, with a judge for
-        what traces can't see; the model grades, the code decides"
-      · A3 CI gate — "a push that breaks the agent cannot merge — real
-        LLM conversations as a required check" (+ the debut story: it
-        caught a silently-broken test on its first run)
-      · A4 pre-save check — "prompt edits are deploys: yours go through
-        CI, your customers' are graded before Save commits — warn,
-        never block"
-      · A5 versioning + canary — "every prompt save is a version; trial
-        a new one on 10% of real conversations, judged against the old,
-        promote on evidence" ("an unjudged control arm is not a
-        control")
-      · A6 model routing — "the easy turns on a cheaper model — trusted
-        to talk, never to act; escalation is law, not judgment"
-      · A7 topic gate + reply rules — "two gates around the brain: what
-        the agent will discuss, and what a reply may never say —
-        enforced in code, a prompt can be argued with, a gate cannot"
-        (+ "the classifier is never told the policy")
-      · A8 per-customer limits — "one flooding customer throttled
-        politely and free — everyone else never notices; the record
-        stays truthful" (contrast: a budget breaker mutes everyone)
-      HOW (constraints from the site's own history): fit the EXISTING
-      agents scenes/copy — extend, don't redesign; GSAP motion stays
-      SUBTLE and only where it improves UX (his standing rule), gate
-      with matchMedia for reduced-motion; keep the shipped performance
-      discipline (stylesheet owns first paint, deferred scene builds —
-      don't regress the 0.4s load); mobile stills pattern for any new
-      scene content; check whether the ladder fits the existing agents
-      answer-back scene as a beat/caption set or earns a compact new
-      section near the install/finale. Copy source of truth:
-      docs/ASYNCIFY-AGENTS-GUIDE.md §9–10 + NOVU-GAP-ANALYSIS quality
-      addendum (claims must stay honest — nothing the product can't
-      demo). Close-out includes phone verification (his pattern) and
-      og-card unchanged.
+- [x] A16. LANDING PAGE gains the quality ladder — SHIPPED 2026-08-31,
+      review above (scene "05 · THE EDIT": one prompt edit travels the
+      seven quality stations A2–A8 as a story; pushed live to
+      asyncify.org same day, ~30 of his review rounds folded in; the
+      seven proven one-liners live on as the scene's captions).
 - NOTE (standing caveat, not work): the approval-pause eval scenario
   fails loudly if refund_customer is unregistered from support-demo —
   by design.
