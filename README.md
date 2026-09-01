@@ -5,6 +5,7 @@
 [![npm — react](https://img.shields.io/npm/v/%40asyncify-hq%2Freact?label=%40asyncify-hq%2Freact)](https://www.npmjs.com/package/@asyncify-hq/react)
 [![npm — agent](https://img.shields.io/npm/v/%40asyncify-hq%2Fagent?label=%40asyncify-hq%2Fagent)](https://www.npmjs.com/package/@asyncify-hq/agent)
 [![npm — cli](https://img.shields.io/npm/v/%40asyncify-hq%2Fcli?label=%40asyncify-hq%2Fcli)](https://www.npmjs.com/package/@asyncify-hq/cli)
+[![npm — react-native](https://img.shields.io/npm/v/%40asyncify-hq%2Freact-native?label=%40asyncify-hq%2Freact-native)](https://www.npmjs.com/package/@asyncify-hq/react-native)
 
 Notification infrastructure — a horizontally scalable, multi-channel
 notification platform built from scratch. Design informed by the
