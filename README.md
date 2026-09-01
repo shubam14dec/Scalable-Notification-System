@@ -1,6 +1,10 @@
 # Asyncify
 
 [![CI](https://github.com/shubam14dec/Scalable-Notification-System/actions/workflows/ci.yml/badge.svg)](https://github.com/shubam14dec/Scalable-Notification-System/actions/workflows/ci.yml)
+[![npm — node](https://img.shields.io/npm/v/%40asyncify-hq%2Fnode?label=%40asyncify-hq%2Fnode)](https://www.npmjs.com/package/@asyncify-hq/node)
+[![npm — react](https://img.shields.io/npm/v/%40asyncify-hq%2Freact?label=%40asyncify-hq%2Freact)](https://www.npmjs.com/package/@asyncify-hq/react)
+[![npm — agent](https://img.shields.io/npm/v/%40asyncify-hq%2Fagent?label=%40asyncify-hq%2Fagent)](https://www.npmjs.com/package/@asyncify-hq/agent)
+[![npm — cli](https://img.shields.io/npm/v/%40asyncify-hq%2Fcli?label=%40asyncify-hq%2Fcli)](https://www.npmjs.com/package/@asyncify-hq/cli)
 
 Notification infrastructure — a horizontally scalable, multi-channel
 notification platform built from scratch. Design informed by the
