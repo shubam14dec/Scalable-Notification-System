@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { wsOrigin } from '../lib/wsOrigin';
 import { Button, Card, Field, Input, Mono, PageHeader } from '../ui';
 // Dogfooding: these are the ACTUAL embeddable widgets from packages/react —
 // the same components customers drop into their apps.
@@ -60,7 +61,7 @@ export default function InboxPreviewPage() {
             token={session.token}
             subscriberId={session.subscriberId}
             apiUrl=""
-            wsUrl="ws://localhost:3001"
+            wsUrl={wsOrigin()}
             theme={theme}
             align="left"
           />
@@ -135,7 +136,7 @@ function AgentChatPreview({
           subscriberId={subscriberId}
           agentIdentifier={chosen}
           apiUrl=""
-          wsUrl="ws://localhost:3001"
+          wsUrl={wsOrigin()}
           theme={theme}
         />
       ) : (

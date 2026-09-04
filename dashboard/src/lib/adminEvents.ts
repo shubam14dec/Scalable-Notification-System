@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { session } from './api';
+import { wsOrigin } from './wsOrigin';
 
 /**
  * The frozen union of tenant hint types (phase-25 D3). `queue.depths` is NOT a
@@ -72,14 +73,6 @@ export const INVALIDATION_TABLE: Record<TenantEventType, (id?: string) => QueryK
 /** All hint types — used by the catch-up sweep and by tests. */
 export const TENANT_EVENT_TYPES = Object.keys(INVALIDATION_TABLE) as TenantEventType[];
 
-/**
- * WS gateway origin. The dashboard already talks to the gateway at this literal
- * (see InboxPreview's widget `wsUrl`); we reuse that mechanism rather than
- * invent an env var. Production WS-origin resolution is a deployment concern
- * (tracked in the report / DEPLOYMENT docs), shared with the existing widget.
- */
-const WS_ORIGIN = 'ws://localhost:3001';
-
 /** Auth-failure close code from the gateway (token expired / wrong org). */
 const CLOSE_AUTH_FAILURE = 4401;
 const NETWORK_BACKOFF_START = 1_000;
@@ -136,7 +129,10 @@ export function useAdminEvents(envId: string | undefined): { connected: boolean 
     const connect = () => {
       const token = session.access;
       if (!token) return; // logged out mid-retry — stop
-      const url = `${WS_ORIGIN}/?admin=1&token=${encodeURIComponent(token)}&env=${encodeURIComponent(envId)}`;
+      // Origin is derived from where the dashboard is served (see wsOrigin) —
+      // dev proxies /ws through vite, prod routes it through Caddy to the same
+      // gateway. Nothing here is environment-specific.
+      const url = `${wsOrigin()}/?admin=1&token=${encodeURIComponent(token)}&env=${encodeURIComponent(envId)}`;
       let socket: WebSocket;
       try {
         socket = new WebSocket(url);
