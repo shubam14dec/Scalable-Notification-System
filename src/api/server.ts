@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { assertProductionConfig } from '../config/preflight';
 import { logger } from '../shared/logger';
 import { initTracing, shutdownTracing } from '../shared/tracing';
 import { redis } from '../shared/redis';
@@ -7,6 +8,7 @@ import { pool } from '../db/pool';
 import { buildApp } from './app';
 
 async function main() {
+  assertProductionConfig('api');
   initTracing('notification-api');
   const app = await buildApp();
   await app.listen({ port: env.port, host: '0.0.0.0' });

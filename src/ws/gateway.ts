@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { env } from '../config/env';
+import { assertProductionConfig } from '../config/preflight';
 import { logger } from '../shared/logger';
 import { createRedis, redis } from '../shared/redis';
 import { pool } from '../db/pool';
@@ -316,6 +317,7 @@ export function startGateway(port: number = env.wsPort) {
 }
 
 function main() {
+  assertProductionConfig('ws');
   const { stop } = startGateway();
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'ws gateway shutting down');

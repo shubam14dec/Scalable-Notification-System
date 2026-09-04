@@ -45,7 +45,8 @@ declare module 'fastify' {
  * entrypoint listens on it, and tests exercise it in-process via inject().
  */
 export async function buildApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
+  // trustProxy: behind Caddy in production req.ip is otherwise the proxy's address, collapsing the per-visitor handoff paste budget (routes/handoff.ts withinPasteBudget) into one global bucket; dev is unaffected (nothing sets X-Forwarded-For).
+  const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024, trustProxy: true });
 
   // Keep the raw body: HMAC signatures are computed over exact bytes, and
   // re-serializing parsed JSON would not round-trip byte-for-byte.

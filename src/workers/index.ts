@@ -1,6 +1,7 @@
 import { Worker, type Processor, type WorkerOptions } from 'bullmq';
 import { createServer } from 'node:http';
 import { env } from '../config/env';
+import { assertProductionConfig } from '../config/preflight';
 import { register } from '../shared/metrics';
 import { initTracing, shutdownTracing } from '../shared/tracing';
 import { logger } from '../shared/logger';
@@ -49,6 +50,7 @@ function makeWorker(
 }
 
 function main() {
+  assertProductionConfig('worker');
   initTracing('notification-worker');
 
   // Pipeline stages
