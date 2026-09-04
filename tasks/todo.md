@@ -316,12 +316,10 @@ setEnv now dispatches, Shell subscribes). SHIPPED: pushed 2026-08-27,
 CI+gate green ×3, 0.8.7 published (PR #21 merged). Phase A10 CLOSED.
 
 ### TEST-HEALTH — model-routing load flake (added 2026-08-26)
-- [ ] model-routing.test.ts's two load-flaky tests ("SAFE tool keeps
-      the turn cheap" + an extra-message-row count) fail
-      intermittently under full-suite load only (9/9 isolated, green
-      on clean full runs) — has now cost triage time in A8/A10;
-      harden the assertions the way the A6 agent made its wire checks
-      retry-proof.
+(REMOVED at user's instruction 2026-09-05 — accepted as-is: the two
+tests are green isolated and on clean full runs; only full-suite load
+flakes them. If they cost triage time again, the A6 retry-proof wire
+pattern is the fix.)
 
 ### Phase A8 — SHIPPED 2026-08-25 (review)
 All 3 slices done (commits 9d87bea, b30a777, +docs), suite 967→1033
@@ -744,11 +742,11 @@ creds; no new env/webhooks — DEPLOYMENT.md unchanged on purpose).
 The quality ladder below is a DEPENDENCY CHAIN (documented in
 docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 
-- [ ] A1. Streaming managed replies — PLAN-READY, ~1 day, cheapest big
-      win. Widget-only SSE, snapshot-publishing over the existing
-      .updated pathway, auto-fallback for non-SSE LLM endpoints.
-      Pickup = read ~/.claude/plans/phase-streaming-replies-PARKED.md,
-      launch the 4 slices.
+- (REMOVED at user's instruction 2026-09-05) A1. Streaming managed
+      replies — cut from the backlog with the platform B-track; the
+      parked plan file (~/.claude/plans/phase-streaming-replies-PARKED.md)
+      remains on disk if it is ever wanted. The agents track is CLOSED:
+      nothing open remains above the parked production deploy.
 - [x] A2. LLM-judge dimensions — SHIPPED 2026-08-21, review above.
 - (folded into A16 below) A2c. Landing page judged-evals line —
       superseded 2026-08-23: the site update now covers ALL of A2–A6,
