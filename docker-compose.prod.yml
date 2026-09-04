@@ -1,0 +1,132 @@
+# Production stack — one box, one compose file.
+#
+# ZERO published ports by design: no service declares `ports:`. The box's only
+# public listener is sshd; all ingress arrives through the outbound-only
+# Cloudflare tunnel (the cloudflared service below), which dials the edge and
+# reaches `web` over the compose network. Nothing here is reachable from the
+# internet except through that tunnel.
+
+# api / worker / ws / acme-tools are the SAME image, differing only by command.
+x-app: &app
+  build: .
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata-prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER}']
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Redis is a durability store here, not just a cache — it holds
+    # config:public-url (the live public URL, survives restarts by design), the
+    # exec-log buffer and every BullMQ queue. AOF is not optional.
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory-policy noeviction --dir /data
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - chdata-prod:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    mem_limit: 3g
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- localhost:8123/ping || exit 1']
+      interval: 10s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    command: npx tsx src/api/server.ts
+    # ONE shared env file across api, worker and ws is what guarantees
+    # JWT_SECRET is byte-identical between the api that mints dashboard tokens
+    # and the ws gateway that verifies them.
+    env_file: .env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/health || exit 1']
+      interval: 10s
+      retries: 10
+
+  worker:
+    <<: *app
+    command: npx tsx src/workers/index.ts
+    env_file: .env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3002/health || exit 1']
+      interval: 10s
+      retries: 10
+
+  ws:
+    <<: *app
+    command: npx tsx src/ws/gateway.ts
+    env_file: .env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/health || exit 1']
+      interval: 10s
+      retries: 10
+
+  # Demo-grade stub for the agent's refund tool: unsigned, holds no data. It is
+  # public at tools.asyncify.org because the SSRF validation the product applies
+  # to tenant-supplied tool URLs (src/core/safe-url.ts) rejects private targets —
+  # an agent tool URL has to resolve publicly.
+  acme-tools:
+    <<: *app
+    command: node scripts/acme-tools/serve.mjs
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/compose/dashboard.Dockerfile
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --config /etc/cloudflared/config.yml --credentials-file /etc/cloudflared/creds.json --no-autoupdate run ${TUNNEL_ID}
+    volumes:
+      - ./deploy/compose/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./deploy/compose/cloudflared/creds.json:/etc/cloudflared/creds.json:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata-prod:
+  redisdata:
+  chdata-prod:

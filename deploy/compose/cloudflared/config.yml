@@ -1,0 +1,8 @@
+# Ingress only - the tunnel UUID and credentials file are box-local
+# (never committed; see .gitignore) and arrive via the compose command.
+ingress:
+  - hostname: app.asyncify.org
+    service: http://web:8080
+  - hostname: tools.asyncify.org
+    service: http://acme-tools:4400
+  - service: http_status:404

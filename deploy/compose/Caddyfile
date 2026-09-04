@@ -1,0 +1,33 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	encode zstd gzip
+
+	# Every top-level prefix the Fastify app owns. PUBLIC_URL is this same
+	# host, so provider webhooks, the open-tracking pixel and handoff links
+	# all land here. KEEP IN SYNC with route registration in src/api/app.ts.
+	@api path /v1/* /auth/* /ops/* /webhooks/* /handoff/* /o/* /health
+	handle @api {
+		reverse_proxy api:3000
+	}
+
+	# WS gateway. It ignores the request path entirely (src/ws/gateway.ts
+	# reads only searchParams), so /ws/?token=... reaches it unmodified.
+	handle /ws* {
+		reverse_proxy ws:3001
+	}
+
+	# /metrics is deliberately NOT routed: scrape api:3000/metrics and
+	# worker:3002/metrics on the compose network if Prometheus ever lands.
+
+	# Dashboard SPA - BrowserRouter with no basename: unknown paths must
+	# return index.html, not 404.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

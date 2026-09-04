@@ -4,3 +4,5 @@ dist/
 *.log
 
 .npmrc
+.env.prod
+deploy/compose/cloudflared/creds.json
