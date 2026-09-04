@@ -9,7 +9,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# The root lockfile links the workspaces; npm ci validates they exist.
+COPY packages ./packages
+# tsx is a devDependency and every entrypoint runs through it; ENV
+# NODE_ENV=production above would otherwise make npm omit it.
+RUN npm ci --include=dev --no-audit --no-fund
 
 COPY tsconfig.json ./
 COPY src ./src

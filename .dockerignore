@@ -1,0 +1,13 @@
+node_modules
+*/node_modules
+packages/*/node_modules
+dashboard/node_modules
+dashboard/dist
+dist
+.git
+.env
+.env.prod
+tasks
+docs
+evals
+tests
