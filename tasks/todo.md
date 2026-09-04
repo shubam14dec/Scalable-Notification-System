@@ -792,25 +792,9 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 
 ## BACKLOG — PLATFORM TRACK (novu-gap + engine)
 
-- [ ] B1. Inbox v2: action buttons (complete/revert), redirect URLs,
-      archive + snooze (sweep pattern resurfaces snoozes).
-- [ ] B2. Preferences v2: per-workflow subscriber preferences (layered
-      resolution) + end-user preference center in the widget.
-- [ ] B3. Workflow engine v2: digestKey, throttle step,
-      delay-until-date/dynamic, cancel-trigger API.
-- [ ] B4. Environment promotion dev→prod with dry-run diff; outbound
-      customer webhooks (message.sent/failed/delivered/read,
-      workflow.*, preference.updated).
-- [ ] B5. Idempotency-Key header protocol: 409 in-flight / 422
-      body-hash mismatch / 24h cached replay (small, rides Redis).
-- [ ] B6. Rolling dual API keys per environment (small).
-- [ ] B7. API polish: FST_ERR_CTP_* → clean 4xx JSON (found P11 E2E).
-- [ ] B8. Engine hygiene: keyset pagination + capped counts; column
-      projection on hot queries; cache-set TTL jitter.
-- [ ] B9. Email compliance set: List-Unsubscribe / RFC 8058, public
-      unsubscribe endpoint, consent fields, marketing footer block.
-- [ ] B10. Small polish leftovers in the Phase 17/18/19 lists (see the
-      shipped-history sections below).
+(B1–B10 CUT at user call 2026-09-05 — "i dont need these". Not parked:
+removed. If any of it is ever wanted again, the analysis that produced
+the list lives in docs/NOVU-GAP-ANALYSIS.md + git history of this file.)
 
 ## PARKED — PRODUCTION DEPLOY (user call 2026-08-21: after features)
 
