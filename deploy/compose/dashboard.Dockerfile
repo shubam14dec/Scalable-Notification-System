@@ -8,7 +8,12 @@ COPY dashboard/package.json dashboard/package-lock.json ./dashboard/
 RUN cd dashboard && npm ci --no-audit --no-fund
 COPY packages ./packages
 COPY dashboard ./dashboard
-RUN cd dashboard && npm run build
+# vite build directly, NOT `npm run build` (= tsc --noEmit && vite build):
+# the tsc gate re-typechecks ../packages/react/src, which in this image has
+# no workspace node_modules of its own — React's generics resolve wrong and
+# every setState callback trips TS7006. The type gate runs on the dev
+# machine and in CI; this stage only bundles.
+RUN cd dashboard && npx vite build
 
 FROM caddy:2-alpine
 COPY --from=build /repo/dashboard/dist /srv
