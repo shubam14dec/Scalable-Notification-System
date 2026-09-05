@@ -3,7 +3,11 @@
 #   worker: npx tsx src/workers/index.ts
 #   ws:     npx tsx src/ws/gateway.ts
 # (the Helm chart sets the command per Deployment)
-FROM node:20-alpine
+# node 24, matching the dev machines (dev/prod parity): on node:20 the
+# transitive undici build crashed every entrypoint at require time with
+# "webidl.util.markAsUncloneable is not a function" (API added in newer
+# Node) — found on the first real boot of this image, on the prod box.
+FROM node:24-alpine
 
 WORKDIR /app
 ENV NODE_ENV=production
