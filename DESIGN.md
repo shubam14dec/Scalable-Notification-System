@@ -21,7 +21,9 @@ sparingly. Non-status distinctions = fill style (solid vs hollow ring).
 ## Components (dashboard/src/ui.tsx)
 Button, Card (bordered surface, radius-md), EmptyState (teaching copy),
 Mono, PageHeader, Skeleton, StatusBadge (dot + 12px label), td/th (dense
-table cells). Modals follow KnowledgeModal/MemoryModal patterns in
+table cells), Select (the house dropdown — custom trigger + portaled
+listbox, both token-styled; never use a native <select>, its OS-painted
+menu ignores the tokens). Modals follow KnowledgeModal/MemoryModal patterns in
 Agents.tsx. Sidebar shell in components/Shell.tsx (nav + QueuePulse +
 LiveDot).
 
