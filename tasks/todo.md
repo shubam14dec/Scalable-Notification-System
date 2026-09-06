@@ -34,10 +34,16 @@ a kit component, never a one-off.
       action bar (z-20) painted through the z-10 editor page after
       double-click entry; overlay → z-30 (67f7bef). Verified
       2026-09-07.
+- [x] U1 ship checkpoint 2026-09-07 — platform pushed on his word
+      (bc0cfde..7d54679, 24 commits, CI+Release green) and LIVE on
+      app.asyncify.org (his verification): box converted in place to a
+      real git checkout (day-2 deploys = git pull now, see
+      docs/DEPLOYMENT.md), `web` image rebuilt, new bundle proven from
+      outside. Local since: 1316d51 runbook rider.
 - [ ] U1.next — next item from his list (phase stays open while he
       keeps finding them).
-- [ ] U1 close-out — batch push on his word + prod `web` image rebuild
-      on the box, then review section here.
+- [ ] U1 close-out — when his list runs dry: push any riders, review
+      section here.
 
 ### Phase A16 — SHIPPED 2026-08-31 (review)
 Landing page: "05 · THE EDIT" (plan approved 2026-08-30; pushed LIVE
