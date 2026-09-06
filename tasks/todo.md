@@ -40,6 +40,15 @@ a kit component, never a one-off.
       real git checkout (day-2 deploys = git pull now, see
       docs/DEPLOYMENT.md), `web` image rebuilt, new bundle proven from
       outside. Local since: 1316d51 runbook rider.
+- [x] U1.5 CD pipeline — SHIPPED + proven 2026-09-07 (his design:
+      promotion by PR). main = just code; deploy = merge main →
+      `production` (protected: PR + test + agent-evals green, no force
+      push) → deploy.yml SSHes the box (dedicated key in DEPLOY_SSH_KEY
+      secret — his paste; pinned host key), runs pull → build → migrate
+      → up -d → tunnel health check (2×200). Box tracks production.
+      First real deploy: PR #23 merged, run green 3m47s, box HEAD =
+      merge commit ff41150, 9/9 up, /health 200. Rollback = PR Revert.
+      Manual runbook stays in DEPLOYMENT.md as recovery path.
 - [ ] U1.next — next item from his list (phase stays open while he
       keeps finding them).
 - [ ] U1 close-out — when his list runs dry: push any riders, review
