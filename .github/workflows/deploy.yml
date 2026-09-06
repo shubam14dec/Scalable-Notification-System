@@ -1,0 +1,105 @@
+# Deploy: merging main → production ships app.asyncify.org.
+#
+# The promotion model (2026-09-07): `main` is just code — push freely, CI
+# runs, nothing deploys. Going live is a PULL REQUEST from main into the
+# `production` branch: the PR page shows the exact diff about to ship, branch
+# protection keeps the merge button grey until CI (test + agent-evals) is
+# green on it, and the merge itself is the deploy button. This workflow fires
+# on the resulting push to `production` and runs the same runbook a human
+# would (docs/DEPLOYMENT.md → Day-2): pull, migrate, build, up, health check.
+#
+# The box: Contabo, /root/asyncify is a git checkout tracking `production`.
+# Access is a DEDICATED deploy keypair (generated on the box, its public half
+# in authorized_keys) whose private half lives ONLY in the DEPLOY_SSH_KEY
+# repo secret — revoke it any time by deleting one authorized_keys line. The
+# box's host key is PINNED below (public info, and pinning beats trusting
+# first contact from a runner).
+#
+# Rollback: revert the PR on GitHub and this workflow redeploys the previous
+# state. The schema is additive/IF-NOT-EXISTS, so code rollback never needs a
+# schema rollback.
+name: Deploy
+
+on:
+  push:
+    branches: [production]
+  # Manual redeploy of the current production head (e.g. after a box rebuild).
+  workflow_dispatch:
+
+concurrency:
+  # One deploy at a time, and NEVER cancel a half-finished one — a killed
+  # deploy could leave old containers running new code's schema. Queue instead.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      BOX: 173.212.243.218
+      # ed25519 host key of the box, captured 2026-09-07. If the box is ever
+      # reinstalled this line must be updated or every deploy fails closed —
+      # which is exactly the point.
+      BOX_HOSTKEY: '173.212.243.218 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIgspfMyebrXU1uy6zrr4E12wspP7EZ2waDbwH3HXvO5'
+
+    steps:
+      - name: Load the deploy key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::error::DEPLOY_SSH_KEY secret is not set (Settings → Secrets → Actions)"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          # tr -d '\r': the secret may arrive with CRLF endings (pasted or
+          # piped from Windows), and OpenSSH refuses a key with them.
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$BOX_HOSTKEY" > ~/.ssh/known_hosts
+
+      - name: Ship (pull → migrate → build → up)
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=20 "root@$BOX" '
+            set -euo pipefail
+            cd /root/asyncify
+            git fetch origin production
+            git reset --hard origin/production
+            echo "deploying $(git rev-parse --short HEAD): $(git log -1 --format=%s)"
+            C="docker compose -f docker-compose.prod.yml --env-file .env.prod"
+            # Build first so migrate runs the NEW code, then swap containers.
+            $C build
+            $C run --rm api npx tsx src/db/migrate.ts
+            $C up -d
+          '
+
+      - name: Health check through the tunnel
+        run: |
+          set -euo pipefail
+          # Two consecutive 200s: one can be a container that has not died yet.
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 5 https://app.asyncify.org/health > /dev/null 2>&1; then
+              ok=$((ok + 1))
+              [ "$ok" -ge 2 ] && { echo "healthy after ~${i}0s of checks"; exit 0; }
+            else
+              ok=0
+            fi
+            sleep 10
+          done
+          echo "::error::app.asyncify.org/health never went (stably) green after the deploy — check 'docker compose logs' on the box; previous containers may still be serving."
+          exit 1
+
+      - name: Summary
+        if: success()
+        env:
+          # Via env, never inline-interpolated into the script: a commit
+          # message is multiline attacker-shaped text as far as sh is concerned.
+          MSG: ${{ github.event.head_commit.message || 'manual redeploy' }}
+        run: |
+          echo "### Deployed to app.asyncify.org" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ github.sha }}\` — $(printf '%s' "$MSG" | head -1)" >> "$GITHUB_STEP_SUMMARY"

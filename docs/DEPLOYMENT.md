@@ -237,12 +237,31 @@ Order matters — nothing is ever pointed at a dead URL:
 
 ## Day-2
 
-**Deploy a change:**
+**Deploy a change — the normal path (since 2026-09-07): merge main →
+production.** `main` is just code; going live is a pull request from `main`
+into the `production` branch. The PR shows the exact diff that will ship,
+branch protection keeps the merge button grey until CI (test + agent-evals)
+passes, and merging triggers `.github/workflows/deploy.yml`, which SSHes to
+the box (dedicated deploy key in the `DEPLOY_SSH_KEY` repo secret, pinned
+host key) and runs exactly the manual runbook below: pull → migrate (always;
+idempotent) → build → up → health-check app.asyncify.org. Rollback = the
+PR's Revert button, which redeploys the previous state. One deploy runs at a
+time and is never cancelled mid-flight.
+
+**Deploy a change — by hand** (fallback; also the recovery path if Actions
+or the deploy key is broken — `/root/asyncify` is a real git checkout
+tracking `production`; the launch-day tarball copy was converted in place;
+`.env.prod` and the tunnel creds are untracked and survive pulls):
 ```bash
-cd ~/asyncify && git pull
-docker compose --env-file .env.prod build
-docker compose --env-file .env.prod up -d
+cd ~/asyncify && git pull   # tracks production
+docker compose -f docker-compose.prod.yml --env-file .env.prod build
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 ```
+`-f` matters: the repo also carries the dev `docker-compose.yml`, and
+without it compose would pick that one. The box's `/root/.bashrc` exports
+`COMPOSE_FILE=docker-compose.prod.yml` as a belt-and-suspenders default for
+interactive shells. A dashboard-only change needs just `build web` +
+`up -d web`.
 The schema is additive and `IF NOT EXISTS`, so a bad deploy rolls back with
 `git checkout <last-good>` + build + up — no schema rollback needed.
 
