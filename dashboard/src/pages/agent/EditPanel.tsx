@@ -1,8 +1,17 @@
-// The agent form (shared by the list's create/edit modals and the detail Edit
-// tab) plus EditTab — the detail page's Edit panel, which wires the PATCH save
-// and the agent-level Rotate secret button (next to Save, per the V1 mockup).
-// API paths and react-query keys identical to the former Agents.tsx.
-import { useState, type ReactNode } from 'react';
+// The agent form (shared by the list's create modal and the detail page's
+// config tabs) plus ConfigPanel — the detail page's config panel, which wires
+// the PATCH save and the agent-level Rotate secret button (next to Save, per
+// the V1 mockup). API paths and react-query keys identical to the former
+// Agents.tsx.
+//
+// ONE FORM, FOUR TABS. The detail page reads as Edit / Guardrails / Cost &
+// routing / Memory, but there is still exactly one <form>, one piece of state,
+// one FormData and one save behind all four. Each tab passes `section`; the
+// groups below hide rather than unmount, so a half-typed guardrail survives a
+// trip to the Cost tab and every field is still in the FormData the save
+// reads, whichever tab Save was pressed on. The create modal passes no
+// `section` at all and therefore renders the whole form, exactly as before.
+import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { Button, Field, Input, Mono } from '../../ui';
@@ -31,6 +40,63 @@ import {
   type SuggestedPrompt,
 } from './types';
 
+/** The config tabs the one form is split across on the detail page. */
+export type ConfigSection = 'edit' | 'guardrails' | 'cost' | 'memory';
+
+/**
+ * Which tab owns each named field. Used only to route a validation failure to
+ * the tab that can show it (see `onInvalid` on the form) — the save itself
+ * never consults this, because the save reads every field regardless of tab.
+ */
+const FIELD_SECTION: Record<string, ConfigSection> = {
+  identifier: 'edit',
+  name: 'edit',
+  bridgeUrl: 'edit',
+  systemPrompt: 'edit',
+  model: 'edit',
+  llmApiKey: 'edit',
+  llmBaseUrl: 'edit',
+  maxTokens: 'edit',
+  description: 'edit',
+  maxDailyTokens: 'cost',
+  cheapModel: 'cost',
+  topicDeny: 'guardrails',
+  topicAllow: 'guardrails',
+  topicRedirect: 'guardrails',
+  denyPhrases: 'guardrails',
+  replyFallback: 'guardrails',
+  rateMaxMessages: 'guardrails',
+  rateWindowMinutes: 'guardrails',
+  rateNotice: 'guardrails',
+  autoResolveH: 'guardrails',
+  autoResolveM: 'guardrails',
+  triggerTurns: 'memory',
+  tailTurns: 'memory',
+};
+
+/**
+ * A group of fields belonging to one config tab. HIDDEN, never unmounted:
+ * unmounting would throw away a half-typed policy on every tab switch and —
+ * worse — drop those fields out of the FormData the save reads, so pressing
+ * Save on the Edit tab would silently clear the guardrails. `active` is
+ * undefined in the create modal, where every group shows at once.
+ */
+function ConfigGroup({
+  section,
+  active,
+  children,
+}: {
+  section: ConfigSection;
+  active?: ConfigSection;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-4" hidden={active !== undefined && active !== section}>
+      {children}
+    </div>
+  );
+}
+
 export function AgentForm({
   initial,
   pending,
@@ -40,6 +106,8 @@ export function AgentForm({
   onCancel,
   hideCancel = false,
   footerExtra,
+  section,
+  onRequestSection,
 }: {
   initial?: Partial<Agent>;
   pending: boolean;
@@ -49,6 +117,10 @@ export function AgentForm({
   onCancel: () => void;
   hideCancel?: boolean;
   footerExtra?: ReactNode;
+  /** Tab currently on screen; omit (the create modal) to show every group. */
+  section?: ConfigSection;
+  /** Ask the page to switch tabs — used to surface an off-screen field error. */
+  onRequestSection?: (section: ConfigSection) => void;
 }) {
   const [runtime, setRuntime] = useState<'bridge' | 'managed'>(initial?.runtime ?? 'bridge');
   const editing = Boolean(initial?.identifier);
@@ -231,10 +303,38 @@ export function AgentForm({
     (a?.blockPii ?? false) === (b?.blockPii ?? false) &&
     (a?.fallback ?? '') === (b?.fallback ?? '');
 
+  // Cross-tab validation. A `required` field on a tab that is not on screen
+  // cannot be focused, so the browser refuses the submit with no message at
+  // all — the operator would press Save and watch nothing happen, which is the
+  // one failure mode splitting the form could have introduced. So: catch the
+  // invalid event (React attaches one to every input/select/textarea and
+  // dispatches it up the tree), suppress the bubble nobody could see, switch to
+  // the tab that owns the field, and re-report it once it is visible — the
+  // native message then lands exactly where it always did. Re-reporting fires
+  // `invalid` again, but by then the field is on the active tab, so the handler
+  // below leaves it alone and the browser takes over.
+  const [offscreenInvalid, setOffscreenInvalid] = useState<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!offscreenInvalid) return;
+    const frame = requestAnimationFrame(() => {
+      setOffscreenInvalid(null);
+      offscreenInvalid.reportValidity();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [offscreenInvalid]);
+
   return (
     <>
     <form
       className="space-y-4"
+      onInvalid={(e) => {
+        const el = e.target as HTMLInputElement;
+        const owner = FIELD_SECTION[el.name];
+        if (!section || !owner || owner === section) return;
+        e.preventDefault();
+        onRequestSection?.(owner);
+        setOffscreenInvalid(el);
+      }}
       onSubmit={(e) => {
         e.preventDefault();
         // A7: a gate with rules but nothing to say is never saved, in either
@@ -426,549 +526,584 @@ export function AgentForm({
         onSubmit(body);
       }}
     >
-      {!editing && (
-        <Field label="Identifier" hint="Stable id used by the widget and SDK — cannot change later">
-          <Input name="identifier" required autoFocus placeholder="support" className="font-mono" pattern="[a-z0-9-_]+" />
+      <ConfigGroup section="edit" active={section}>
+        {!editing && (
+          <Field label="Identifier" hint="Stable id used by the widget and SDK — cannot change later">
+            <Input name="identifier" required autoFocus placeholder="support" className="font-mono" pattern="[a-z0-9-_]+" />
+          </Field>
+        )}
+        <Field label="Name">
+          <Input name="name" required placeholder="Support agent" defaultValue={initial?.name} />
         </Field>
-      )}
-      <Field label="Name">
-        <Input name="name" required placeholder="Support agent" defaultValue={initial?.name} />
-      </Field>
 
-      <Field label="Runtime" hint="Who answers each message">
-        <select
-          aria-label="Runtime"
-          className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 hover:border-bd-strong"
-          value={runtime}
-          onChange={(e) => setRuntime(e.target.value as 'bridge' | 'managed')}
-        >
-          <option value="bridge" className="bg-surface">Your code — we POST turns to your bridge URL</option>
-          <option value="managed" className="bg-surface">Managed LLM — we run the model, zero code</option>
-        </select>
-      </Field>
+        <Field label="Runtime" hint="Who answers each message">
+          <select
+            aria-label="Runtime"
+            className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 hover:border-bd-strong"
+            value={runtime}
+            onChange={(e) => setRuntime(e.target.value as 'bridge' | 'managed')}
+          >
+            <option value="bridge" className="bg-surface">Your code — we POST turns to your bridge URL</option>
+            <option value="managed" className="bg-surface">Managed LLM — we run the model, zero code</option>
+          </select>
+        </Field>
+      </ConfigGroup>
 
       {runtime === 'bridge' ? (
-        <Field label="Bridge URL" hint="Where your handler listens — we POST every conversation turn here, signed">
-          <Input
-            name="bridgeUrl"
-            required
-            type="url"
-            placeholder="https://app.example.com/asyncify-agent"
-            defaultValue={initial?.bridgeUrl ?? ''}
-            className="font-mono"
-          />
-        </Field>
+        <ConfigGroup section="edit" active={section}>
+          <Field label="Bridge URL" hint="Where your handler listens — we POST every conversation turn here, signed">
+            <Input
+              name="bridgeUrl"
+              required
+              type="url"
+              placeholder="https://app.example.com/asyncify-agent"
+              defaultValue={initial?.bridgeUrl ?? ''}
+              className="font-mono"
+            />
+          </Field>
+        </ConfigGroup>
       ) : (
         <>
-          <Field label="System prompt" hint="The agent's role, tone, and boundaries — runs on every turn">
-            <textarea
-              name="systemPrompt"
-              rows={5}
-              placeholder="You are the Acme support agent. Be brief and friendly…"
-              defaultValue={initial?.systemPrompt ?? ''}
-              className="w-full rounded-md border border-bd bg-transparent px-2.5 py-2 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
-            />
-          </Field>
-          <Field label="Model" hint="Defaults to claude-opus-4-8; use your endpoint's model id if you set a base URL">
-            <Input name="model" placeholder="claude-opus-4-8" defaultValue={initial?.model ?? ''} className="font-mono" />
-          </Field>
-          <Field label="Max reply tokens" hint="Per-reply output cap, 256–8192 (blank = 1024). Controls spend on your key">
-            <Input
-              name="maxTokens"
-              type="number"
-              min={256}
-              max={8192}
-              placeholder="1024"
-              defaultValue={initial?.maxTokens ?? ''}
-              className="font-mono"
-            />
-          </Field>
-          <Field
-            label="Daily token budget"
-            hint="Circuit breaker, not a quota — size it ~4x a busy day (see Health for tokens/turn)."
-          >
-            <Input
-              name="maxDailyTokens"
-              type="number"
-              min={1}
-              placeholder="off"
-              defaultValue={initial?.maxDailyTokens ?? ''}
-              className="font-mono"
-            />
-          </Field>
-          {budgetHintOn && suggested != null && (
-            <p className="-mt-2 text-[11px] text-t3">
-              30-day p95 daily usage:{' '}
-              <Mono className="text-t2">{fmtInt(p95Daily)}</Mono> · suggested budget:{' '}
-              <Mono className="text-t2">{fmtInt(suggested)}</Mono>
-            </p>
-          )}
-          <Field
-            label="API key"
-            hint={
-              initial?.hasLlmKey
-                ? 'A key is stored — leave blank to keep it, paste to replace'
-                : 'Stored encrypted, never shown again'
-            }
-          >
-            <Input
-              name="llmApiKey"
-              type="password"
-              autoComplete="off"
-              required={runtime === 'managed' && !initial?.hasLlmKey}
-              placeholder={initial?.hasLlmKey ? '••••••••  (kept)' : 'sk-ant-… or your provider key'}
-              className="font-mono"
-            />
-          </Field>
-          <Field
-            label="Base URL"
-            hint="Optional — any Anthropic-compatible endpoint (e.g. z.ai). Blank = api.anthropic.com"
-          >
-            <Input
-              name="llmBaseUrl"
-              type="url"
-              placeholder="https://api.z.ai/api/anthropic"
-              defaultValue={initial?.llmBaseUrl ?? ''}
-              className="font-mono"
-            />
-          </Field>
+          {/* Identity and the model connection — the Edit tab. Max reply tokens
+              follows Base URL here rather than Model, so the whole LLM
+              connection reads as one run of fields once the spend knobs have
+              moved to Cost & routing. */}
+          <ConfigGroup section="edit" active={section}>
+            <Field label="System prompt" hint="The agent's role, tone, and boundaries — runs on every turn">
+              <textarea
+                name="systemPrompt"
+                rows={5}
+                placeholder="You are the Acme support agent. Be brief and friendly…"
+                defaultValue={initial?.systemPrompt ?? ''}
+                className="w-full rounded-md border border-bd bg-transparent px-2.5 py-2 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
+              />
+            </Field>
+            <Field label="Model" hint="Defaults to claude-opus-4-8; use your endpoint's model id if you set a base URL">
+              <Input name="model" placeholder="claude-opus-4-8" defaultValue={initial?.model ?? ''} className="font-mono" />
+            </Field>
+            <Field
+              label="API key"
+              hint={
+                initial?.hasLlmKey
+                  ? 'A key is stored — leave blank to keep it, paste to replace'
+                  : 'Stored encrypted, never shown again'
+              }
+            >
+              <Input
+                name="llmApiKey"
+                type="password"
+                autoComplete="off"
+                required={runtime === 'managed' && !initial?.hasLlmKey}
+                placeholder={initial?.hasLlmKey ? '••••••••  (kept)' : 'sk-ant-… or your provider key'}
+                className="font-mono"
+              />
+            </Field>
+            <Field
+              label="Base URL"
+              hint="Optional — any Anthropic-compatible endpoint (e.g. z.ai). Blank = api.anthropic.com"
+            >
+              <Input
+                name="llmBaseUrl"
+                type="url"
+                placeholder="https://api.z.ai/api/anthropic"
+                defaultValue={initial?.llmBaseUrl ?? ''}
+                className="font-mono"
+              />
+            </Field>
+            <Field label="Max reply tokens" hint="Per-reply output cap, 256–8192 (blank = 1024). Controls spend on your key">
+              <Input
+                name="maxTokens"
+                type="number"
+                min={256}
+                max={8192}
+                placeholder="1024"
+                defaultValue={initial?.maxTokens ?? ''}
+                className="font-mono"
+              />
+            </Field>
+          </ConfigGroup>
 
-          {/* Phase A6 — model routing. Managed only: it lives inside this
-              branch, so a bridge agent never sees the section at all. */}
-          <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
-            <div className="flex items-start justify-between gap-3">
+          {/* Cost & routing — the two knobs that decide what a day of this
+              agent costs: the ceiling, and which model writes the easy half of
+              the replies. */}
+          <ConfigGroup section="cost" active={section}>
+            <Field
+              label="Daily token budget"
+              hint="Circuit breaker, not a quota — size it ~4x a busy day (see Health for tokens/turn)."
+            >
+              <Input
+                name="maxDailyTokens"
+                type="number"
+                min={1}
+                placeholder="off"
+                defaultValue={initial?.maxDailyTokens ?? ''}
+                className="font-mono"
+              />
+            </Field>
+            {budgetHintOn && suggested != null && (
+              <p className="-mt-2 text-[11px] text-t3">
+                30-day p95 daily usage:{' '}
+                <Mono className="text-t2">{fmtInt(p95Daily)}</Mono> · suggested budget:{' '}
+                <Mono className="text-t2">{fmtInt(suggested)}</Mono>
+              </p>
+            )}
+
+            {/* Phase A6 — model routing. Managed only: it lives inside this
+                branch, so a bridge agent never sees the section at all. */}
+            <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <span className="block text-[12px] font-medium text-t2">Model routing</span>
+                  <span className="mt-0.5 block text-[11px] text-t3">
+                    Answer the easy messages on a cheaper model. Simple replies are handled by the
+                    smaller model; anything that needs a real action — a refund, a workflow, a
+                    knowledge lookup — automatically runs on your main model instead.
+                  </span>
+                </div>
+                <Toggle checked={routingOn} onChange={setRoutingOn} label="Model routing enabled" />
+              </div>
+              <Field
+                label="Cheap model"
+                hint="Must be a model your LLM endpoint already serves — routing uses this agent's own key and base URL. Getting the id wrong is safe: every reply just runs on the main model."
+              >
+                <Input
+                  name="cheapModel"
+                  required={routingOn}
+                  placeholder="claude-haiku-4-5"
+                  defaultValue={initial?.routing?.cheapModel ?? ''}
+                  className="font-mono"
+                />
+              </Field>
+              {/* The stats strip — what routing actually did, in words. */}
+              {routingOn && editing && routingStats.isSuccess && (
+                <div className="space-y-1 border-t border-bd pt-3">
+                  {routingWords ? (
+                    <>
+                      <p className="text-[11px] text-t3">
+                        Last {routingStats.data.windowDays} days ·{' '}
+                        <Mono className="text-t3">{fmtInt(routingStats.data.replies)}</Mono> replies
+                      </p>
+                      {/* The headline figures — large numbers, quiet words (his
+                          feedback: these ARE the feature's payoff; 11px prose
+                          buried them). Same figure idiom as the health stats. */}
+                      <div className="flex gap-6 pt-1">
+                        <div>
+                          <Mono className="block text-[20px] leading-tight text-t1">
+                            {routingWords.cheap.pct}%
+                          </Mono>
+                          <span className="mt-0.5 block max-w-[180px] text-[11px] leading-snug text-t2">
+                            {routingWords.cheap.label}
+                          </span>
+                        </div>
+                        <div>
+                          <Mono className="block text-[20px] leading-tight text-t1">
+                            {routingWords.escalated.pct}%
+                          </Mono>
+                          <span className="mt-0.5 block max-w-[180px] text-[11px] leading-snug text-t2">
+                            {routingWords.escalated.label}
+                          </span>
+                        </div>
+                      </div>
+                      {routingWords.unrouted && (
+                        <p className="pt-1 text-[11px] text-t3">{routingWords.unrouted}</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-[11px] text-t3">
+                      No routed replies in the last {routingStats.data.windowDays} days.
+                    </p>
+                  )}
+                  <p className="text-[11px] text-t3">
+                    Canary-trial replies always use the trial's own model, so they're not counted
+                    here.
+                  </p>
+                </div>
+              )}
+            </div>
+          </ConfigGroup>
+
+          {/* Guardrails — what the agent will not talk about, what it may not
+              say, and how hard one customer may push it. The two cards below
+              are managed-only (they shape what the model writes); the message
+              limit further down applies to both runtimes. */}
+          <ConfigGroup section="guardrails" active={section}>
+            {/* Phase A7 — the topic gate. Managed only, like routing above: it
+                lives inside this branch, so a bridge agent never sees it. */}
+            <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
               <div>
-                <span className="block text-[12px] font-medium text-t2">Model routing</span>
+                <span className="block text-[12px] font-medium text-t2">Topics</span>
                 <span className="mt-0.5 block text-[11px] text-t3">
-                  Answer the easy messages on a cheaper model. Simple replies are handled by the
-                  smaller model; anything that needs a real action — a refund, a workflow, a
-                  knowledge lookup — automatically runs on your main model instead.
+                  Before the agent answers, a small model reads the customer's message and names what
+                  it is about; anything you have ruled out gets your reply below instead of a
+                  model-written one. That check costs one extra call to the cheap model on every
+                  message — the price of not having to trust the prompt alone. Leave both lists empty
+                  and nothing changes.
                 </span>
               </div>
-              <Toggle checked={routingOn} onChange={setRoutingOn} label="Model routing enabled" />
-            </div>
-            <Field
-              label="Cheap model"
-              hint="Must be a model your LLM endpoint already serves — routing uses this agent's own key and base URL. Getting the id wrong is safe: every reply just runs on the main model."
-            >
-              <Input
-                name="cheapModel"
-                required={routingOn}
-                placeholder="claude-haiku-4-5"
-                defaultValue={initial?.routing?.cheapModel ?? ''}
-                className="font-mono"
-              />
-            </Field>
-            {/* The stats strip — what routing actually did, in words. */}
-            {routingOn && editing && routingStats.isSuccess && (
-              <div className="space-y-1 border-t border-bd pt-3">
-                {routingWords ? (
-                  <>
-                    <p className="text-[11px] text-t3">
-                      Last {routingStats.data.windowDays} days ·{' '}
-                      <Mono className="text-t3">{fmtInt(routingStats.data.replies)}</Mono> replies
-                    </p>
-                    {/* The headline figures — large numbers, quiet words (his
-                        feedback: these ARE the feature's payoff; 11px prose
-                        buried them). Same figure idiom as the health stats. */}
-                    <div className="flex gap-6 pt-1">
-                      <div>
-                        <Mono className="block text-[20px] leading-tight text-t1">
-                          {routingWords.cheap.pct}%
-                        </Mono>
-                        <span className="mt-0.5 block max-w-[180px] text-[11px] leading-snug text-t2">
-                          {routingWords.cheap.label}
-                        </span>
-                      </div>
-                      <div>
-                        <Mono className="block text-[20px] leading-tight text-t1">
-                          {routingWords.escalated.pct}%
-                        </Mono>
-                        <span className="mt-0.5 block max-w-[180px] text-[11px] leading-snug text-t2">
-                          {routingWords.escalated.label}
-                        </span>
-                      </div>
-                    </div>
-                    {routingWords.unrouted && (
-                      <p className="pt-1 text-[11px] text-t3">{routingWords.unrouted}</p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-[11px] text-t3">
-                    No routed replies in the last {routingStats.data.windowDays} days.
-                  </p>
-                )}
-                <p className="text-[11px] text-t3">
-                  Canary-trial replies always use the trial's own model, so they're not counted
-                  here.
-                </p>
+              <Field
+                label="Topics this agent won't discuss"
+                hint="One per line, or separated by commas. Plain words — “medical advice”, “competitor pricing”, “legal questions”."
+              >
+                <textarea
+                  name="topicDeny"
+                  rows={3}
+                  value={topicDeny}
+                  onChange={(e) => setTopicDeny(e.target.value)}
+                  placeholder={'medical advice\nlegal advice'}
+                  className={TEXTAREA_CLS}
+                />
+              </Field>
+              <div className="-mt-2 text-right">
+                <Mono className="text-t3">{denyLabels.length} of 24</Mono>
               </div>
-            )}
-          </div>
+              <Field
+                label="Only discuss (optional)"
+                hint="Leave blank to allow everything except the list above. Fill it in and it becomes the COMPLETE list of what this agent handles — anything else is off-topic. A topic in both lists is blocked: “won't discuss” always wins."
+              >
+                <textarea
+                  name="topicAllow"
+                  rows={2}
+                  value={topicAllow}
+                  onChange={(e) => setTopicAllow(e.target.value)}
+                  placeholder={'orders and delivery\nreturns'}
+                  className={TEXTAREA_CLS}
+                />
+              </Field>
+              <div className="-mt-2 text-right">
+                <Mono className="text-t3">{allowLabels.length} of 24</Mono>
+              </div>
+              <Field
+                label="When asked something else, reply with:"
+                hint="Sent word for word, by us — the model never writes a reply on a blocked topic, so there is nothing for it to be talked out of. Required once either list has anything in it."
+              >
+                <textarea
+                  name="topicRedirect"
+                  rows={2}
+                  required={topicsArmed}
+                  maxLength={2000}
+                  value={topicRedirect}
+                  onChange={(e) => setTopicRedirect(e.target.value.slice(0, 2000))}
+                  placeholder="I can only help with orders and returns here — for anything else, email support@acme.com."
+                  className={TEXTAREA_CLS}
+                />
+              </Field>
+              {topicsIncomplete && (
+                <p className="-mt-2 text-[11px] text-err">
+                  Add the reply to send, or clear the lists above — a topic rule with no reply would
+                  leave the customer with silence.
+                </p>
+              )}
+            </div>
 
-          {/* Phase A7 — the topic gate. Managed only, like routing above: it
-              lives inside this branch, so a bridge agent never sees it. */}
-          <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
-            <div>
-              <span className="block text-[12px] font-medium text-t2">Topics</span>
-              <span className="mt-0.5 block text-[11px] text-t3">
-                Before the agent answers, a small model reads the customer's message and names what
-                it is about; anything you have ruled out gets your reply below instead of a
-                model-written one. That check costs one extra call to the cheap model on every
-                message — the price of not having to trust the prompt alone. Leave both lists empty
-                and nothing changes.
-              </span>
+            {/* Phase A7 slice B — the outbound gate. Managed only, same branch. */}
+            <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+              <div>
+                <span className="block text-[12px] font-medium text-t2">Reply rules</span>
+                <span className="mt-0.5 block text-[11px] text-t3">
+                  Every reply the agent drafts is checked before it is sent; a reply that breaks a
+                  rule never leaves, and the customer gets your fallback below instead. No model, no
+                  extra call, no added wait. It matches the words you type, not paraphrases of them —
+                  that is the honest limit of a check that costs nothing and can never be down.
+                </span>
+              </div>
+              <Field
+                label="Words a reply may never contain"
+                hint="One per line, or separated by commas. Matched anywhere inside a word and in any capitalization, so “guarantee” also catches “guaranteed”. Catching too much? Make the phrase MORE SPECIFIC — “a full refund” rather than “refund”. Padding it with spaces will not help: we trim what you type, on purpose, so a stray space can never quietly switch a rule off."
+              >
+                <textarea
+                  name="denyPhrases"
+                  rows={3}
+                  value={denyPhrases}
+                  onChange={(e) => setDenyPhrases(e.target.value)}
+                  placeholder={'guarantee\nrisk-free'}
+                  className={TEXTAREA_CLS}
+                />
+              </Field>
+              <div className="-mt-2 text-right">
+                <Mono className="text-t3">{phraseList.length} of 100</Mono>
+              </div>
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-[11px] text-t3">
+                  Block other people's email addresses and phone numbers — the customer's own are
+                  always allowed, so the agent can still confirm the address on their account.
+                </span>
+                <Toggle
+                  checked={blockPii}
+                  onChange={setBlockPii}
+                  label="Block other people's contact details"
+                />
+              </div>
+              <Field
+                label="If a reply is blocked, send instead:"
+                hint="Write this carefully: by the time it sends, the turn's work has already happened — a refund may have been issued, a workflow may have fired. “A teammate will follow up shortly” is always true; “I wasn't able to help with that” can be a lie. Required once there is a rule to break."
+              >
+                <textarea
+                  name="replyFallback"
+                  rows={2}
+                  required={rulesArmed}
+                  maxLength={2000}
+                  value={replyFallback}
+                  onChange={(e) => setReplyFallback(e.target.value.slice(0, 2000))}
+                  placeholder="Let me get a teammate to confirm this for you — someone will follow up shortly."
+                  className={TEXTAREA_CLS}
+                />
+              </Field>
+              {rulesIncomplete && (
+                <p className="-mt-2 text-[11px] text-err">
+                  Add the reply to send instead, or clear the rules above — a blocked reply with no
+                  replacement would leave the customer with silence.
+                </p>
+              )}
             </div>
-            <Field
-              label="Topics this agent won't discuss"
-              hint="One per line, or separated by commas. Plain words — “medical advice”, “competitor pricing”, “legal questions”."
-            >
-              <textarea
-                name="topicDeny"
-                rows={3}
-                value={topicDeny}
-                onChange={(e) => setTopicDeny(e.target.value)}
-                placeholder={'medical advice\nlegal advice'}
-                className={TEXTAREA_CLS}
-              />
-            </Field>
-            <div className="-mt-2 text-right">
-              <Mono className="text-t3">{denyLabels.length} of 24</Mono>
-            </div>
-            <Field
-              label="Only discuss (optional)"
-              hint="Leave blank to allow everything except the list above. Fill it in and it becomes the COMPLETE list of what this agent handles — anything else is off-topic. A topic in both lists is blocked: “won't discuss” always wins."
-            >
-              <textarea
-                name="topicAllow"
-                rows={2}
-                value={topicAllow}
-                onChange={(e) => setTopicAllow(e.target.value)}
-                placeholder={'orders and delivery\nreturns'}
-                className={TEXTAREA_CLS}
-              />
-            </Field>
-            <div className="-mt-2 text-right">
-              <Mono className="text-t3">{allowLabels.length} of 24</Mono>
-            </div>
-            <Field
-              label="When asked something else, reply with:"
-              hint="Sent word for word, by us — the model never writes a reply on a blocked topic, so there is nothing for it to be talked out of. Required once either list has anything in it."
-            >
-              <textarea
-                name="topicRedirect"
-                rows={2}
-                required={topicsArmed}
-                maxLength={2000}
-                value={topicRedirect}
-                onChange={(e) => setTopicRedirect(e.target.value.slice(0, 2000))}
-                placeholder="I can only help with orders and returns here — for anything else, email support@acme.com."
-                className={TEXTAREA_CLS}
-              />
-            </Field>
-            {topicsIncomplete && (
-              <p className="-mt-2 text-[11px] text-err">
-                Add the reply to send, or clear the lists above — a topic rule with no reply would
-                leave the customer with silence.
-              </p>
-            )}
-          </div>
+          </ConfigGroup>
 
-          {/* Phase A7 slice B — the outbound gate. Managed only, same branch. */}
-          <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
-            <div>
-              <span className="block text-[12px] font-medium text-t2">Reply rules</span>
-              <span className="mt-0.5 block text-[11px] text-t3">
-                Every reply the agent drafts is checked before it is sent; a reply that breaks a
-                rule never leaves, and the customer gets your fallback below instead. No model, no
-                extra call, no added wait. It matches the words you type, not paraphrases of them —
-                that is the honest limit of a check that costs nothing and can never be down.
-              </span>
+          {/* The rolling summary is conversation-memory behavior, so it reads
+              on the Memory tab beside the per-customer facts — but it is still
+              this form's field and this form's save, not a second one. */}
+          <ConfigGroup section="memory" active={section}>
+            {/* Phase 24 D6 — rolling-summary knobs. Blank uses the defaults. */}
+            <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+              <div>
+                <span className="block text-[12px] font-medium text-t2">
+                  Advanced — long conversations
+                </span>
+                <span className="mt-0.5 block text-[11px] text-t3">
+                  On long chats the agent condenses older turns into a running summary to stay fast and
+                  in budget. Blank uses the defaults (summarize after 20 turns, keep the last 10
+                  verbatim).
+                </span>
+              </div>
+              <Field
+                label="Summarize after N turns"
+                hint="Fold older turns into a summary once the conversation passes this many turns."
+              >
+                <Input
+                  name="triggerTurns"
+                  type="number"
+                  min={1}
+                  placeholder="20"
+                  defaultValue={initial?.context?.triggerTurns ?? ''}
+                  className="font-mono"
+                />
+              </Field>
+              <Field
+                label="Keep last N turns verbatim"
+                hint="How many recent turns stay word-for-word after a summary is made."
+              >
+                <Input
+                  name="tailTurns"
+                  type="number"
+                  min={1}
+                  placeholder="10"
+                  defaultValue={initial?.context?.tailTurns ?? ''}
+                  className="font-mono"
+                />
+              </Field>
             </div>
-            <Field
-              label="Words a reply may never contain"
-              hint="One per line, or separated by commas. Matched anywhere inside a word and in any capitalization, so “guarantee” also catches “guaranteed”. Catching too much? Make the phrase MORE SPECIFIC — “a full refund” rather than “refund”. Padding it with spaces will not help: we trim what you type, on purpose, so a stray space can never quietly switch a rule off."
-            >
-              <textarea
-                name="denyPhrases"
-                rows={3}
-                value={denyPhrases}
-                onChange={(e) => setDenyPhrases(e.target.value)}
-                placeholder={'guarantee\nrisk-free'}
-                className={TEXTAREA_CLS}
-              />
-            </Field>
-            <div className="-mt-2 text-right">
-              <Mono className="text-t3">{phraseList.length} of 100</Mono>
-            </div>
-            <div className="flex items-start justify-between gap-3">
-              <span className="text-[11px] text-t3">
-                Block other people's email addresses and phone numbers — the customer's own are
-                always allowed, so the agent can still confirm the address on their account.
-              </span>
-              <Toggle
-                checked={blockPii}
-                onChange={setBlockPii}
-                label="Block other people's contact details"
-              />
-            </div>
-            <Field
-              label="If a reply is blocked, send instead:"
-              hint="Write this carefully: by the time it sends, the turn's work has already happened — a refund may have been issued, a workflow may have fired. “A teammate will follow up shortly” is always true; “I wasn't able to help with that” can be a lie. Required once there is a rule to break."
-            >
-              <textarea
-                name="replyFallback"
-                rows={2}
-                required={rulesArmed}
-                maxLength={2000}
-                value={replyFallback}
-                onChange={(e) => setReplyFallback(e.target.value.slice(0, 2000))}
-                placeholder="Let me get a teammate to confirm this for you — someone will follow up shortly."
-                className={TEXTAREA_CLS}
-              />
-            </Field>
-            {rulesIncomplete && (
-              <p className="-mt-2 text-[11px] text-err">
-                Add the reply to send instead, or clear the rules above — a blocked reply with no
-                replacement would leave the customer with silence.
-              </p>
-            )}
-          </div>
-
-          {/* Phase 24 D6 — rolling-summary knobs. Blank uses the defaults. */}
-          <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
-            <div>
-              <span className="block text-[12px] font-medium text-t2">
-                Advanced — long conversations
-              </span>
-              <span className="mt-0.5 block text-[11px] text-t3">
-                On long chats the agent condenses older turns into a running summary to stay fast and
-                in budget. Blank uses the defaults (summarize after 20 turns, keep the last 10
-                verbatim).
-              </span>
-            </div>
-            <Field
-              label="Summarize after N turns"
-              hint="Fold older turns into a summary once the conversation passes this many turns."
-            >
-              <Input
-                name="triggerTurns"
-                type="number"
-                min={1}
-                placeholder="20"
-                defaultValue={initial?.context?.triggerTurns ?? ''}
-                className="font-mono"
-              />
-            </Field>
-            <Field
-              label="Keep last N turns verbatim"
-              hint="How many recent turns stay word-for-word after a summary is made."
-            >
-              <Input
-                name="tailTurns"
-                type="number"
-                min={1}
-                placeholder="10"
-                defaultValue={initial?.context?.tailTurns ?? ''}
-                className="font-mono"
-              />
-            </Field>
-          </div>
+          </ConfigGroup>
         </>
       )}
 
-      {/* Phase A8 — per-customer message limits. OUTSIDE the runtime branch
-          above on purpose, so it renders for BOTH runtimes: unlike routing and
-          the two gates, this is not brain config but ingress protection, and a
-          flood costs a bridge agent its own compute and its own bill just as
-          surely as it costs a managed agent tokens. For a managed agent it
-          follows the Reply rules card; for a bridge agent it is the only card
-          on the form. */}
-      <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
-        <div>
-          <span className="block text-[12px] font-medium text-t2">Message limits</span>
-          <span className="mt-0.5 block text-[11px] text-t3">
-            Stops one customer — or a bot — from flooding the agent; everyone else is
-            unaffected. Past the limit the agent stops replying to that one person until the
-            window ends, and they are told ONCE per window — not on every message, so a flood
-            can never be turned into a flood of replies. Their messages still appear in the
-            conversation exactly as they were sent: only the reply is withheld, so the record
-            of what someone actually sent you stays true. Leave the fields blank and nothing
-            changes.
-          </span>
-        </div>
-        <Field
-          label="Max messages per customer"
-          hint="How many messages ONE customer may send in the window below (1–1000). Taps on the agent's buttons count too — a tap flood is a flood."
-        >
-          <Input
-            name="rateMaxMessages"
-            type="number"
-            min={1}
-            max={1000}
-            placeholder="off"
-            value={rateMax}
-            onChange={(e) => setRateMax(e.target.value)}
-            className="font-mono"
-          />
-        </Field>
-        <Field
-          label="in a window of (minutes)"
-          hint="1–1440 (one day). A fixed block, not a rolling one — when the window ends the count starts from zero. Retuning either number starts a fresh count for everyone rather than carrying the old one over."
-        >
-          <Input
-            name="rateWindowMinutes"
-            type="number"
-            min={1}
-            max={1440}
-            placeholder="off"
-            value={rateWindow}
-            onChange={(e) => setRateWindow(e.target.value)}
-            className="font-mono"
-          />
-        </Field>
-        <Field
-          label="When the limit is hit, reply once with:"
-          hint="Sent word for word, by us, to the first message over the limit — the model never runs, so it costs nothing. Every further message in that window gets no reply at all, which is the point: a limit that answered every message would be an amplifier. Required once there is a limit."
-        >
-          <textarea
-            name="rateNotice"
-            rows={2}
-            required={rateArmed}
-            maxLength={2000}
-            value={rateNotice}
-            onChange={(e) => setRateNotice(e.target.value.slice(0, 2000))}
-            placeholder="You're sending messages faster than I can answer — I'll pick this up again shortly."
-            className={TEXTAREA_CLS}
-          />
-        </Field>
-        {rateIncomplete && (
-          <p className="-mt-2 text-[11px] text-err">
-            Fill in all three — how many messages, how long the window is, and the reply to send
-            — or clear all three to switch the limit off. A notice of only spaces counts as
-            missing: we trim it, so a stray space can never quietly switch a limit off while it
-            still looks set on screen.
-          </p>
-        )}
-      </div>
-
-      <Field
-        label="Auto-resolve after inactivity"
-        hint="Conversations idle this long resolve automatically (up to 720h). Blank = never — a new message always reopens"
-      >
-        <div className="flex items-center gap-2">
-          <Input
-            name="autoResolveH"
-            type="number"
-            min={0}
-            max={720}
-            placeholder="0"
-            aria-label="Hours"
-            defaultValue={
-              initial?.autoResolveMinutes ? Math.floor(initial.autoResolveMinutes / 60) || '' : ''
-            }
-            className="font-mono"
-          />
-          <span className="shrink-0 text-[12px] text-t3">hours</span>
-          <Input
-            name="autoResolveM"
-            type="number"
-            min={0}
-            max={59}
-            placeholder="0"
-            aria-label="Minutes"
-            defaultValue={initial?.autoResolveMinutes ? initial.autoResolveMinutes % 60 || '' : ''}
-            className="font-mono"
-          />
-          <span className="shrink-0 text-[12px] text-t3">min</span>
-        </div>
-      </Field>
-      <Field label="Description">
-        <Input name="description" placeholder="What this agent handles (optional)" defaultValue={initial?.description ?? ''} />
-      </Field>
-
-      {/* Agent-speaks-first — used by the in-app chat widget. */}
-      <div>
-        <span className="mb-1.5 block text-[12px] font-medium text-t2">Welcome message</span>
-        <textarea
-          value={welcome}
-          onChange={(e) => setWelcome(e.target.value.slice(0, 2000))}
-          maxLength={2000}
-          rows={3}
-          placeholder="Hi! I'm the Acme assistant — ask me anything about your account."
-          className="w-full rounded-md border border-bd bg-transparent px-2.5 py-2 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
-        />
-        <div className="mt-1 flex items-center justify-between">
-          <span className="text-[11px] text-t3">
-            The agent's opening line when a chat starts — blank sends nothing.
-          </span>
-          <Mono className="text-t3">{welcome.length}/2000</Mono>
-        </div>
-      </div>
-
-      <div>
-        <span className="mb-1.5 block text-[12px] font-medium text-t2">Suggested prompts</span>
-        <p className="mb-2 text-[11px] text-t3">
-          Up to 6 starter chips shown under the welcome — the title is the chip, the message is
-          what it sends. Empty saves none.
-        </p>
-        {prompts.length > 0 && (
-          <div className="space-y-2">
-            {prompts.map((p, i) => (
-              <div key={i} className="flex items-start gap-2">
-                <div className="flex-1">
-                  <Input
-                    value={p.title}
-                    maxLength={40}
-                    placeholder="Reset password"
-                    aria-label={`Prompt ${i + 1} title`}
-                    onChange={(e) => {
-                      const title = e.target.value.slice(0, 40);
-                      setPrompts((prev) => prev.map((q, j) => (j === i ? { ...q, title } : q)));
-                    }}
-                  />
-                  <div className="mt-1 text-right">
-                    <Mono className="text-t3">{p.title.length}/40</Mono>
-                  </div>
-                </div>
-                <div className="flex-[2]">
-                  <Input
-                    value={p.message}
-                    maxLength={200}
-                    placeholder="How do I reset my password?"
-                    aria-label={`Prompt ${i + 1} message`}
-                    onChange={(e) => {
-                      const message = e.target.value.slice(0, 200);
-                      setPrompts((prev) => prev.map((q, j) => (j === i ? { ...q, message } : q)));
-                    }}
-                  />
-                  <div className="mt-1 text-right">
-                    <Mono className="text-t3">{p.message.length}/200</Mono>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  aria-label={`Remove prompt ${i + 1}`}
-                  onClick={() => setPrompts((prev) => prev.filter((_, j) => j !== i))}
-                  className="h-8 shrink-0 px-1.5 text-[12px] text-t3 transition-colors hover:text-t1"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
+      <ConfigGroup section="guardrails" active={section}>
+        {/* Phase A8 — per-customer message limits. OUTSIDE the runtime branch
+            above on purpose, so it renders for BOTH runtimes: unlike routing and
+            the two gates, this is not brain config but ingress protection, and a
+            flood costs a bridge agent its own compute and its own bill just as
+            surely as it costs a managed agent tokens. For a managed agent it
+            follows the Reply rules card; for a bridge agent it is the only card
+            on the form. */}
+        <div className="space-y-3 rounded-md border border-bd bg-elevated px-3 py-3">
+          <div>
+            <span className="block text-[12px] font-medium text-t2">Message limits</span>
+            <span className="mt-0.5 block text-[11px] text-t3">
+              Stops one customer — or a bot — from flooding the agent; everyone else is
+              unaffected. Past the limit the agent stops replying to that one person until the
+              window ends, and they are told ONCE per window — not on every message, so a flood
+              can never be turned into a flood of replies. Their messages still appear in the
+              conversation exactly as they were sent: only the reply is withheld, so the record
+              of what someone actually sent you stays true. Leave the fields blank and nothing
+              changes.
+            </span>
           </div>
-        )}
-        {prompts.length < 6 && (
-          <button
-            type="button"
-            onClick={() => setPrompts((prev) => [...prev, { title: '', message: '' }])}
-            className="mt-2 text-[12px] text-t3 transition-colors hover:text-t1"
+          <Field
+            label="Max messages per customer"
+            hint="How many messages ONE customer may send in the window below (1–1000). Taps on the agent's buttons count too — a tap flood is a flood."
           >
-            + Add prompt
-          </button>
-        )}
-      </div>
+            <Input
+              name="rateMaxMessages"
+              type="number"
+              min={1}
+              max={1000}
+              placeholder="off"
+              value={rateMax}
+              onChange={(e) => setRateMax(e.target.value)}
+              className="font-mono"
+            />
+          </Field>
+          <Field
+            label="in a window of (minutes)"
+            hint="1–1440 (one day). A fixed block, not a rolling one — when the window ends the count starts from zero. Retuning either number starts a fresh count for everyone rather than carrying the old one over."
+          >
+            <Input
+              name="rateWindowMinutes"
+              type="number"
+              min={1}
+              max={1440}
+              placeholder="off"
+              value={rateWindow}
+              onChange={(e) => setRateWindow(e.target.value)}
+              className="font-mono"
+            />
+          </Field>
+          <Field
+            label="When the limit is hit, reply once with:"
+            hint="Sent word for word, by us, to the first message over the limit — the model never runs, so it costs nothing. Every further message in that window gets no reply at all, which is the point: a limit that answered every message would be an amplifier. Required once there is a limit."
+          >
+            <textarea
+              name="rateNotice"
+              rows={2}
+              required={rateArmed}
+              maxLength={2000}
+              value={rateNotice}
+              onChange={(e) => setRateNotice(e.target.value.slice(0, 2000))}
+              placeholder="You're sending messages faster than I can answer — I'll pick this up again shortly."
+              className={TEXTAREA_CLS}
+            />
+          </Field>
+          {rateIncomplete && (
+            <p className="-mt-2 text-[11px] text-err">
+              Fill in all three — how many messages, how long the window is, and the reply to send
+              — or clear all three to switch the limit off. A notice of only spaces counts as
+              missing: we trim it, so a stray space can never quietly switch a limit off while it
+              still looks set on screen.
+            </p>
+          )}
+        </div>
 
+        <Field
+          label="Auto-resolve after inactivity"
+          hint="Conversations idle this long resolve automatically (up to 720h). Blank = never — a new message always reopens"
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              name="autoResolveH"
+              type="number"
+              min={0}
+              max={720}
+              placeholder="0"
+              aria-label="Hours"
+              defaultValue={
+                initial?.autoResolveMinutes ? Math.floor(initial.autoResolveMinutes / 60) || '' : ''
+              }
+              className="font-mono"
+            />
+            <span className="shrink-0 text-[12px] text-t3">hours</span>
+            <Input
+              name="autoResolveM"
+              type="number"
+              min={0}
+              max={59}
+              placeholder="0"
+              aria-label="Minutes"
+              defaultValue={initial?.autoResolveMinutes ? initial.autoResolveMinutes % 60 || '' : ''}
+              className="font-mono"
+            />
+            <span className="shrink-0 text-[12px] text-t3">min</span>
+          </div>
+        </Field>
+      </ConfigGroup>
+
+      <ConfigGroup section="edit" active={section}>
+        <Field label="Description">
+          <Input name="description" placeholder="What this agent handles (optional)" defaultValue={initial?.description ?? ''} />
+        </Field>
+
+        {/* Agent-speaks-first — used by the in-app chat widget. */}
+        <div>
+          <span className="mb-1.5 block text-[12px] font-medium text-t2">Welcome message</span>
+          <textarea
+            value={welcome}
+            onChange={(e) => setWelcome(e.target.value.slice(0, 2000))}
+            maxLength={2000}
+            rows={3}
+            placeholder="Hi! I'm the Acme assistant — ask me anything about your account."
+            className="w-full rounded-md border border-bd bg-transparent px-2.5 py-2 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
+          />
+          <div className="mt-1 flex items-center justify-between">
+            <span className="text-[11px] text-t3">
+              The agent's opening line when a chat starts — blank sends nothing.
+            </span>
+            <Mono className="text-t3">{welcome.length}/2000</Mono>
+          </div>
+        </div>
+
+        <div>
+          <span className="mb-1.5 block text-[12px] font-medium text-t2">Suggested prompts</span>
+          <p className="mb-2 text-[11px] text-t3">
+            Up to 6 starter chips shown under the welcome — the title is the chip, the message is
+            what it sends. Empty saves none.
+          </p>
+          {prompts.length > 0 && (
+            <div className="space-y-2">
+              {prompts.map((p, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <div className="flex-1">
+                    <Input
+                      value={p.title}
+                      maxLength={40}
+                      placeholder="Reset password"
+                      aria-label={`Prompt ${i + 1} title`}
+                      onChange={(e) => {
+                        const title = e.target.value.slice(0, 40);
+                        setPrompts((prev) => prev.map((q, j) => (j === i ? { ...q, title } : q)));
+                      }}
+                    />
+                    <div className="mt-1 text-right">
+                      <Mono className="text-t3">{p.title.length}/40</Mono>
+                    </div>
+                  </div>
+                  <div className="flex-[2]">
+                    <Input
+                      value={p.message}
+                      maxLength={200}
+                      placeholder="How do I reset my password?"
+                      aria-label={`Prompt ${i + 1} message`}
+                      onChange={(e) => {
+                        const message = e.target.value.slice(0, 200);
+                        setPrompts((prev) => prev.map((q, j) => (j === i ? { ...q, message } : q)));
+                      }}
+                    />
+                    <div className="mt-1 text-right">
+                      <Mono className="text-t3">{p.message.length}/200</Mono>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove prompt ${i + 1}`}
+                    onClick={() => setPrompts((prev) => prev.filter((_, j) => j !== i))}
+                    className="h-8 shrink-0 px-1.5 text-[12px] text-t3 transition-colors hover:text-t1"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {prompts.length < 6 && (
+            <button
+              type="button"
+              onClick={() => setPrompts((prev) => [...prev, { title: '', message: '' }])}
+              className="mt-2 text-[12px] text-t3 transition-colors hover:text-t1"
+            >
+              + Add prompt
+            </button>
+          )}
+        </div>
+      </ConfigGroup>
+
+      {/* Everything from here down is the save itself — the eval strip, the
+          error line and the footer — so it shows on EVERY config tab: there is
+          one Save, and it is wherever the operator is. */}
       {evalGateOn && (
         <div className="flex items-center justify-between gap-3 border-t border-bd pt-4">
           <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1031,8 +1166,23 @@ export function AgentForm({
   );
 }
 
-/** Detail page Edit tab — full AgentForm + save (PATCH) + agent-level rotate. */
-export function EditTab({ agent }: { agent: Agent }) {
+/**
+ * Detail page config panel — the full AgentForm + save (PATCH) + agent-level
+ * rotate, rendered on all four config tabs. The page keeps ONE instance of this
+ * mounted across Edit / Guardrails / Cost & routing / Memory and only changes
+ * `section`, so switching tabs never loses an unsaved edit and never costs a
+ * refetch; `onRequestSection` lets a validation failure pull the operator to
+ * the tab that can show it.
+ */
+export function ConfigPanel({
+  agent,
+  section,
+  onRequestSection,
+}: {
+  agent: Agent;
+  section: ConfigSection;
+  onRequestSection: (section: ConfigSection) => void;
+}) {
   const queryClient = useQueryClient();
   const [error, setError] = useState('');
   const [secret, setSecret] = useState('');
@@ -1061,6 +1211,8 @@ export function EditTab({ agent }: { agent: Agent }) {
         error={error}
         submitLabel="Save changes"
         hideCancel
+        section={section}
+        onRequestSection={onRequestSection}
         footerExtra={
           <Button type="button" onClick={() => rotate.mutate(agent.identifier)}>
             Rotate secret

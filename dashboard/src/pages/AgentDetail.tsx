@@ -9,7 +9,7 @@ import { api } from '../lib/api';
 import { Button, Mono, Skeleton, StatusBadge } from '../ui';
 import { ChannelsPanel } from './agent/ChannelsPanel';
 import { AgentConfigActions } from './agent/ConfigFile';
-import { EditTab } from './agent/EditPanel';
+import { ConfigPanel, type ConfigSection } from './agent/EditPanel';
 import { EvalsPanel } from './agent/EvalsPanel';
 import { HealthStrip } from './agent/HealthStrip';
 import { KnowledgePanel } from './agent/KnowledgePanel';
@@ -18,7 +18,26 @@ import { ToolsPanel } from './agent/ToolsPanel';
 import { VersionsPanel } from './agent/VersionsPanel';
 import type { Agent, AgentBody, ChannelInfo } from './agent/types';
 
-type TabId = 'edit' | 'channels' | 'tools' | 'evals' | 'versions' | 'knowledge' | 'memory';
+type TabId =
+  | 'edit'
+  | 'guardrails'
+  | 'cost'
+  | 'channels'
+  | 'tools'
+  | 'evals'
+  | 'versions'
+  | 'knowledge'
+  | 'memory';
+
+/**
+ * The tabs backed by the ONE agent config form. They are views of a single
+ * <ConfigPanel>, not four panels: the same element stays in the same slot below
+ * as the tab changes, so React keeps it mounted and an unsaved edit made on one
+ * tab is still there — and still in the save — from any other.
+ */
+const CONFIG_TABS = ['edit', 'guardrails', 'cost', 'memory'] as const;
+const isConfigTab = (tab: TabId): tab is ConfigSection =>
+  (CONFIG_TABS as readonly string[]).includes(tab);
 
 export default function AgentDetailPage() {
   const { identifier = '' } = useParams();
@@ -95,6 +114,12 @@ export default function AgentDetailPage() {
   const managed = agent.runtime === 'managed';
   const tabs: { id: TabId; label: string }[] = [
     { id: 'edit', label: 'Edit' },
+    // Guardrails shows on BOTH runtimes: the message limit and the auto-resolve
+    // backstop are ingress protection, and a bridge agent is just as floodable.
+    // Cost & routing is model config, so it joins the managed-only tabs rather
+    // than standing empty on a bridge agent.
+    { id: 'guardrails', label: 'Guardrails' },
+    ...(managed ? ([{ id: 'cost', label: 'Cost & routing' }] as { id: TabId; label: string }[]) : []),
     { id: 'channels', label: 'Channels' },
     ...(managed
       ? ([
@@ -251,13 +276,29 @@ export default function AgentDetailPage() {
 
       {/* Panel content */}
       <div className="pt-5">
-        {activeTab === 'edit' && <EditTab agent={agent} />}
+        {/* One config form, four tabs — see CONFIG_TABS above. Keeping this
+            call in the first slot for every one of them is what keeps it
+            mounted across a tab switch. */}
+        {isConfigTab(activeTab) && (
+          <ConfigPanel
+            agent={agent}
+            section={activeTab}
+            onRequestSection={(next) => setSearchParams({ tab: next }, { replace: true })}
+          />
+        )}
         {activeTab === 'channels' && <ChannelsPanel agent={agent} />}
         {activeTab === 'tools' && managed && <ToolsPanel agent={agent} />}
         {activeTab === 'evals' && managed && <EvalsPanel agent={agent} />}
         {activeTab === 'versions' && managed && <VersionsPanel agent={agent} />}
         {activeTab === 'knowledge' && managed && <KnowledgePanel agent={agent} />}
-        {activeTab === 'memory' && managed && <MemoryPanel agent={agent} />}
+        {/* Memory reads top-down as one subject: how the agent keeps a long
+            conversation in its head (the config section above), then what it
+            remembers about one customer forever (below). */}
+        {activeTab === 'memory' && managed && (
+          <div className="mt-6 border-t border-bd pt-6">
+            <MemoryPanel agent={agent} />
+          </div>
+        )}
       </div>
     </div>
   );
