@@ -6,6 +6,39 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### Phase U1 — Dashboard UI polish (IN PROGRESS, started 2026-09-07)
+Post-deploy phase, driven by HIS list: he clicks around the live-ish
+dashboard, names friction, we fix it item by item. Hard rule inherited
+from the opener: NO feature is deleted or changed in behavior — only
+placement/presentation moves. Every item = his verification, local
+commit (no push until his word); prod box gets the batch via a `web`
+image rebuild when he says ship. Design system (DESIGN.md, "Quiet
+Infrastructure") is binding; anything generalizable lands in ui.tsx as
+a kit component, never a one-off.
+- [x] U1.1 Agent Edit tab split — one AgentForm across four tabs
+      (Edit / Guardrails / Cost & routing / Memory), groups hidden not
+      unmounted so one FormData/save survives; cross-tab validation
+      routes to the owning tab (e9ea438; scroll fix landed as U1.2's
+      opener 50748bb after two Opus misses → Fable per revision gate).
+      Verified 2026-09-07.
+- [x] U1.2 Custom validation tip — native bubble suppressed form-wide,
+      styled tip beside the field (right, below-fallback on narrow
+      viewports), section-commit-gated cross-tab scroll (50748bb,
+      7a0a30f, d8aa9ec). Verified 2026-09-07.
+- [x] U1.3 House dropdown — new `Select` in ui.tsx (custom trigger +
+      portaled listbox, token-styled, native manners incl. FormData
+      via hidden input); ALL 19 native selects across 11 files
+      migrated, zero remain; DESIGN.md kit updated (23da605, 0835ea0;
+      Opus implementation, reviewed). Verified 2026-09-07.
+- [x] U1.4 Step editor overlay z-order — canvas card's focus-lit
+      action bar (z-20) painted through the z-10 editor page after
+      double-click entry; overlay → z-30 (67f7bef). Verified
+      2026-09-07.
+- [ ] U1.next — next item from his list (phase stays open while he
+      keeps finding them).
+- [ ] U1 close-out — batch push on his word + prod `web` image rebuild
+      on the box, then review section here.
+
 ### Phase A16 — SHIPPED 2026-08-31 (review)
 Landing page: "05 · THE EDIT" (plan approved 2026-08-30; pushed LIVE
 2026-08-31, 2bf02f9..86b4304, 70 commits → asyncify.org)
