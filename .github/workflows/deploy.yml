@@ -55,7 +55,9 @@ jobs:
             exit 1
           fi
           mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          # tr -d '\r': the secret may arrive with CRLF endings (pasted or
+          # piped from Windows), and OpenSSH refuses a key with them.
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$BOX_HOSTKEY" > ~/.ssh/known_hosts
 
