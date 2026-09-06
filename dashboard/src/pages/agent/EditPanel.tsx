@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import { Button, Field, Input, Mono } from '../../ui';
+import { Button, Field, Input, Mono, Select } from '../../ui';
 import { timeAgo } from '../Activity';
 import { SecretReveal, Toggle, useEvalRuns } from './shared';
 import { PreSaveCheck } from './PreSaveCheck';
@@ -632,15 +632,16 @@ export function AgentForm({
         </Field>
 
         <Field label="Runtime" hint="Who answers each message">
-          <select
-            aria-label="Runtime"
-            className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 hover:border-bd-strong"
+          <Select
+            ariaLabel="Runtime"
+            className="w-full"
             value={runtime}
-            onChange={(e) => setRuntime(e.target.value as 'bridge' | 'managed')}
-          >
-            <option value="bridge" className="bg-surface">Your code — we POST turns to your bridge URL</option>
-            <option value="managed" className="bg-surface">Managed LLM — we run the model, zero code</option>
-          </select>
+            onChange={(v) => setRuntime(v as 'bridge' | 'managed')}
+            options={[
+              { value: 'bridge', label: 'Your code — we POST turns to your bridge URL' },
+              { value: 'managed', label: 'Managed LLM — we run the model, zero code' },
+            ]}
+          />
         </Field>
       </ConfigGroup>
 

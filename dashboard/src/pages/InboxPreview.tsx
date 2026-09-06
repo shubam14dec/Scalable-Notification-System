@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { wsOrigin } from '../lib/wsOrigin';
-import { Button, Card, Field, Input, Mono, PageHeader } from '../ui';
+import { Button, Card, Field, Input, Mono, PageHeader, Select } from '../ui';
 // Dogfooding: these are the ACTUAL embeddable widgets from packages/react —
 // the same components customers drop into their apps.
 import { AgentChat, ConnectChannels, NotificationInbox } from '../../../packages/react/src';
@@ -113,18 +113,13 @@ function AgentChatPreview({
           And this is <Mono>&lt;AgentChat /&gt;</Mono> — the same subscriber talking to
         </p>
         {active.length > 1 ? (
-          <select
-            aria-label="Agent to chat with"
-            className="h-7 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1"
+          <Select
+            ariaLabel="Agent to chat with"
+            className="h-7 text-[12px]"
             value={chosen ?? ''}
-            onChange={(e) => setIdentifier(e.target.value)}
-          >
-            {active.map((a) => (
-              <option key={a.identifier} value={a.identifier} className="bg-surface">
-                {a.identifier}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setIdentifier(v)}
+            options={active.map((a) => ({ value: a.identifier, label: a.identifier }))}
+          />
         ) : (
           <Mono className="text-t2">{chosen ?? 'no active agent'}</Mono>
         )}

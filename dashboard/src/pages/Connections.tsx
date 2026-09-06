@@ -13,6 +13,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  Select,
   Skeleton,
   StatusBadge,
   td,
@@ -128,19 +129,16 @@ function AgentSelect({
 }) {
   return (
     <Field label="Answered by">
-      <select
-        required
-        aria-label="Answered by"
-        className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 hover:border-bd-strong"
+      <Select
+        ariaLabel="Answered by"
+        className="w-full"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {agents.map((a) => (
-          <option key={a.identifier} value={a.identifier} className="bg-surface">
-            {a.name} ({a.identifier})
-          </option>
-        ))}
-      </select>
+        onChange={onChange}
+        options={agents.map((a) => ({
+          value: a.identifier,
+          label: `${a.name} (${a.identifier})`,
+        }))}
+      />
     </Field>
   );
 }
@@ -1226,19 +1224,18 @@ function RoutesModal({
             <Input name="scopeKey" required placeholder="C0123ABCDEF" className="font-mono" />
           </Field>
           <Field label="Answered by">
-            <select
+            {/* Uncontrolled, and read back through FormData — the `name` prop
+                renders the hidden input that keeps that working. */}
+            <Select
               name="agentIdentifier"
-              required
-              aria-label="Answered by"
-              className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 hover:border-bd-strong"
+              ariaLabel="Answered by"
+              className="w-full"
               defaultValue={agents[0]?.identifier ?? ''}
-            >
-              {agents.map((a) => (
-                <option key={a.identifier} value={a.identifier} className="bg-surface">
-                  {a.name} ({a.identifier})
-                </option>
-              ))}
-            </select>
+              options={agents.map((a) => ({
+                value: a.identifier,
+                label: `${a.name} (${a.identifier})`,
+              }))}
+            />
           </Field>
           {error && <p className="text-[12px] text-err">{error}</p>}
           <div className="flex justify-end gap-2">
@@ -1432,18 +1429,16 @@ export default function ConnectionsPage() {
                         <Mono className="break-all">{identity}</Mono>
                       </td>
                       <td className={td}>
-                        <select
-                          aria-label="Answered by"
-                          className="h-8 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1 hover:border-bd-strong"
+                        <Select
+                          ariaLabel="Answered by"
+                          className="text-[12px]"
                           value={c.agent.identifier}
-                          onChange={(e) => setRepoint({ conn: c, agentIdentifier: e.target.value })}
-                        >
-                          {options.map((a) => (
-                            <option key={a.identifier} value={a.identifier} className="bg-surface">
-                              {a.name} ({a.identifier})
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(v) => setRepoint({ conn: c, agentIdentifier: v })}
+                          options={options.map((a) => ({
+                            value: a.identifier,
+                            label: `${a.name} (${a.identifier})`,
+                          }))}
+                        />
                       </td>
                       <td className={td}>
                         {c.channel === 'telegram' ? (

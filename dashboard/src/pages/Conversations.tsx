@@ -9,6 +9,7 @@ import {
   EmptyState,
   Mono,
   PageHeader,
+  Select,
   Skeleton,
   StatusBadge,
   td,
@@ -140,29 +141,35 @@ export default function ConversationsPage() {
     setParams(next, { replace: true });
   };
 
-  const selectCls = 'h-8 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1 hover:border-bd-strong';
-
   return (
     <>
       <PageHeader
         title="Conversations"
         action={
           <div className="flex items-center gap-2">
-            <select aria-label="Filter by agent" className={selectCls} value={agent} onChange={(e) => setFilter('agent', e.target.value)}>
-              <option value="" className="bg-surface">all agents</option>
-              {agents?.agents.map((a) => (
-                <option key={a.identifier} value={a.identifier} className="bg-surface">
-                  {a.identifier}
-                </option>
-              ))}
-            </select>
-            <select aria-label="Filter by status" className={selectCls} value={status} onChange={(e) => setFilter('status', e.target.value)}>
-              <option value="" className="bg-surface">any status</option>
-              <option value="active" className="bg-surface">active</option>
-              <option value="waiting_human" className="bg-surface">waiting for human</option>
-              <option value="human" className="bg-surface">human</option>
-              <option value="resolved" className="bg-surface">resolved</option>
-            </select>
+            <Select
+              ariaLabel="Filter by agent"
+              className="text-[12px]"
+              value={agent}
+              onChange={(v) => setFilter('agent', v)}
+              options={[
+                { value: '', label: 'all agents' },
+                ...(agents?.agents ?? []).map((a) => ({ value: a.identifier, label: a.identifier })),
+              ]}
+            />
+            <Select
+              ariaLabel="Filter by status"
+              className="text-[12px]"
+              value={status}
+              onChange={(v) => setFilter('status', v)}
+              options={[
+                { value: '', label: 'any status' },
+                { value: 'active', label: 'active' },
+                { value: 'waiting_human', label: 'waiting for human' },
+                { value: 'human', label: 'human' },
+                { value: 'resolved', label: 'resolved' },
+              ]}
+            />
           </div>
         }
       />

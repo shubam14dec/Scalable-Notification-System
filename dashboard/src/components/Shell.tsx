@@ -21,6 +21,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import { fetchMe, logout, session } from '../lib/api';
+import { Select } from '../ui';
 import { useAdminEvents } from '../lib/adminEvents';
 
 const NAV = [
@@ -174,7 +175,7 @@ export default function Shell() {
   // The selected env lives in localStorage, which React cannot see — subscribe
   // to setEnv's event so the switcher re-renders on EVERY change, including
   // ones made elsewhere (a promote's "switch and open it"). Without this the
-  // controlled <select> silently snaps back to its stale value.
+  // controlled switcher silently snaps back to its stale value.
   const envId = useSyncExternalStore(subscribeToEnv, () => session.envId);
   const currentEnv = environments?.find((e) => e.id === envId) ?? environments?.[0];
 
@@ -199,21 +200,19 @@ export default function Shell() {
         </div>
 
         <div className="px-3 pb-3 pt-1">
-          <select
-            aria-label="Environment"
-            className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1 hover:border-bd-strong"
+          <Select
+            ariaLabel="Environment"
+            className="w-full text-[12px]"
             value={currentEnv?.id ?? ''}
-            onChange={(e) => {
-              session.setEnv(e.target.value);
+            onChange={(v) => {
+              session.setEnv(v);
               void queryClient.invalidateQueries();
             }}
-          >
-            {environments?.map((e) => (
-              <option key={e.id} value={e.id} className="bg-surface text-t1">
-                {e.orgName} — {e.name}
-              </option>
-            ))}
-          </select>
+            options={(environments ?? []).map((e) => ({
+              value: e.id,
+              label: `${e.orgName} — ${e.name}`,
+            }))}
+          />
         </div>
 
         <nav className="flex-1 space-y-0.5 px-2">

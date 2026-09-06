@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowDown, ArrowLeft, ArrowUp, Bell, Mail, MessageSquare, Plus, Smartphone, Trash2, X } from 'lucide-react';
-import { Button, Field, Input, Mono } from '../../ui';
+import { Button, Field, Input, Mono, Select } from '../../ui';
 import { computeSmsSegments, MAX_SMS_SEGMENTS } from '../../lib/sms-segments';
 import { useWorkflow } from './WorkflowProvider';
 import {
@@ -30,8 +30,6 @@ const CHANNEL_ICON: Record<string, typeof Mail> = {
   push: Smartphone,
 };
 
-const selectCls =
-  'h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong';
 const textareaCls =
   'w-full rounded-md border border-bd bg-transparent px-2.5 py-2 font-mono text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong';
 
@@ -211,21 +209,16 @@ export default function StepEditorPage() {
       <div className="mx-auto max-w-[640px] space-y-6 px-4 py-8">
         {showContentSource && (
           <Field label="Content source" hint="Author inline, or render one of your saved templates">
-            <select
-              aria-label="Content source"
-              className={selectCls}
+            <Select
+              ariaLabel="Content source"
+              className="w-full"
               value={step.templateKey ?? ''}
-              onChange={(e) => patch({ templateKey: e.target.value || undefined })}
-            >
-              <option value="" className="bg-surface">
-                Inline text
-              </option>
-              {templates.map((t) => (
-                <option key={t} value={t} className="bg-surface">
-                  {t}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => patch({ templateKey: v || undefined })}
+              options={[
+                { value: '', label: 'Inline text' },
+                ...templates.map((t) => ({ value: t, label: t })),
+              ]}
+            />
           </Field>
         )}
 
@@ -409,18 +402,12 @@ export default function StepEditorPage() {
                       value={c.field}
                       onChange={(e) => updateCond(j, { field: e.target.value })}
                     />
-                    <select
-                      aria-label={`Condition ${j + 1} operator`}
-                      className={`${selectCls} !w-auto`}
+                    <Select
+                      ariaLabel={`Condition ${j + 1} operator`}
                       value={c.op}
-                      onChange={(e) => updateCond(j, { op: e.target.value })}
-                    >
-                      {OPS.map((op) => (
-                        <option key={op} value={op} className="bg-surface">
-                          {op}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(v) => updateCond(j, { op: v })}
+                      options={OPS.map((op) => ({ value: op, label: op }))}
+                    />
                     {!valueless && (
                       <Input
                         className="flex-1"
@@ -483,37 +470,26 @@ export default function StepEditorPage() {
             {skipOn && step.skipIfStep && (
               <div className="mt-2 flex items-center gap-1.5 text-[12px] text-t2">
                 <span>skip if step</span>
-                <select
-                  aria-label="Earlier step"
-                  className={`${selectCls} !w-auto`}
-                  value={step.skipIfStep.stepIndex}
-                  onChange={(e) =>
+                <Select
+                  ariaLabel="Earlier step"
+                  value={String(step.skipIfStep.stepIndex)}
+                  onChange={(v) =>
                     patch({
-                      skipIfStep: { ...step.skipIfStep!, stepIndex: Number(e.target.value) },
+                      skipIfStep: { ...step.skipIfStep!, stepIndex: Number(v) },
                     })
                   }
-                >
-                  {Array.from({ length: i }, (_, n) => (
-                    <option key={n} value={n} className="bg-surface">
-                      {n + 1}
-                    </option>
-                  ))}
-                </select>
+                  options={Array.from({ length: i }, (_, n) => ({
+                    value: String(n),
+                    label: String(n + 1),
+                  }))}
+                />
                 <span>is already</span>
-                <select
-                  aria-label="Gate state"
-                  className={`${selectCls} !w-auto`}
+                <Select
+                  ariaLabel="Gate state"
                   value={step.skipIfStep.statusIn[0] ?? GATE_STATES[0]}
-                  onChange={(e) =>
-                    patch({ skipIfStep: { ...step.skipIfStep!, statusIn: [e.target.value] } })
-                  }
-                >
-                  {GATE_STATES.map((s) => (
-                    <option key={s} value={s} className="bg-surface">
-                      {s}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => patch({ skipIfStep: { ...step.skipIfStep!, statusIn: [v] } })}
+                  options={GATE_STATES.map((s) => ({ value: s, label: s }))}
+                />
               </div>
             )}
           </div>

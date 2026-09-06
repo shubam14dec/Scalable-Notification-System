@@ -12,6 +12,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  Select,
   Skeleton,
   td,
   th,
@@ -179,21 +180,16 @@ export function TopicDetailPage() {
         title={key ?? ''}
         action={
           <div className="flex items-center gap-2">
-            <select
-              aria-label="Workflow to send"
-              className="h-8 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1"
+            <Select
+              ariaLabel="Workflow to send"
+              className="text-[12px]"
               value={workflowKey}
-              onChange={(e) => setWorkflowKey(e.target.value)}
-            >
-              <option value="" className="bg-surface">
-                choose workflow…
-              </option>
-              {workflows?.workflows.map((w) => (
-                <option key={w.key} value={w.key} className="bg-surface">
-                  {w.key}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => setWorkflowKey(v)}
+              options={[
+                { value: '', label: 'choose workflow…' },
+                ...(workflows?.workflows ?? []).map((w) => ({ value: w.key, label: w.key })),
+              ]}
+            />
             <Button variant="primary" disabled={!workflowKey} onClick={() => setSendOpen(true)}>
               Send to topic
             </Button>

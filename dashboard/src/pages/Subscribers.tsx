@@ -11,6 +11,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  Select,
   Skeleton,
   td,
   th,
@@ -128,18 +129,16 @@ function LinkChannelsModal({ subscriberId, onClose }: { subscriberId: string; on
             <>
               <div className="flex items-center gap-2">
                 {bots.length > 1 && (
-                  <select
-                    aria-label="Telegram bot"
-                    className="h-8 rounded-md border border-bd bg-transparent px-2 text-[12px] text-t1"
+                  <Select
+                    ariaLabel="Telegram bot"
+                    className="text-[12px]"
                     value={chosen ?? ''}
-                    onChange={(e) => setConnId(e.target.value)}
-                  >
-                    {bots.map((b) => (
-                      <option key={b.id} value={b.id} className="bg-surface">
-                        @{b.config.botUsername ?? '—'} — answered by {b.agent.name}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(v) => setConnId(v)}
+                    options={bots.map((b) => ({
+                      value: b.id,
+                      label: `@${b.config.botUsername ?? '—'} — answered by ${b.agent.name}`,
+                    }))}
+                  />
                 )}
                 <Button variant="primary" onClick={() => mint.mutate()} disabled={!chosen || mint.isPending}>
                   {mint.isPending ? 'Generating…' : 'Generate link'}

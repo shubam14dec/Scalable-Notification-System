@@ -1,5 +1,15 @@
-import { useEffect, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes } from 'react';
-import { Check, Copy, Loader2 } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  type ReactNode,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
+import { createPortal } from 'react-dom';
+import { Check, ChevronDown, Copy, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
 /* Monochrome component kit. Rule 1: no colored buttons, ever.
@@ -32,6 +42,274 @@ export function Input({
       className={`h-8 w-full rounded-md border border-bd bg-transparent px-2.5 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong ${className}`}
       {...props}
     />
+  );
+}
+
+/**
+ * The house dropdown. A native select element's open menu is painted by the OS and
+ * ignores every token in styles.css — so the trigger AND the list are ours.
+ *
+ * Chrome only: the trigger copies `Input`'s idiom (h-8, 1px border, no fill),
+ * the popover is one background step up (elevated) with a 1px bd-strong border
+ * and NO shadow. Nothing here is ever colored — color stays reserved for
+ * delivery status.
+ *
+ * Manners match a native select: controlled or uncontrolled, keyboard
+ * navigation with DOM focus parked on the trigger (aria-activedescendant moves,
+ * not focus), a hidden input so a <form>'s FormData still sees `name`, and
+ * `type="button"` so a trigger inside a form never submits it.
+ */
+export function Select({
+  value,
+  defaultValue,
+  onChange,
+  options,
+  name,
+  ariaLabel,
+  className = '',
+  disabled,
+}: {
+  /** Controlled value. When provided, the component renders from props only. */
+  value?: string;
+  /** Uncontrolled initial value; ignored once `value` is provided. */
+  defaultValue?: string;
+  /** Called with the option's VALUE (a plain string, not an event). */
+  onChange?: (value: string) => void;
+  options: Array<{ value: string; label: ReactNode }>;
+  /** Renders a hidden input so FormData still picks the choice up. */
+  name?: string;
+  ariaLabel?: string;
+  /** Appended to the trigger — width/height/text-size overrides live here. */
+  className?: string;
+  disabled?: boolean;
+}) {
+  const [internal, setInternal] = useState(defaultValue ?? '');
+  const current = value !== undefined ? value : internal;
+
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    minWidth: number;
+    maxWidth: number;
+    maxHeight: number;
+  } | null>(null);
+
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const uid = useId();
+  const listId = `${uid}-list`;
+
+  // Native-select resolution, kept verbatim: a value matching no option falls
+  // back to the FIRST option — for the label AND for what a form submits.
+  // (Approvals synthesises its "(inactive)" option precisely because of this.)
+  const matched = options.findIndex((o) => o.value === current);
+  const selectedIndex = matched >= 0 ? matched : options.length > 0 ? 0 : -1;
+  const selectedLabel = selectedIndex >= 0 ? options[selectedIndex].label : null;
+  const submitted = selectedIndex >= 0 ? options[selectedIndex].value : current;
+
+  // Tailwind emits same-property utilities in ITS order, not the class string's,
+  // so a call site's `h-7` would silently lose to a base `h-8`. Drop the base
+  // value whenever the call site supplies its own.
+  const hasHeight = /(?:^|\s)h-/.test(className);
+  const textOverride = className.match(
+    /(?:^|\s)(text-\[[^\]]+\]|text-(?:xs|sm|base|lg))(?=\s|$)/,
+  )?.[1];
+  const textCls = textOverride ?? 'text-[13px]';
+
+  const place = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const GAP = 4;
+    const EDGE = 8;
+    const MAX = 256; // max-h-64
+    const below = window.innerHeight - r.bottom - GAP - EDGE;
+    const above = r.top - GAP - EDGE;
+    const flip = below < Math.min(MAX, 160) && above > below;
+    setPos({
+      left: r.left,
+      top: flip ? undefined : r.bottom + GAP,
+      bottom: flip ? window.innerHeight - r.top + GAP : undefined,
+      minWidth: r.width,
+      maxWidth: Math.max(r.width, window.innerWidth - r.left - EDGE),
+      maxHeight: Math.min(MAX, Math.max(96, flip ? above : below)),
+    });
+  }, []);
+
+  const openList = useCallback(() => {
+    if (disabled) return;
+    place();
+    setActive(selectedIndex >= 0 ? selectedIndex : 0);
+    setOpen(true);
+  }, [disabled, place, selectedIndex]);
+
+  const commit = useCallback(
+    (v: string) => {
+      if (value === undefined) setInternal(v);
+      onChange?.(v);
+      setOpen(false);
+      triggerRef.current?.focus();
+    },
+    [onChange, value],
+  );
+
+  // Outside dismissal has to clear BOTH refs: the portal is not a DOM child of
+  // the trigger, so a trigger-only check closes the list on the option's own
+  // mousedown and the click never lands (project lesson, learned the hard way).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (triggerRef.current?.contains(t)) return;
+      if (popRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onScroll = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Node && popRef.current?.contains(t)) return; // scrolling the list itself
+      setOpen(false);
+    };
+    const onResize = () => setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current?.children[active] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [open, active]);
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (disabled) return;
+    const last = options.length - 1;
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        if (!open) openList();
+        else setActive((i) => Math.min(i + 1, last));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        if (!open) openList();
+        else setActive((i) => Math.max(i - 1, 0));
+        break;
+      case 'Home':
+        if (!open) break;
+        e.preventDefault();
+        setActive(0);
+        break;
+      case 'End':
+        if (!open) break;
+        e.preventDefault();
+        setActive(last);
+        break;
+      case 'Enter':
+      case ' ':
+        e.preventDefault(); // also stops Enter from submitting an enclosing form
+        if (!open) openList();
+        else if (options[active]) commit(options[active].value);
+        break;
+      case 'Escape':
+        if (open) {
+          e.preventDefault();
+          setOpen(false);
+        }
+        break;
+      case 'Tab':
+        setOpen(false);
+        break;
+      default:
+        break;
+    }
+  };
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={open && options[active] ? `${uid}-opt-${active}` : undefined}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={() => (open ? setOpen(false) : openList())}
+        onKeyDown={onKeyDown}
+        className={`inline-flex ${hasHeight ? '' : 'h-8'} items-center justify-between gap-1.5 rounded-md border border-bd bg-transparent px-2 ${textCls} text-t1 transition-colors duration-150 hover:border-bd-strong disabled:pointer-events-none disabled:opacity-50 ${className}`}
+      >
+        <span className="min-w-0 flex-1 truncate text-left">{selectedLabel}</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-t3" strokeWidth={1.5} aria-hidden />
+      </button>
+      {name && <input type="hidden" name={name} value={submitted} />}
+      {open &&
+        pos &&
+        createPortal(
+          // Two nested divs on purpose (the EditPanel validation-tip pattern):
+          // the outer one owns the fixed position, the inner one owns the
+          // entrance — modal-in animates `transform`, and both on one element
+          // would fight.
+          <div
+            ref={popRef}
+            className="fixed z-50"
+            style={{
+              left: pos.left,
+              top: pos.top,
+              bottom: pos.bottom,
+              minWidth: pos.minWidth,
+              maxWidth: pos.maxWidth,
+            }}
+          >
+            <div
+              ref={listRef}
+              id={listId}
+              role="listbox"
+              aria-label={ariaLabel}
+              className="overflow-y-auto rounded-md border border-bd-strong bg-elevated py-1"
+              style={{ maxHeight: pos.maxHeight, animation: 'modal-in 150ms ease' }}
+            >
+              {options.map((o, i) => {
+                const isSelected = i === selectedIndex;
+                return (
+                  <div
+                    key={o.value}
+                    id={`${uid}-opt-${i}`}
+                    role="option"
+                    aria-selected={isSelected}
+                    onMouseEnter={() => setActive(i)}
+                    onClick={() => commit(o.value)}
+                    className={`flex cursor-pointer items-center gap-2 px-2 py-1.5 ${textCls} ${
+                      i === active ? 'bg-bd text-t1' : isSelected ? 'text-t1' : 'text-t2'
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                    {/* Non-selected rows reserve the glyph's space so labels align. */}
+                    {isSelected ? (
+                      <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
+                    ) : (
+                      <span aria-hidden className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 

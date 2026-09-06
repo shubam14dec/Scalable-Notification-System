@@ -10,6 +10,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  Select,
   Skeleton,
   td,
   th,
@@ -346,17 +347,15 @@ export default function IntegrationsPage() {
           }}
         >
           <Field label="Provider">
-            <select
-              className="h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1"
+            <Select
+              className="w-full"
               value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-            >
-              {Object.entries(PROVIDER_FIELDS).map(([slug, s]) => (
-                <option key={slug} value={slug} className="bg-surface">
-                  {slug} ({s.channel})
-                </option>
-              ))}
-            </select>
+              onChange={(v) => setProvider(v)}
+              options={Object.entries(PROVIDER_FIELDS).map(([slug, s]) => ({
+                value: slug,
+                label: `${slug} (${s.channel})`,
+              }))}
+            />
           </Field>
           {spec.fields.map((f) =>
             f.textarea ? (

@@ -12,7 +12,7 @@ import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import gsap from 'gsap';
 import { ArrowDown, ArrowUp, Bell, Mail, MessageSquare, Smartphone, Trash2, X } from 'lucide-react';
-import { Button, Field, Input, Mono } from '../../ui';
+import { Button, Field, Input, Mono, Select } from '../../ui';
 import { useWorkflow } from './WorkflowProvider';
 import {
   CHANNEL_LABEL,
@@ -28,9 +28,6 @@ const CHANNEL_ICON: Record<string, typeof Mail> = {
   sms: MessageSquare,
   push: Smartphone,
 };
-
-const selectCls =
-  'h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong';
 
 /** Monochrome switch — no colored controls; on = inverted track. */
 function Toggle({
@@ -228,37 +225,26 @@ export default function StepDrawer() {
             {skipOn && step.skipIfStep && (
               <div className="mt-2 flex items-center gap-1.5 text-[12px] text-t2">
                 <span>skip if step</span>
-                <select
-                  aria-label="Earlier step"
-                  className={`${selectCls} !w-auto`}
-                  value={step.skipIfStep.stepIndex}
-                  onChange={(e) =>
+                <Select
+                  ariaLabel="Earlier step"
+                  value={String(step.skipIfStep.stepIndex)}
+                  onChange={(v) =>
                     patch({
-                      skipIfStep: { ...step.skipIfStep!, stepIndex: Number(e.target.value) },
+                      skipIfStep: { ...step.skipIfStep!, stepIndex: Number(v) },
                     })
                   }
-                >
-                  {Array.from({ length: i }, (_, n) => (
-                    <option key={n} value={n} className="bg-surface">
-                      {n + 1}
-                    </option>
-                  ))}
-                </select>
+                  options={Array.from({ length: i }, (_, n) => ({
+                    value: String(n),
+                    label: String(n + 1),
+                  }))}
+                />
                 <span>is already</span>
-                <select
-                  aria-label="Gate state"
-                  className={`${selectCls} !w-auto`}
+                <Select
+                  ariaLabel="Gate state"
                   value={step.skipIfStep.statusIn[0] ?? GATE_STATES[0]}
-                  onChange={(e) =>
-                    patch({ skipIfStep: { ...step.skipIfStep!, statusIn: [e.target.value] } })
-                  }
-                >
-                  {GATE_STATES.map((s) => (
-                    <option key={s} value={s} className="bg-surface">
-                      {s}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => patch({ skipIfStep: { ...step.skipIfStep!, statusIn: [v] } })}
+                  options={GATE_STATES.map((s) => ({ value: s, label: s }))}
+                />
               </div>
             )}
           </Section>

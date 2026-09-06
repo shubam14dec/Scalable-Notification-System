@@ -14,6 +14,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  Select,
   Skeleton,
   StatusBadge,
 } from '../ui';
@@ -258,9 +259,6 @@ interface ApprovalSettings {
   telegramApproverCount: number;
 }
 
-const SELECT_CLS =
-  'h-8 w-full rounded-md border border-bd bg-transparent px-2 text-[13px] text-t1 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong';
-
 function slackLabel(c: ApprovalConn): string {
   return `${c.config.teamName ?? c.config.teamId ?? '—'} — ${c.agent.identifier}`;
 }
@@ -455,30 +453,24 @@ function ChannelApprovals() {
           <div className="space-y-3">
             <span className="block text-[12px] font-medium text-t2">Slack</span>
             <Field label="Connection">
-              <select
-                aria-label="Slack connection"
-                className={SELECT_CLS}
+              <Select
+                ariaLabel="Slack connection"
+                className="w-full"
                 value={slackConn}
-                onChange={(e) => {
-                  const v = e.target.value;
+                onChange={(v) => {
                   setSlackConn(v);
                   if (!v) setSlackChan('');
                 }}
-              >
-                <option value="" className="bg-surface">
-                  None
-                </option>
-                {slackConn && !slackConns.some((c) => c.id === slackConn) && (
-                  <option value={slackConn} className="bg-surface">
-                    {slackConn} (inactive)
-                  </option>
-                )}
-                {slackConns.map((c) => (
-                  <option key={c.id} value={c.id} className="bg-surface">
-                    {slackLabel(c)}
-                  </option>
-                ))}
-              </select>
+                options={[
+                  { value: '', label: 'None' },
+                  // A saved-but-no-longer-active connection stays selectable so
+                  // the field can still show what it is set to.
+                  ...(slackConn && !slackConns.some((c) => c.id === slackConn)
+                    ? [{ value: slackConn, label: `${slackConn} (inactive)` }]
+                    : []),
+                  ...slackConns.map((c) => ({ value: c.id, label: slackLabel(c) })),
+                ]}
+              />
             </Field>
             <Field
               label="Channel ID"
@@ -499,26 +491,22 @@ function ChannelApprovals() {
           <div className="space-y-3">
             <span className="block text-[12px] font-medium text-t2">Telegram</span>
             <Field label="Connection">
-              <select
-                aria-label="Telegram connection"
-                className={SELECT_CLS}
+              <Select
+                ariaLabel="Telegram connection"
+                className="w-full"
                 value={tgConn}
-                onChange={(e) => setTgConn(e.target.value)}
-              >
-                <option value="" className="bg-surface">
-                  None
-                </option>
-                {tgConn && !tgConns.some((c) => c.id === tgConn) && (
-                  <option value={tgConn} className="bg-surface">
-                    {tgConn} (inactive)
-                  </option>
-                )}
-                {tgConns.map((c) => (
-                  <option key={c.id} value={c.id} className="bg-surface">
-                    @{c.config.botUsername ?? '—'}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => setTgConn(v)}
+                options={[
+                  { value: '', label: 'None' },
+                  ...(tgConn && !tgConns.some((c) => c.id === tgConn)
+                    ? [{ value: tgConn, label: `${tgConn} (inactive)` }]
+                    : []),
+                  ...tgConns.map((c) => ({
+                    value: c.id,
+                    label: `@${c.config.botUsername ?? '—'}`,
+                  })),
+                ]}
+              />
             </Field>
             <div>
               <span className="text-[12px] text-t2">
