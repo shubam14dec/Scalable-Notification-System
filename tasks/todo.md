@@ -794,15 +794,22 @@ docs/ASYNCIFY-AGENTS-GUIDE.md): judge → eval gate → canary → routing.
 removed. If any of it is ever wanted again, the analysis that produced
 the list lives in docs/NOVU-GAP-ANALYSIS.md + git history of this file.)
 
-## PARKED — PRODUCTION DEPLOY (user call 2026-08-21: after features)
+## PRODUCTION DEPLOY — SHIPPED 2026-09-06 (was parked since 2026-08-21)
 
-- [ ] api.asyncify.org on real infra — full checklist lives in the
-      production-deployment-plan memory + docs/DEPLOYMENT.md: PUBLIC_URL
-      once via ops endpoint, one-time webhook wiring (Postmark paste =
-      NEW account's connection 10aa969a...), MX + Resend SPF/DKIM,
-      JWT_SECRET identical api+gateway, durable OTLP, SMTP_HOST empty,
-      localhost tool URLs (acme-tools) must move public, real tenant
-      key everywhere.
+- [x] LIVE at https://app.asyncify.org — Contabo VPS (4c/8GB, €5.50/mo),
+      docker compose, permanent named Cloudflare tunnel, ONE hostname,
+      ZERO published ports; caddy path-splits api/ws/SPA; all 16 E2E
+      steps user-verified incl. cold-reboot self-raise in 43s. Wiring:
+      Resend domain verified, email identity support@reply.asyncify.org
+      (MX + Postmark inbound domain; connect-upserts-by-address gotcha
+      documented), NEW prod Telegram bot + NEW asyncify-prod Slack
+      workspace, tools at tools.asyncify.org. Two box-found product
+      fixes: node 24 base (undici on 20 crashes every entrypoint) and
+      dashboard image builds via vite (container tsc lacks workspace
+      node_modules). OTLP deferred (OTEL off; Grafana Cloud =
+      fast-follow); nightly pg_dump cron still to add. The deploy-day
+      story lives in the deploy-day-status memory + docs/DEPLOYMENT.md.
+      Remaining rider: A14b Slack one-click OAuth — now unblocked.
 
 ## SHIPPED — summary
 
