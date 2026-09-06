@@ -11,7 +11,8 @@
 // trip to the Cost tab and every field is still in the FormData the save
 // reads, whichever tab Save was pressed on. The create modal passes no
 // `section` at all and therefore renders the whole form, exactly as before.
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { Button, Field, Input, Mono } from '../../ui';
@@ -314,41 +315,113 @@ export function AgentForm({
   // `invalid` again, but by then the field is on the active tab, so the handler
   // below leaves it alone and the browser takes over.
   const [offscreenInvalid, setOffscreenInvalid] = useState<HTMLInputElement | null>(null);
+
+  // The styled replacement for the browser's validation bubble (his call:
+  // the stock "Please fill out this field" chrome clashes with the design
+  // system). The VALIDATION is still the browser's — required/pattern fire
+  // exactly as before and still block the submit — only the presentation is
+  // ours: the form suppresses every native bubble via preventDefault in
+  // `onInvalid` and re-lands the message in this tip, anchored under the
+  // field in the dashboard's own chrome.
+  const [invalidTip, setInvalidTip] = useState<{
+    el: HTMLInputElement;
+    message: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  // The browser reports only the FIRST invalid control of a submit; with the
+  // bubble suppressed, `invalid` fires for every one, so mimic that: take the
+  // first, ignore the rest of the same synchronous batch.
+  const invalidHandled = useRef(false);
+
+  /** Centre the field, focus it, and open the tip against its settled rect. */
+  const surfaceInvalid = useCallback((el: HTMLInputElement) => {
+    el.scrollIntoView({ block: 'center' });
+    el.focus({ preventScroll: true });
+    const rect = el.getBoundingClientRect();
+    setInvalidTip({
+      el,
+      // Errors say what happened and what to do (design system) — the stock
+      // wording says neither. Non-required failures (pattern etc.) keep the
+      // browser's specific message, just in our chrome.
+      message: el.validity.valueMissing
+        ? 'Required — fill this in before saving.'
+        : el.validationMessage,
+      x: Math.max(8, Math.min(rect.left, window.innerWidth - 328)),
+      y: rect.bottom + 6,
+    });
+  }, []);
+
   useEffect(() => {
     if (!offscreenInvalid) return;
     // Wait for the CAUSE, not a frame count. The tab switch rides
     // `onRequestSection` → the page's setSearchParams → React Router, which
     // wraps navigations in a transition — the commit that removes `hidden`
     // from the owning group can land after any fixed number of frames, and
-    // scrollIntoView on an element with no layout box is a silent no-op
-    // (which is exactly how the first two attempts died). So the effect keys
-    // on `section` too and acts only once it has become the field's owner:
-    // by the time this effect runs, React has committed the un-hide, so the
-    // field is on screen and has real geometry. One frame after that lets the
-    // expanded sections settle, then centre the field ourselves (instant, not
-    // smooth — the native bubble anchors on the position reportValidity
-    // finds) and complain.
+    // scrolling an element with no layout box is a silent no-op (which is
+    // exactly how the first two attempts died). So the effect keys on
+    // `section` too and acts only once it has become the field's owner: by
+    // the time this effect runs, React has committed the un-hide, so the
+    // field is on screen and has real geometry. One frame after that lets
+    // the expanded sections settle, then surface the tip.
     if (section !== undefined && section !== FIELD_SECTION[offscreenInvalid.name]) return;
     const el = offscreenInvalid;
     const frame = requestAnimationFrame(() => {
       setOffscreenInvalid(null);
-      el.scrollIntoView({ block: 'center' });
-      el.reportValidity();
+      surfaceInvalid(el);
     });
     return () => cancelAnimationFrame(frame);
-  }, [offscreenInvalid, section]);
+  }, [offscreenInvalid, section, surfaceInvalid]);
+
+  // Dismissal, matching the native bubble's manners: typing in the field,
+  // clicking anywhere, leaving the field, or a few idle seconds all clear it.
+  // The scroll listener arms one frame late — surfaceInvalid's own
+  // scrollIntoView delivers its scroll event asynchronously, and catching our
+  // own scroll would dismiss the tip before it was ever seen.
+  useEffect(() => {
+    if (!invalidTip) return;
+    const clear = () => setInvalidTip(null);
+    const { el } = invalidTip;
+    el.addEventListener('input', clear);
+    el.addEventListener('blur', clear);
+    document.addEventListener('pointerdown', clear);
+    const frame = requestAnimationFrame(() => {
+      window.addEventListener('scroll', clear, true);
+    });
+    const timer = window.setTimeout(clear, 6000);
+    return () => {
+      el.removeEventListener('input', clear);
+      el.removeEventListener('blur', clear);
+      document.removeEventListener('pointerdown', clear);
+      cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', clear, true);
+      window.clearTimeout(timer);
+    };
+  }, [invalidTip]);
 
   return (
     <>
     <form
       className="space-y-4"
       onInvalid={(e) => {
+        // Every native bubble is suppressed — the message re-lands in the
+        // styled tip instead. An off-tab field first asks the page to switch
+        // (the section-keyed effect above finishes the job once the switch
+        // commits); an on-screen one is surfaced right here.
+        e.preventDefault();
+        if (invalidHandled.current) return;
+        invalidHandled.current = true;
+        queueMicrotask(() => {
+          invalidHandled.current = false;
+        });
         const el = e.target as HTMLInputElement;
         const owner = FIELD_SECTION[el.name];
-        if (!section || !owner || owner === section) return;
-        e.preventDefault();
-        onRequestSection?.(owner);
-        setOffscreenInvalid(el);
+        if (section && owner && owner !== section) {
+          onRequestSection?.(owner);
+          setOffscreenInvalid(el);
+        } else {
+          surfaceInvalid(el);
+        }
       }}
       onSubmit={(e) => {
         e.preventDefault();
@@ -1177,6 +1250,22 @@ export function AgentForm({
         onCancel={() => setPendingSave(null)}
       />
     )}
+    {/* The validation tip: dashboard chrome (elevated step + 1px border, no
+        shadow), err reserved for the status dot, 12px text — a StatusBadge
+        that happens to float. Portaled so a transformed ancestor (the create
+        modal's entrance) can never re-anchor the fixed positioning. */}
+    {invalidTip &&
+      createPortal(
+        <div
+          role="alert"
+          className="fixed z-50 flex max-w-xs items-baseline gap-2 rounded-md border border-bd-strong bg-elevated px-3 py-2 text-[12px] text-t1"
+          style={{ left: invalidTip.x, top: invalidTip.y, animation: 'modal-in 150ms ease' }}
+        >
+          <span aria-hidden className="h-1.5 w-1.5 shrink-0 self-center rounded-full bg-err" />
+          {invalidTip.message}
+        </div>,
+        document.body,
+      )}
     </>
   );
 }
