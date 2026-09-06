@@ -237,11 +237,23 @@ Order matters — nothing is ever pointed at a dead URL:
 
 ## Day-2
 
-**Deploy a change** (since 2026-09-07 `/root/asyncify` is a real git
-checkout of the GitHub repo — the launch-day tarball copy was converted in
-place; `.env.prod` and the tunnel creds are untracked and survive pulls):
+**Deploy a change — the normal path (since 2026-09-07): merge main →
+production.** `main` is just code; going live is a pull request from `main`
+into the `production` branch. The PR shows the exact diff that will ship,
+branch protection keeps the merge button grey until CI (test + agent-evals)
+passes, and merging triggers `.github/workflows/deploy.yml`, which SSHes to
+the box (dedicated deploy key in the `DEPLOY_SSH_KEY` repo secret, pinned
+host key) and runs exactly the manual runbook below: pull → migrate (always;
+idempotent) → build → up → health-check app.asyncify.org. Rollback = the
+PR's Revert button, which redeploys the previous state. One deploy runs at a
+time and is never cancelled mid-flight.
+
+**Deploy a change — by hand** (fallback; also the recovery path if Actions
+or the deploy key is broken — `/root/asyncify` is a real git checkout
+tracking `production`; the launch-day tarball copy was converted in place;
+`.env.prod` and the tunnel creds are untracked and survive pulls):
 ```bash
-cd ~/asyncify && git pull
+cd ~/asyncify && git pull   # tracks production
 docker compose -f docker-compose.prod.yml --env-file .env.prod build
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 ```
