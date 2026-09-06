@@ -328,6 +328,7 @@ export function AgentForm({
     message: string;
     x: number;
     y: number;
+    side: 'right' | 'below';
   } | null>(null);
   // The browser reports only the FIRST invalid control of a submit; with the
   // bubble suppressed, `invalid` fires for every one, so mimic that: take the
@@ -339,6 +340,11 @@ export function AgentForm({
     el.scrollIntoView({ block: 'center' });
     el.focus({ preventScroll: true });
     const rect = el.getBoundingClientRect();
+    // Beside the field, not under it (his call — cleaner): vertically centred
+    // to the right, gap of 8. Only when the viewport truly has room for the
+    // tip's max width there; a narrow window falls back to the old
+    // below-the-field spot rather than covering the input or the edge.
+    const fitsRight = window.innerWidth - rect.right >= 328;
     setInvalidTip({
       el,
       // Errors say what happened and what to do (design system) — the stock
@@ -347,8 +353,9 @@ export function AgentForm({
       message: el.validity.valueMissing
         ? 'Required — fill this in before saving.'
         : el.validationMessage,
-      x: Math.max(8, Math.min(rect.left, window.innerWidth - 328)),
-      y: rect.bottom + 6,
+      x: fitsRight ? rect.right + 8 : Math.max(8, Math.min(rect.left, window.innerWidth - 328)),
+      y: fitsRight ? rect.top + rect.height / 2 : rect.bottom + 6,
+      side: fitsRight ? 'right' : 'below',
     });
   }, []);
 
@@ -1256,13 +1263,26 @@ export function AgentForm({
         modal's entrance) can never re-anchor the fixed positioning. */}
     {invalidTip &&
       createPortal(
+        // Two nested divs on purpose: the outer one owns position (including
+        // the translateY(-50%) that centres a right-side tip on the field),
+        // the inner one owns the entrance — modal-in animates `transform`,
+        // and both on one element would fight.
         <div
-          role="alert"
-          className="fixed z-50 flex max-w-xs items-baseline gap-2 rounded-md border border-bd-strong bg-elevated px-3 py-2 text-[12px] text-t1"
-          style={{ left: invalidTip.x, top: invalidTip.y, animation: 'modal-in 150ms ease' }}
+          className="fixed z-50"
+          style={{
+            left: invalidTip.x,
+            top: invalidTip.y,
+            transform: invalidTip.side === 'right' ? 'translateY(-50%)' : undefined,
+          }}
         >
-          <span aria-hidden className="h-1.5 w-1.5 shrink-0 self-center rounded-full bg-err" />
-          {invalidTip.message}
+          <div
+            role="alert"
+            className="flex max-w-xs items-baseline gap-2 rounded-md border border-bd-strong bg-elevated px-3 py-2 text-[12px] text-t1"
+            style={{ animation: 'modal-in 150ms ease' }}
+          >
+            <span aria-hidden className="h-1.5 w-1.5 shrink-0 self-center rounded-full bg-err" />
+            {invalidTip.message}
+          </div>
         </div>,
         document.body,
       )}
