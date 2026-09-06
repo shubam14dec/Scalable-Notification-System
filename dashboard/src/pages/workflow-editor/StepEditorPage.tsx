@@ -158,7 +158,11 @@ export default function StepEditorPage() {
 
   return (
     <div
-      className={`absolute inset-0 z-10 overflow-y-auto bg-app transition-opacity duration-200 ease-out ${
+      // z-30, above the canvas cards' z-20 action bars: entering by
+      // double-click leaves the card focused, and group-focus-within keeps its
+      // floating arrows/delete lit — at z-10 they painted THROUGH this page
+      // until the first click blurred the card.
+      className={`absolute inset-0 z-30 overflow-y-auto bg-app transition-opacity duration-200 ease-out ${
         shown ? 'opacity-100' : 'opacity-0'
       }`}
     >
