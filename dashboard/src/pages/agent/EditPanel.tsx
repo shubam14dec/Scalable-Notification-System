@@ -316,11 +316,27 @@ export function AgentForm({
   const [offscreenInvalid, setOffscreenInvalid] = useState<HTMLInputElement | null>(null);
   useEffect(() => {
     if (!offscreenInvalid) return;
-    const frame = requestAnimationFrame(() => {
-      setOffscreenInvalid(null);
-      offscreenInvalid.reportValidity();
+    // TWO frames, and an explicit scroll. The tab switch collapses one set of
+    // sections and expands another, so the form's height changes in a commit
+    // AFTER this effect is queued — one frame is not enough to be sure layout
+    // has settled. And reportValidity's own focus-scroll is computed against
+    // that stale layout, so it lands wrong: the page stays parked at the
+    // bottom where Save was pressed and the native bubble opens off-screen,
+    // which is exactly the nothing-happened this handler exists to prevent.
+    // So: wait out the relayout, centre the field ourselves (instant, not
+    // smooth — the bubble anchors on the position it finds), then complain.
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => {
+        setOffscreenInvalid(null);
+        offscreenInvalid.scrollIntoView({ block: 'center' });
+        offscreenInvalid.reportValidity();
+      });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
   }, [offscreenInvalid]);
 
   return (
