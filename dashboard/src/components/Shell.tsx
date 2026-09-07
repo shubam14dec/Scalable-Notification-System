@@ -20,7 +20,7 @@ import {
   Users,
   Workflow,
 } from 'lucide-react';
-import { fetchMe, logout, session } from '../lib/api';
+import { api, fetchMe, logout, session } from '../lib/api';
 import { Select } from '../ui';
 import { useAdminEvents } from '../lib/adminEvents';
 
@@ -58,10 +58,9 @@ const NAV = [
 function QueuePulse() {
   const { data: queues } = useQuery({
     queryKey: ['queues'],
-    queryFn: async () => {
-      const res = await fetch('/ops/queues');
-      return (await res.json()) as Record<string, Record<string, number>>;
-    },
+    // S1.1: /ops/queues is authenticated now — it must go through api(), which
+    // attaches the bearer token (a raw fetch gets a 401 and a dead sparkline).
+    queryFn: () => api<Record<string, Record<string, number>>>('/ops/queues'),
     refetchInterval: false,
     staleTime: Infinity, // fed by queue.depths pushes + Overview's seed; never auto-refetch
     refetchOnWindowFocus: false,

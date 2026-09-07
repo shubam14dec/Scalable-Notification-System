@@ -11,7 +11,7 @@
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/api/app';
 import { closeQueues } from '../../src/shared/queues';
@@ -257,5 +257,106 @@ describe('6. worker-side getPublicUrl', () => {
     await redis.del(PUBLIC_URL_KEY);
     clearPublicUrlCache();
     expect(await getPublicUrl()).toBe(env.publicUrl);
+  });
+});
+
+/**
+ * S1.1 operator plane. The public URL is ONE value shared by every tenant, so
+ * in production a tenant api key must not be able to rewrite it — signup is
+ * open, and repointing this key repoints every tenant's webhooks and tracking
+ * pixels at a host the attacker controls. requireOperator reads NODE_ENV and
+ * OPS_ADMIN_TOKEN at REQUEST time, which is what lets these tests drive the
+ * production branch against the same in-process app.
+ */
+describe('7. operator plane — PUT /v1/ops/public-url', () => {
+  const OPERATOR_TOKEN = 'f'.repeat(64); // the shape `openssl rand -hex 32` gives
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevOpsToken = process.env.OPS_ADMIN_TOKEN;
+
+  const opsHeaders = (token: string) => ({ 'x-operator-token': token });
+  const putUrl = (headers: Record<string, string>, url: string) =>
+    app.inject({ method: 'PUT', url: '/v1/ops/public-url', headers, payload: { url } });
+
+  afterEach(async () => {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevOpsToken === undefined) delete process.env.OPS_ADMIN_TOKEN;
+    else process.env.OPS_ADMIN_TOKEN = prevOpsToken;
+    await scrub();
+  });
+
+  test('in production, the operator token writes and the value round-trips via GET', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.OPS_ADMIN_TOKEN = OPERATOR_TOKEN;
+
+    const put = await putUrl(opsHeaders(OPERATOR_TOKEN), 'https://operator.example.test');
+    expect(put.statusCode).toBe(200);
+    expect(json(put).url).toBe('https://operator.example.test');
+
+    // GET keeps plain tenant auth — reading the base URL is a legitimate
+    // tenant/CLI operation, so the api key still works there.
+    const get = await app.inject({ method: 'GET', url: '/v1/ops/public-url', headers: headers() });
+    expect(json(get)).toEqual({ url: 'https://operator.example.test', source: 'runtime' });
+  });
+
+  test('in production a valid tenant api key is NOT enough — missing or wrong operator token is 401', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.OPS_ADMIN_TOKEN = OPERATOR_TOKEN;
+
+    const missing = await putUrl(headers(), 'https://attacker.example.test');
+    expect(missing.statusCode).toBe(401);
+    expect(json(missing).error).toBe('operator token required');
+
+    const wrong = await putUrl(
+      { ...headers(), ...opsHeaders('g'.repeat(64)) },
+      'https://attacker.example.test',
+    );
+    expect(wrong.statusCode).toBe(401);
+    expect(json(wrong).error).toBe('operator token required');
+
+    // A same-length-but-wrong token is the timingSafeEqual path; a short one is
+    // the length-check path. Both must be rejected, and nothing may be written.
+    const short = await putUrl({ ...headers(), ...opsHeaders('f') }, 'https://attacker.example.test');
+    expect(short.statusCode).toBe(401);
+    expect(await redis.get(PUBLIC_URL_KEY)).toBe(null);
+  });
+
+  test('outside production a tenant api key still writes — the asyncify dev CLI path', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.OPS_ADMIN_TOKEN = OPERATOR_TOKEN;
+
+    const put = await putUrl(headers(), 'https://tunnel.example.test');
+    expect(put.statusCode).toBe(200);
+    expect(json(put).url).toBe('https://tunnel.example.test');
+
+    // ...and unauthenticated is still rejected by the ordinary tenant check.
+    const anon = await putUrl({}, 'https://anon.example.test');
+    expect(anon.statusCode).toBe(401);
+  });
+});
+
+/** S1.1: platform-wide telemetry was readable by the whole internet. */
+describe('8. /ops telemetry requires authentication', () => {
+  test('/ops/queues and /ops/breakers are 401 anonymous, 200 with an api key', async () => {
+    expect((await app.inject({ method: 'GET', url: '/ops/queues' })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/ops/breakers' })).statusCode).toBe(401);
+
+    const queues = await app.inject({ method: 'GET', url: '/ops/queues', headers: headers() });
+    expect(queues.statusCode).toBe(200);
+    expect(typeof json(queues)).toBe('object');
+
+    const breakers = await app.inject({ method: 'GET', url: '/ops/breakers', headers: headers() });
+    expect(breakers.statusCode).toBe(200);
+  });
+
+  test('/ops/logs/stats is 401 anonymous (ClickHouse is never reached without auth)', async () => {
+    const anon = await app.inject({ method: 'GET', url: '/ops/logs/stats' });
+    expect(anon.statusCode).toBe(401);
+  });
+
+  test('/health stays open for liveness probes', async () => {
+    const health = await app.inject({ method: 'GET', url: '/health' });
+    expect(health.statusCode).toBe(200);
+    expect(json(health).status).toBe('ok');
   });
 });

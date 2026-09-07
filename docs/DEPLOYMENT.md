@@ -99,6 +99,7 @@ that signs dashboard tokens and the process that verifies them.
 | `JWT_SECRET` | `openssl rand -base64 48` | **Must be byte-identical on api and ws.** |
 | `CREDENTIALS_ENCRYPTION_KEY` | `openssl rand -base64 48` | **Unrecoverable. Back it up off-box before first use.** |
 | `WEBHOOK_SIGNING_SECRET` | `openssl rand -hex 32` | Empty **disables** provider-webhook signature verification. |
+| `OPS_ADMIN_TOKEN` | `openssl rand -hex 32` | Operator-only secret gating global ops writes (`PUT /v1/ops/public-url`), sent as `x-operator-token`. **Not a tenant key** — no tenant api key or dashboard JWT is accepted for that route in production. |
 | `POSTGRES_PASSWORD` | `openssl rand -base64 48` | Must match the password inside `DATABASE_URL`. |
 | `CLICKHOUSE_PASSWORD` | `openssl rand -hex 32` | Analytics only; soft-fails if wrong. |
 | `OUTBOUND_URL_ALLOW` | — | **Must stay empty.** It is the SSRF guard's dev escape hatch. |
@@ -120,12 +121,17 @@ exactly why the preflight below exists:
 **Preflight refuses dev defaults.** `src/config/preflight.ts` runs as the first
 statement of each entrypoint's `main()` and, when `NODE_ENV=production`,
 fatal-exits on: a dev-default or sub-32-char `JWT_SECRET`, a dev-default or
-sub-32-char `CREDENTIALS_ENCRYPTION_KEY`, an empty `WEBHOOK_SIGNING_SECRET`, or
-a non-empty `OUTBOUND_URL_ALLOW`. It warns (without exiting) on a localhost
-`PUBLIC_URL`. This exists because `src/config/env.ts` gives every variable a
-fallback — so without the preflight, a missing secret doesn't crash anything, it
-boots a fully working system on values published in this repo. Preflight is
-never called inside `buildApp()` / `startGateway()`, so tests are unaffected.
+sub-32-char `CREDENTIALS_ENCRYPTION_KEY`, an empty `WEBHOOK_SIGNING_SECRET`, an
+empty or sub-32-char `OPS_ADMIN_TOKEN`, or a non-empty `OUTBOUND_URL_ALLOW`.
+It warns (without exiting) on a localhost `PUBLIC_URL`. This exists because
+`src/config/env.ts` gives every variable a fallback — so without the preflight,
+a missing secret doesn't crash anything, it boots a fully working system on
+values published in this repo. Preflight is never called inside `buildApp()` /
+`startGateway()`, so tests are unaffected.
+
+> **Deploying the S1.1 operator-plane slice:** add `OPS_ADMIN_TOKEN` to
+> `/root/asyncify/.env.prod` **before** merging it — preflight refuses to boot
+> without it, so api, worker and ws will all fatal-exit on the first restart.
 
 Per-tenant provider credentials (a Resend API key, a Telegram bot token) are
 **not** environment config — they are encrypted rows added from the dashboard's
@@ -198,9 +204,12 @@ curl -s  https://tools.asyncify.org/ -X POST -d '{"args":{"orderId":"X"}}'
 Then sign up in the browser to hold a production API key, and publish the
 runtime public URL:
 ```bash
+# The PUT is operator-only in production: x-operator-token = OPS_ADMIN_TOKEN
+# from .env.prod. A tenant api key is rejected (401 operator token required).
 curl -X PUT https://app.asyncify.org/v1/ops/public-url \
-  -H "x-api-key: <key>" -H "content-type: application/json" \
+  -H "x-operator-token: <OPS_ADMIN_TOKEN>" -H "content-type: application/json" \
   -d '{"url":"https://app.asyncify.org"}'
+# The GET stays tenant-readable.
 curl -s https://app.asyncify.org/v1/ops/public-url -H "x-api-key: <key>"
 # → {"url":"https://app.asyncify.org","source":"runtime"}   ← the gate
 ```
@@ -273,7 +282,8 @@ docker compose --env-file .env.prod exec -T postgres \
 Keep the dumps off-box, and keep `CREDENTIALS_ENCRYPTION_KEY` off-box with
 them — **a dump without that key cannot restore a single integration.**
 
-**Domain migration** is one `PUT /v1/ops/public-url` plus reconnecting the
+**Domain migration** is one `PUT /v1/ops/public-url` (operator-only —
+`x-operator-token: $OPS_ADMIN_TOKEN`) plus reconnecting the
 channels that store a callback (Telegram, Slack, Postmark). No restart, no
 rebuild: the dashboard's WS origin is derived from `location.host`, so it
 follows the new domain by itself.

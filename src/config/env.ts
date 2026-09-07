@@ -75,6 +75,15 @@ export const env = {
   // verification (dev only — always set this in production).
   webhookSigningSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
 
+  // Operator-only secret gating GLOBAL ops writes (PUT /v1/ops/public-url —
+  // one value shared by every tenant). NOT a tenant API key: no tenant
+  // credential can substitute for it in production. Empty in dev, where
+  // requireOperator falls back to ordinary tenant auth so `asyncify dev`
+  // works with nothing configured. Preflight refuses to boot without it in
+  // production. NOTE: the request-time check in src/api/auth.ts reads
+  // process.env directly (this object is a module-load snapshot).
+  opsAdminToken: process.env.OPS_ADMIN_TOKEN ?? '',
+
   // Master key for encrypting provider credentials at rest (AES-256-GCM).
   // Always override in production; source from KMS/secret manager.
   credentialsEncryptionKey:

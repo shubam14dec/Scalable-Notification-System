@@ -56,9 +56,13 @@ URL only (no path or query).
 
 ```bash
 # Set the runtime public URL (instantly, across api + worker).
+# The write is OPERATOR-only in production — the value is global, so a tenant
+# api key is not accepted there; send OPS_ADMIN_TOKEN instead. Locally
+# (NODE_ENV != production) the api key below is what `asyncify dev` uses.
 curl -X PUT -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
   https://api.asyncify.org/v1/ops/public-url \
   -d '{"url":"https://random-words.trycloudflare.com"}'
+# production: -H "x-operator-token: $OPS_ADMIN_TOKEN"   (instead of x-api-key)
 
 # Read the value in force and where it came from.
 curl -H "x-api-key: $API_KEY" \
