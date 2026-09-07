@@ -6,6 +6,18 @@
 :8080 {
 	encode zstd gzip
 
+	# ---- Transport, for EVERY response on this host (S1.3) ----
+	# HSTS is a property of the connection, not of one resource, so it rides
+	# the site block and covers the proxied API/WS responses too. The API sets
+	# no HSTS of its own (src/api/app.ts), so nothing is duplicated here.
+	#
+	# NO includeSubDomains — deliberate. asyncify.org's apex hosts a SEPARATE
+	# marketing site; includeSubDomains from app.asyncify.org would pin
+	# HTTPS-only on every sibling hostname for 180 days with no way to take it
+	# back early. 15552000s = 180d, the floor for preload eligibility, without
+	# taking the domain hostage.
+	header Strict-Transport-Security "max-age=15552000"
+
 	# Every top-level prefix the Fastify app owns. PUBLIC_URL is this same
 	# host, so provider webhooks, the open-tracking pixel and handoff links
 	# all land here. KEEP IN SYNC with route registration in src/api/app.ts.
@@ -29,5 +41,44 @@
 		root * /srv
 		try_files {path} /index.html
 		file_server
+
+		# ---- Browser hardening for the SPA ONLY (S1.3) ----
+		# Scoped to this handle block on purpose: the API sets its own
+		# nosniff / Referrer-Policy / CSP per response (src/api/app.ts
+		# onSend hook), and a second copy from Caddy would append a
+		# duplicate value rather than replace it. One writer per header.
+		#
+		# The CSP is built from what the BUILT bundle actually references
+		# (dashboard/dist), not from a template:
+		#   script-src 'self'  - one module bundle, nothing external, and no
+		#     inline script (the pre-paint theme setter is /theme.js;
+		#     tests/unit/csp-no-inline-script.test.ts keeps it that way).
+		#   style-src 'unsafe-inline' - React style={{}} attributes are used
+		#     throughout the dashboard, and they are style-src-governed.
+		#   img-src data: - inline SVG/data icons.
+		#   img-src https: - the email-template LIVE PREVIEW. Templates.tsx
+		#     renders MJML output in an <iframe sandbox="" srcDoc>, and a
+		#     srcdoc document INHERITS this policy (it has no response of its
+		#     own). Tenant email templates legitimately carry remote <mj-image>
+		#     logos, so 'self' alone would show broken images in the one
+		#     feature whose entire job is showing the recipient's-eye view.
+		#     Drop `https:` if that fidelity is not worth the widening -
+		#     images are not a script sink, and connect-src stays 'self'.
+		#   font-src data: - NOT boilerplate: @fontsource is self-hosted, but
+		#     vite inlined 8 of the small Geist subsets as data:font/woff2
+		#     while emitting 22 as /assets files. Both forms ship.
+		#   connect-src 'self' - the dashboard calls relative API paths (no
+		#     VITE_ base URL exists) and derives wss from location.host
+		#     (dashboard/src/lib/wsOrigin.ts). CSP3 maps 'self' onto wss for
+		#     an https origin, so same-host WebSockets are covered. Left
+		#     host-agnostic deliberately: this Caddyfile binds :8080 and names
+		#     no domain, which is why a domain move needs no rebuild.
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+			X-Content-Type-Options nosniff
+			Referrer-Policy strict-origin-when-cross-origin
+			X-Frame-Options DENY
+			Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		}
 	}
 }

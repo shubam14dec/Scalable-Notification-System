@@ -85,6 +85,95 @@ why moving the gateway onto the same hostname needed no server change.
 > otherwise it silently falls through to the SPA and returns `index.html` with a
 > 200, which is much harder to debug than a 404.
 
+## Security headers (S1.3)
+
+Two writers, one header each — never both, because Caddy would *append* a
+second value rather than replace ours:
+
+| Where | Sets | On what |
+|---|---|---|
+| [`Caddyfile`](../deploy/compose/Caddyfile), site block | `Strict-Transport-Security` | **every** response on the host, API and WS included |
+| `Caddyfile`, static `handle` block | `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy` | dashboard SPA / static files only |
+| [`src/api/app.ts`](../src/api/app.ts), `onSend` hook | `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Cache-Control` | every API response |
+
+Verify a Caddyfile edit before it reaches the box — a bad one takes the whole
+site down, since Caddy fails to start rather than serving unstyled:
+
+```bash
+docker run --rm -v "$PWD/deploy/compose/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+```
+
+### What the SPA's CSP allows, and why
+
+`default-src 'self'` with these deliberate widenings — each one is in the
+policy because the *built* bundle needs it, not because a template had it:
+
+- **`script-src 'self'`** — no `'unsafe-inline'`, no hash. The shell's
+  pre-paint theme setter lives in `dashboard/public/theme.js`, **not** inline.
+  Keep it that way: `tests/unit/csp-no-inline-script.test.ts` fails the build
+  if a `<script>` body returns to `dashboard/index.html`. (A `'sha256-…'` pin
+  was the alternative and was rejected — the hash is byte-exact, and this repo
+  is checked out with `core.autocrlf=true` on Windows while the image builds
+  from an LF checkout, so the two disagree and the stale hash fails *silently*,
+  as an unthemed dashboard.)
+- **`style-src 'unsafe-inline'`** — the dashboard uses React `style={{}}`
+  attributes throughout. Unavoidable without rewriting every component.
+- **`img-src data:`** for inline icons; **`img-src https:`** for the
+  email-template **live preview**. `Templates.tsx` renders MJML output into an
+  `<iframe sandbox="" srcDoc>`, and a srcdoc document *inherits* the parent
+  policy (it has no response of its own), so tenant templates carrying remote
+  `<mj-image>` logos would show broken images under `'self'` alone — in the one
+  feature whose job is showing the recipient's-eye view. Drop `https:` if that
+  fidelity is not worth the widening; images are not a script sink and
+  `connect-src` stays `'self'`.
+- **`font-src data:`** — not boilerplate. `@fontsource` is self-hosted, but
+  vite inlines the small Geist subsets as `data:font/woff2` while emitting the
+  rest as `/assets` files. Both forms ship, so both must be allowed.
+- **`connect-src 'self'`** — the dashboard calls relative API paths (no
+  `VITE_` base URL exists) and derives its WebSocket origin from
+  `location.host` (`dashboard/src/lib/wsOrigin.ts`). CSP3 maps `'self'` onto
+  `wss:` for an `https:` origin, so same-host sockets are covered **without**
+  naming a domain — which is what keeps the "a domain move needs no rebuild"
+  property above true.
+
+**No external origin is allowed, because the dashboard touches none.** Fonts
+are self-hosted, QR codes are generated locally
+(`packages/react/src/qrcodegen.ts`), and there is **no Firebase/gstatic script
+and no FCM connect in the dashboard bundle** — web push lives in
+`@asyncify-hq/react`, which *consumers* install and serve under their own CSP
+(see [PUSH-SMS.md](PUSH-SMS.md)). If a push page is ever added to this
+dashboard, it needs `script-src https://www.gstatic.com` and the FCM
+`connect-src` entries, or push breaks with no error.
+
+### HSTS: 180 days, no `includeSubDomains`
+
+`max-age=15552000` and nothing else. **Do not add `includeSubDomains`** —
+`asyncify.org`'s apex hosts a separate marketing site, and the directive on
+`app.asyncify.org` would pin HTTPS-only on every sibling hostname for 180 days
+with no way to take it back early. Same reason there is no `preload`.
+
+### The API's own headers
+
+`Referrer-Policy: no-referrer` here is stricter than the SPA's
+`strict-origin-when-cross-origin`: API URLs carry ids and handoff tokens **in
+the path**, and no API response has a reason to leak its own URL onward.
+`Cache-Control: no-store` covers `/auth/*`, whose bodies carry access and
+refresh tokens.
+
+The API's CSP branches on the **outgoing content type**, not on a path list
+that would drift: `text/html` responses — the phone-facing bot-setup handoff
+(`routes/handoff.ts`) and the Slack OAuth result page (`routes/slack.ts`) — get
+`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'`, because
+both are styled (a `<style>` block and `style=""` attributes) and neither has a
+script of any kind. Everything else gets `default-src 'none'`, which only bites
+if someone points a browser tab straight at an endpoint.
+
+JWT algorithms are pinned on both sides (`sign.algorithm` / `verify.algorithms`
+= HS256), matching what the WS gateway already enforced. Before the pin, a
+token forged with **HS512 and the same secret was accepted** by both guards —
+that regression is now covered by `tests/integration/security-headers.test.ts`.
+
 ## Secrets
 
 All of them live in one file, `.env.prod` (chmod 600, gitignored, never

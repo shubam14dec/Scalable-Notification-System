@@ -33,10 +33,22 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       re-paste, runbook has the derive one-liner) + jobId replay
       collapse; twilio status jobId dedupe; widget 429 shows "try
       again in Ns" not the connection lie. 31 new tests; changesets
-      for react+node. Awaiting his E2E.
-- [ ] S1.3 headers & transport — Caddy security headers (CSP incl. the
+      for react+node. His 4-check E2E passed 2026-09-08 (burst 202x20+
+      429x5, login wall at 11, chat + delivery intact).
+- [x] S1.3 headers & transport — Caddy security headers (CSP incl. the
       SPA, HSTS, frame-ancestors none, nosniff, referrer-policy), API
       response headers, pin JWT algorithms on the API side.
+      DONE 2026-09-08. CSP built from the BUILT bundle (inline theme
+      script extracted to /theme.js + drift-guard test; img https: for
+      the MJML preview iframe which inherits the policy); HSTS site-
+      wide WITHOUT includeSubDomains (apex site stays free); one-
+      writer-per-header split (Caddy=SPA, app.ts onSend=API, content-
+      type-branched CSP so handoff/Slack HTML keep styles, scripts
+      denied); JWT pinned HS256 both sides - HS512 forgery proven
+      accepted before, rejected after, with an HS256 control; no-store
+      on /auth/* AND /v1/ops/handoffs (bot token). 12 new tests. Local
+      E2E is light (headers are prod-served); real proof = curl at
+      ship time.
 - [ ] S1.4 deps + small fixes — npm audit highs (undici/find-my-way/
       fast-uri/nodemailer root; react-router dashboard) with CLEAN-ROOM
       lockfile regen; telegram !== → timingSafeEqual; login timing
