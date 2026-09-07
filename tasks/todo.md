@@ -83,10 +83,22 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       drops logged once per step+field. Creds chown 65532 + 600 = SHIP
       STEP in runbook. 8 new tests. One-off canary test flake noted
       (passes standalone, cross-file redis leakage suspected).
-- [ ] S1.6 Google sign-in — "Continue with Google" (OIDC, basic scopes,
+- [x] S1.6 Google sign-in — "Continue with Google" (OIDC, basic scopes,
       free) alongside password login, account-link by email; replaces
       email verification as the junk-tenant answer; his hands: OAuth
-      client in Google console + .env.prod paste.
+      client in Google console + .env.prod paste. DONE 2026-09-09
+      (code): redirect-only (One Tap = later slice, his call after the
+      CSP trade-off), state+PKCE in one HttpOnly Lax cookie, id_token
+      claims validated (iss/aud/exp/email_verified===true - unverified
+      REJECTED), one-time redis code hop so tokens never ride URLs
+      (GETDEL single-use), account link by email (refuses to re-point
+      a sub already bound; races collapse to one user), Google-only
+      users take the dummy-verify branch so the S1.2 timing oracle
+      stays closed, provisioning extracted + shared with signup,
+      schema additive (google_sub unique, password_hash nullable). No
+      new deps (hand-rolled cookie). 26 tests. Client ID minted (his
+      console, both origins added); HIS steps left: .env secret paste
+      + browser E2E.
 - [ ] S1.7 (his call at close-out) — refresh-token rotation+revocation;
       Postgres retention purge (messages/exec logs).
 

@@ -6,7 +6,10 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  password_hash: string;
+  /** Null for accounts that only ever signed in with Google (S1.6). */
+  password_hash: string | null;
+  /** Google's `sub` claim; null for password-only accounts (S1.6). */
+  google_sub: string | null;
 }
 
 export interface Organization {
@@ -48,6 +51,52 @@ export async function getUserByEmail(email: string): Promise<User | null> {
 
 export async function getUserById(id: string): Promise<User | null> {
   const { rows } = await pool.query('select * from users where id = $1', [id]);
+  return rows[0] ?? null;
+}
+
+// ---------- S1.6: Google identities ----------
+
+/** Look a user up by Google's stable `sub` claim (the returning-user path). */
+export async function getUserByGoogleSub(googleSub: string): Promise<User | null> {
+  const { rows } = await pool.query('select * from users where google_sub = $1', [googleSub]);
+  return rows[0] ?? null;
+}
+
+/**
+ * Create a passwordless user owned by a Google identity.
+ *
+ * `on conflict (email) do nothing` returns null when the address was taken
+ * between the caller's lookup and this insert — the caller then falls back to
+ * the LINK path, so a race ends in one user with both credentials rather than
+ * a 500 or a duplicate.
+ */
+export async function createGoogleUser(
+  email: string,
+  name: string,
+  googleSub: string,
+): Promise<User | null> {
+  const { rows } = await pool.query(
+    `insert into users (email, name, password_hash, google_sub)
+     values ($1, $2, null, $3)
+     on conflict (email) do nothing
+     returning *`,
+    [email.toLowerCase(), name, googleSub],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Attach a Google identity to an existing (password) account — they now have
+ * both doors. `google_sub is null` makes this a no-op when the row already
+ * carries a DIFFERENT Google account, so linking can never steal an identity
+ * off a user; the caller reads the returned row (null = not linked) and
+ * refuses the sign-in.
+ */
+export async function linkGoogleSub(userId: string, googleSub: string): Promise<User | null> {
+  const { rows } = await pool.query(
+    `update users set google_sub = $2 where id = $1 and google_sub is null returning *`,
+    [userId, googleSub],
+  );
   return rows[0] ?? null;
 }
 

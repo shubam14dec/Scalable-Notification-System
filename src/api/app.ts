@@ -11,6 +11,7 @@ import { registerInboxRoutes } from './routes/inbox';
 import { registerSuppressionRoutes } from './routes/suppressions';
 import { registerBroadcastRoutes } from './routes/broadcast';
 import { registerAuthRoutes } from './routes/auth';
+import { registerGoogleAuthRoutes } from './routes/google-auth';
 import { registerAccountRoutes } from './routes/account';
 import { registerIntegrationRoutes } from './routes/integrations';
 import { registerTopicRoutes } from './routes/topics';
@@ -144,6 +145,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   registerAuthRoutes(app);
+  registerGoogleAuthRoutes(app);
   registerAccountRoutes(app);
   registerIntegrationRoutes(app);
   registerTopicRoutes(app);

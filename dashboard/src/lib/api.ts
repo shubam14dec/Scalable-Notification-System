@@ -146,15 +146,35 @@ export interface Me {
 
 export const fetchMe = () => api<Me>('/auth/me');
 
-export async function login(email: string, password: string) {
-  const res = await api<Me & { accessToken: string; refreshToken: string }>('/auth/login', {
-    method: 'POST',
-    body: { email, password },
-  });
+type SignedIn = Me & { accessToken: string; refreshToken: string };
+
+/** Store a fresh session and pick a default environment. One code path for
+ *  every sign-in door — password today, Google (S1.6) alongside it. */
+function adoptSession(res: SignedIn): SignedIn {
   session.setTokens(res.accessToken, res.refreshToken);
   const firstEnv = res.organizations[0]?.environments[0];
   if (firstEnv && !session.envId) session.setEnv(firstEnv.id);
   return res;
+}
+
+export async function login(email: string, password: string) {
+  return adoptSession(
+    await api<SignedIn>('/auth/login', { method: 'POST', body: { email, password } }),
+  );
+}
+
+/** Which sign-in doors this deployment offers. Cheap and public — the login
+ *  page asks once so the Google button only appears where it works. */
+export const fetchAuthMethods = () => api<{ google: boolean }>('/auth/methods');
+
+/**
+ * Trade the one-time code the Google callback put in our URL for a real
+ * session. This runs on the SPA's OWN origin, which is the whole point of the
+ * code hop: the callback lands on the API's origin, and only this origin may
+ * write the localStorage the session lives in (src/api/routes/google-auth.ts).
+ */
+export async function redeemGoogleCode(code: string) {
+  return adoptSession(await api<SignedIn>('/auth/google/redeem', { method: 'POST', body: { code } }));
 }
 
 export async function signup(input: {

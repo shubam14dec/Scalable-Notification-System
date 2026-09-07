@@ -89,6 +89,26 @@ export const env = {
   credentialsEncryptionKey:
     process.env.CREDENTIALS_ENCRYPTION_KEY ?? 'dev-credentials-key-change-me',
 
+  /**
+   * S1.6 — "Continue with Google" (server-side authorization-code + OIDC).
+   *
+   * OPTIONAL FEATURE, OFF BY DEFAULT: both id and secret empty = the routes
+   * 404 and the dashboard hides the button, so nothing here is a preflight
+   * requirement — a deployment without a Google project keeps working exactly
+   * as it does today with email + password.
+   *
+   * postLoginOrigin is the origin the callback bounces the browser back to
+   * with the one-time login code. Empty = same origin (production: the SPA and
+   * the API are one origin behind Caddy). Dev sets http://localhost:5173,
+   * because the callback lands on the API at :3000 while the SPA runs on the
+   * vite port — and only the SPA's own origin can write its localStorage.
+   */
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+    postLoginOrigin: (process.env.GOOGLE_POST_LOGIN_ORIGIN ?? '').replace(/\/$/, ''),
+  },
+
   // Dashboard/user auth (JWT). Always override the secret in production.
   jwtSecret: process.env.JWT_SECRET ?? 'dev-jwt-secret-change-me',
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL ?? '15m',

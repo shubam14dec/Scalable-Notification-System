@@ -193,6 +193,18 @@ that signs dashboard tokens and the process that verifies them.
 | `CLICKHOUSE_PASSWORD` | `openssl rand -hex 32` | Analytics only; soft-fails if wrong. |
 | `OUTBOUND_URL_ALLOW` | — | **Must stay empty.** It is the SSRF guard's dev escape hatch. |
 | `TUNNEL_ID` | `cloudflared tunnel create` | Box-local UUID; creds JSON is never committed. |
+| `GOOGLE_CLIENT_ID` | Google Cloud console | **Optional** ("Continue with Google"). Empty = feature off: `/auth/google` 404s and the login page hides the button. |
+| `GOOGLE_CLIENT_SECRET` | Google Cloud console | **Optional**, and required together with the id — one without the other still reads as off. |
+| `GOOGLE_POST_LOGIN_ORIGIN` | — | **Leave empty in production** (the SPA and the API are one origin behind Caddy). Only local dev sets it, to `http://localhost:5173`. |
+
+**Google sign-in, one-time console setup** (skip entirely if you are not
+offering it): in [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
+create an **OAuth 2.0 Client ID** of type *Web application*, and register both
+authorized redirect URIs on it — `https://app.asyncify.org/auth/google/callback`
+(production) and `http://localhost:3000/auth/google/callback` (local dev, the
+API port). Google compares the redirect URI byte for byte, so the dev tunnel
+hostname is deliberately never used here: it rotates on every `asyncify dev`
+run and could not be registered ahead of time.
 
 Two of these have failure modes that are silent rather than loud, which is
 exactly why the preflight below exists:

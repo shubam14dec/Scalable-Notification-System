@@ -383,6 +383,16 @@ Auth: `x-api-key` header on all `/v1/*` and `/ops/*` routes (`/health` and
 a PLATFORM-wide value, so in production it takes an operator secret instead:
 `x-operator-token: $OPS_ADMIN_TOKEN`.
 
+Dashboard sign-in is separate: `/auth/signup` and `/auth/login` mint a JWT
+access + refresh pair. **"Continue with Google"** is an optional second door —
+a server-side OAuth 2.0 authorization-code flow with PKCE (no Google script is
+ever loaded, which is what keeps the dashboard's `script-src 'self'` CSP
+strict). It is off unless `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are
+set; `GET /auth/methods` reports whether it is on, and the login page hides the
+button when it is not. Google is trusted only for *verified* addresses, and a
+first sign-in provisions the same organization, environments and API keys a
+password signup does. Setup: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#secrets).
+
 Setting up push + SMS delivery (Twilio, FCM, web/native device registration,
 segment limits, delivery receipts): **[docs/PUSH-SMS.md](docs/PUSH-SMS.md)**.
 

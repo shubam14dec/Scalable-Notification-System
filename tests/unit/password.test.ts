@@ -49,6 +49,15 @@ describe('password hashing', () => {
     expect(await verifyPassword('x', 'not-a-hash')).toBe(false);
     expect(await verifyPassword('x', 'bcrypt:1:2:3:aa:bb')).toBe(false);
   });
+
+  // S1.6: a Google-first account has NO password hash. That row reaching the
+  // login path is ordinary, not exceptional — it must answer "no", not throw a
+  // TypeError the API would serve as a 500.
+  test('an absent stored hash is "no password set", not a crash', async () => {
+    expect(await verifyPassword('x', null)).toBe(false);
+    expect(await verifyPassword('x', undefined)).toBe(false);
+    expect(await verifyPassword('x', '')).toBe(false);
+  });
 });
 
 describe('login timing equalisation', () => {

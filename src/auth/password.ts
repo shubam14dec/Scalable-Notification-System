@@ -35,7 +35,18 @@ export async function hashPassword(password: string): Promise<string> {
   return `scrypt:${N}:${R}:${P}:${salt.toString('hex')}:${hash.toString('hex')}`;
 }
 
-export async function verifyPassword(password: string, stored: string): Promise<boolean> {
+/**
+ * `stored` is nullable on purpose (S1.6): a Google-first account has NO
+ * password hash at all, and the row reaching this function is the normal way
+ * that fact shows up. A null/empty hash is "no password set" — false, not a
+ * thrown TypeError that the API would surface as a 500 on an ordinary wrong-
+ * door login attempt.
+ */
+export async function verifyPassword(
+  password: string,
+  stored: string | null | undefined,
+): Promise<boolean> {
+  if (!stored) return false;
   const parts = stored.split(':');
   if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
   // Parameters come from the STORED hash, never from the constants above, so a

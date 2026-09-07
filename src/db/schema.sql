@@ -1026,3 +1026,25 @@ alter table agents add column if not exists subscriber_rate jsonb;
 -- turns; conversations already handed to humans stay with humans until handback,
 -- exactly as P26 has always worked.
 alter table agents add column if not exists paused_at timestamptz;
+
+-- ---- Slice S1.6: CONTINUE WITH GOOGLE ----
+-- `google_sub` is Google's `sub` claim: the stable, opaque, never-reused
+-- account id. It is the join key, NOT the email — a Google account can change
+-- its primary address, and matching on the mutable field would hand an account
+-- to whoever inherits the old address. The email is used exactly once, at
+-- first sight, to LINK a Google identity onto a pre-existing password account
+-- (and only because we require email_verified — see routes/google-auth.ts).
+-- Nullable: every account created before this slice, and every password-only
+-- account after it, has no Google identity.
+alter table users add column if not exists google_sub text;
+-- Unique so one Google account cannot fan out into several local users. NULLs
+-- are distinct in a Postgres unique index, so any number of password-only rows
+-- coexist under it without a partial-index clause.
+create unique index if not exists users_google_sub_key on users (google_sub);
+
+-- A Google-first user has NO password at all, and storing a placeholder hash
+-- would be a lie the login path could not tell apart from a real credential.
+-- So the column becomes nullable and `verifyPassword` treats a null stored
+-- hash as "no password set" -> a normal 401, never a 500 (src/auth/password.ts).
+-- Idempotent: re-running on an already-nullable column is a no-op.
+alter table users alter column password_hash drop not null;
