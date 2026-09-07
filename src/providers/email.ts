@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { randomUUID } from 'node:crypto';
 import { env } from '../config/env';
+import { assertSafeOutboundHost, UnsafeOutboundUrlError } from '../core/safe-url';
 import { PermanentError, TransientError } from '../shared/errors';
 import { logger } from '../shared/logger';
 import type { ChannelProvider, RenderedMessage, SendResult } from './types';
@@ -49,11 +50,64 @@ export interface SmtpConfig {
   secure?: boolean;
 }
 
+/**
+ * The connect-time half of the SMTP SSRF gate.
+ *
+ * INVESTIGATION (nodemailer 6.10.1, read from source): the SMTP transport does
+ * NOT accept a custom DNS `lookup`, so the undici `safeDispatcher()` trick has
+ * no equivalent here. `SMTPConnection.connect` builds its own connect options
+ * from scratch — `{port, host, allowInternalNetworkInterfaces, timeout}` plus
+ * `localAddress` and the `tls` block (lib/smtp-connection/index.js:224-233) —
+ * and never forwards a `lookup` from the transport options. It then resolves
+ * the host ITSELF via `shared.resolveHostname`
+ * (lib/shared/index.js:90-260, `dns.resolve4` → `resolve6` → `dns.lookup`,
+ * behind a module-level 5-minute cache) and overwrites `opts.host` with the
+ * chosen IP literal before `net.connect` / `tls.connect`
+ * (lib/smtp-connection/index.js:364 and :331) — at which point Node skips any
+ * lookup anyway. Its one adjacent-sounding option,
+ * `allowInternalNetworkInterfaces`, filters LOCAL interface families; it says
+ * nothing about the destination.
+ *
+ * So this is a resolve-and-assert immediately before each send, not a pin.
+ * RESIDUAL TOCTOU, stated honestly: we resolve, then nodemailer resolves again
+ * on its own, and a rebinding host can answer differently in that gap. What
+ * this closes is the large window — a host that passed the write-time check at
+ * `src/api/routes/integrations.ts` months ago and has pointed at 169.254.169.254
+ * ever since. The remaining window is milliseconds wide and, because
+ * nodemailer's DNS cache holds up to 5 minutes, usually resolves to an OLDER
+ * answer than ours rather than a newer one. Closing it entirely would mean
+ * pinning `host` to a vetted IP with `servername` for SNI — rejected because
+ * provider instances are cached by `id:updated_at`
+ * (`src/providers/factory.ts`), so the pin would outlive any legitimate IP
+ * rotation of the tenant's mail host.
+ */
+async function assertSmtpHostSafe(host: string): Promise<void> {
+  try {
+    await assertSafeOutboundHost(host);
+  } catch (err) {
+    if (err instanceof UnsafeOutboundUrlError) {
+      // Same shape as every other config-SSRF refusal (bridge/tool dials,
+      // knowledge fetches): permanent, so it lands as a transcript/exec-log
+      // note instead of burning the retry budget on a host that cannot
+      // become legal by trying again.
+      throw new PermanentError(`smtp host blocked: ${err.message}`);
+    }
+    throw err;
+  }
+}
+
 /** SMTP — the env-configured default, or a per-tenant integration. */
 export class SmtpEmailProvider implements ChannelProvider {
   readonly id: string;
   readonly channel = 'email' as const;
   private readonly from: string;
+  /**
+   * Set only when the host came from a TENANT integration. The env-configured
+   * default is operator infrastructure (mailpit on the compose network, an
+   * internal relay) — SSRF-gating it would block exactly the private targets
+   * the operator meant to configure.
+   */
+  private readonly tenantHost: string | null;
   private transport: nodemailer.Transporter;
 
   constructor(config?: SmtpConfig, instanceId = 'smtp') {
@@ -64,6 +118,7 @@ export class SmtpEmailProvider implements ChannelProvider {
       from: env.smtpFrom,
     };
     this.from = cfg.from;
+    this.tenantHost = config ? cfg.host : null;
     this.transport = nodemailer.createTransport({
       host: cfg.host,
       port: cfg.port,
@@ -83,6 +138,11 @@ export class SmtpEmailProvider implements ChannelProvider {
     if (env.emailChaosRate > 0 && Math.random() < env.emailChaosRate) {
       throw new TransientError('chaos: simulated smtp 5xx');
     }
+    // Re-vet the tenant's host against live DNS on every send — the write-time
+    // check in the route is fast feedback, not the boundary (see
+    // assertSmtpHostSafe above). An OS-cached lookup costs microseconds next to
+    // an SMTP round trip.
+    if (this.tenantHost) await assertSmtpHostSafe(this.tenantHost);
     try {
       const info = await this.transport.sendMail({
         from: this.from,

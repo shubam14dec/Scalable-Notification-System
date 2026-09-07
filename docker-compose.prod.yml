@@ -6,8 +6,34 @@
 # reaches `web` over the compose network. Nothing here is reachable from the
 # internet except through that tunnel.
 
+# CONTAINER HARDENING, and why it is not applied uniformly (S1.5).
+#
+# Every container we control the entrypoint of — api, worker, ws, acme-tools
+# (our image, running as the `node` user), web (caddy) and cloudflared (its
+# official nonroot image) — gets:
+#   security_opt: ["no-new-privileges:true"]  # setuid binaries can't escalate
+#   cap_drop: [ALL]                           # no Linux capabilities at all
+# None of them bind a port under 1024, chown files, or otherwise need a
+# capability, so ALL is genuinely droppable rather than a list to tune.
+#
+# postgres, redis and clickhouse are deliberately LEFT ALONE this round. Their
+# official entrypoints start as root and drop to their own unprivileged user
+# themselves (postgres via su-exec/gosu, clickhouse via its init scripts) —
+# which needs CAP_SETUID/CAP_SETGID/CAP_CHOWN to do. Dropping ALL there breaks
+# the very privilege-drop we want, and the fix is a different change
+# (`user:` overrides + pre-chowned volumes) with a real chance of eating a data
+# directory. Minimal blast radius: harden the app tier now, revisit the data
+# tier as its own slice.
+
+x-hardening: &hardening
+  security_opt:
+    - 'no-new-privileges:true'
+  cap_drop:
+    - ALL
+
 # api / worker / ws / acme-tools are the SAME image, differing only by command.
 x-app: &app
+  <<: *hardening
   build: .
   restart: unless-stopped
 
@@ -111,6 +137,19 @@ services:
     command: node scripts/acme-tools/serve.mjs
 
   web:
+    <<: *hardening
+    # The ONE capability added back, and not because Caddy uses it: the
+    # official image ships /usr/bin/caddy with the file capability
+    # `cap_net_bind_service=ep`, and execve of a binary whose EFFECTIVE file-cap
+    # bit is set fails with EPERM when that capability is missing from the
+    # container's bounding set. With a bare `cap_drop: [ALL]` the container dies
+    # instantly with `exec /usr/bin/caddy: operation not permitted` — verified
+    # locally. Caddy here binds :8080 with `auto_https off`, so it never
+    # exercises the capability; this only makes the exec legal. The cleaner fix
+    # is `setcap -r /usr/bin/caddy` in deploy/compose/dashboard.Dockerfile's
+    # runtime stage, which would let this line go away.
+    cap_add:
+      - NET_BIND_SERVICE
     build:
       context: .
       dockerfile: deploy/compose/dashboard.Dockerfile
@@ -119,6 +158,7 @@ services:
     restart: unless-stopped
 
   cloudflared:
+    <<: *hardening
     image: cloudflare/cloudflared:latest
     command: tunnel --config /etc/cloudflared/config.yml --credentials-file /etc/cloudflared/creds.json --no-autoupdate run ${TUNNEL_ID}
     volumes:

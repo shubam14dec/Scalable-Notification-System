@@ -506,6 +506,23 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   browser's push subscription: the old FCM token goes dead (our dead-token
   cleanup then deletes the device row — by design) and the page must mint
   + re-register a fresh one.
+- **`cap_drop: [ALL]` can kill a container at EXEC, not at bind time**
+  (S1.5, 2026-09-08): the official `caddy` image ships
+  `/usr/bin/caddy` with the file capability `cap_net_bind_service=ep`,
+  and the kernel fails `execve` with EPERM when a binary's EFFECTIVE
+  file-cap bit is set but that capability is absent from the container's
+  bounding set. `web` died instantly with `exec /usr/bin/caddy:
+  operation not permitted` — even though our Caddyfile binds :8080 and
+  never uses the capability. `no-new-privileges:true` alone is harmless;
+  only the drop triggers it. Before hardening ANY third-party image,
+  run `docker run --rm --entrypoint sh <image> -c 'getcap <binary>'` and
+  add back exactly what the file declares (`cap_add: [NET_BIND_SERVICE]`
+  here), or strip it in the image with `setcap -r`. Our own image is
+  immune — plain `node`, no file caps — and `cloudflare/cloudflared`
+  (distroless nonroot) is too, both verified. Sibling rule: the DATA
+  tier (postgres/redis/clickhouse) must keep its caps — those
+  entrypoints start as root and drop privileges themselves via
+  su-exec/gosu, which needs CAP_SETUID/SETGID/CHOWN.
 
 ## 12. Tests own Redis db 15 — never share queues with the dev fleet
 

@@ -258,6 +258,37 @@ values published in this repo. Preflight is never called inside `buildApp()` /
 > `/root/asyncify/.env.prod` **before** merging it — preflight refuses to boot
 > without it, so api, worker and ws will all fatal-exit on the first restart.
 
+> **Deploying the S1.5 box-hardening slice:** two host-side steps, both on the
+> box, both before `docker compose up -d --build`.
+>
+> 1. **Tighten the tunnel credentials.** They are 644 on every box deployed
+>    before S1.5 — readable by any account on the machine. Fix them in place:
+>    ```bash
+>    cd /root/asyncify
+>    sudo chown 65532:65532 deploy/compose/cloudflared/creds.json
+>    sudo chmod 600 deploy/compose/cloudflared/creds.json
+>    docker compose -f docker-compose.prod.yml restart cloudflared
+>    ```
+>    **Why uid 65532 and not `root`:** `cloudflare/cloudflared` is a distroless
+>    image whose process runs as the `nonroot` user, uid 65532. The bind mount
+>    carries the host's numeric owner straight into the container — there is no
+>    uid translation — so 600 plus the right numeric owner is the only way the
+>    container can read the file without anyone else on the host being able to.
+>    That uid is unallocated on Ubuntu, so nothing on the host gains access.
+>    Gate: `ls -ln deploy/compose/cloudflared/creds.json` shows `-rw------- …
+>    65532 65532`, and the cloudflared log registers 4 edge connections after
+>    the restart (a permissions mistake shows up as an immediate
+>    `error parsing credentials` crash-loop, not a silent degradation).
+> 2. **Rebuild the app image.** The runtime user changed from root to `node`
+>    (uid 1000) and `docker-compose.prod.yml` now drops every Linux capability
+>    from api / worker / ws / acme-tools / web / cloudflared, so a plain
+>    `restart` is not enough — `docker compose -f docker-compose.prod.yml up -d
+>    --build` is. Nothing binds a port under 1024, so no capability is needed
+>    back. Gate: `docker compose exec api id -u` prints `1000`, and all four
+>    health endpoints answer as in step 6 below. The data tier (postgres,
+>    redis, clickhouse) is deliberately untouched — see the comment block at the
+>    top of `docker-compose.prod.yml`.
+
 Per-tenant provider credentials (a Resend API key, a Telegram bot token) are
 **not** environment config — they are encrypted rows added from the dashboard's
 Integrations page.
@@ -290,7 +321,14 @@ Gate: both proxied CNAMEs are visible in the Cloudflare dashboard.
 ```bash
 git clone <repo> asyncify && cd asyncify
 cp ~/.cloudflared/<UUID>.json deploy/compose/cloudflared/creds.json
-chmod 600 deploy/compose/cloudflared/creds.json
+# The creds file is a bearer credential for the whole tunnel. It is bind-mounted
+# read-only into a container that runs as the distroless `nonroot` user, uid
+# 65532 — a uid that does not exist on the host, so it cannot be reached
+# through group or "other" bits without making the file world-readable. Give the
+# file to that uid NUMERICALLY and take every other bit away; do NOT settle for
+# 644 to make the container happy.
+sudo chown 65532:65532 deploy/compose/cloudflared/creds.json
+sudo chmod 600 deploy/compose/cloudflared/creds.json
 cp .env.prod.example .env.prod && chmod 600 .env.prod
 $EDITOR .env.prod                                   # fill every <gen>
 ```

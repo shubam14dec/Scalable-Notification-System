@@ -67,10 +67,22 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       body dropped. CI after the S1 batch push = the real lockfile
       proof. Rider found, not fixed: htmlToText leaves numeric
       entities in the text/plain alternative (own small slice).
-- [ ] S1.5 box/container hardening — USER node + no-new-privileges +
+- [x] S1.5 box/container hardening — USER node + no-new-privileges +
       cap_drop in prod compose; cloudflared creds 600 owned to the
       container uid; SMTP second SSRF layer; push URL render-time
-      re-check.
+      re-check. DONE 2026-09-08. Image runs as node (proven: built +
+      id=1000, tsx works, :3000 binds under full cap_drop); hardening
+      on 6 app services, data tier left alone (their entrypoints need
+      caps to drop privs); CADDY TRAP found empirically: cap_drop ALL
+      kills a binary with file-caps (execve EPERM) -> web gets
+      cap_add NET_BIND_SERVICE (ledger updated; later slice: setcap -r
+      + nonroot caddy). nodemailer accepts NO custom lookup (read from
+      source) -> resolve-and-assert per send, residual ms-wide TOCTOU
+      documented, pin rejected (provider cache outlives IP rotation).
+      Push clickUrl/imageUrl re-checked after render, syntactic only,
+      drops logged once per step+field. Creds chown 65532 + 600 = SHIP
+      STEP in runbook. 8 new tests. One-off canary test flake noted
+      (passes standalone, cross-file redis leakage suspected).
 - [ ] S1.6 Google sign-in — "Continue with Google" (OIDC, basic scopes,
       free) alongside password login, account-link by email; replaces
       email verification as the junk-tenant answer; his hands: OAuth

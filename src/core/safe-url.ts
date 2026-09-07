@@ -15,6 +15,10 @@ import { Agent } from 'undici';
  *    IP encodings, because it vets the exact IPs the socket will use.
  *    (Node skips custom lookup for literal-IP hosts, which is why the
  *    pre-dispatch assert must also run: it catches literals.)
+ *  - isSafeOutboundUrlSyntax / syntacticHostFailure: the DNS-free half on its
+ *    own, for URLs our servers never dial but do hand to someone else's
+ *    client (push clickUrl/imageUrl). Not an SSRF layer — a scheme and
+ *    intranet-pivot filter for links we ship to a recipient's device.
  *
  * OUTBOUND_URL_ALLOW (comma-separated exact hostnames) exempts hosts for
  * local dev — same code path in every environment, config decides
@@ -85,6 +89,52 @@ function unsafe(reason: string): never {
 }
 
 /**
+ * The DNS-free half of the host rules, as a pure function: empty host,
+ * literal private/reserved IPs, `localhost` and the internal suffixes.
+ * Returns the reason it is unsafe, or null when nothing syntactic
+ * disqualifies it (which does NOT mean it resolves publicly).
+ *
+ * Exported so surfaces that must not resolve — push clickUrl/imageUrl, which
+ * only the recipient's device ever opens — share these exact rules instead of
+ * re-listing the ranges. `'allowlisted'` short-circuits to null like it does
+ * everywhere else.
+ */
+export function syntacticHostFailure(rawHost: string): string | null {
+  const hostname = rawHost.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!hostname) return 'host is empty';
+  if (isAllowlisted(hostname)) return null;
+  if (isIP(hostname)) {
+    return isPrivateIp(hostname) ? `${hostname} is a private or reserved address` : null;
+  }
+  if (hostname === 'localhost' || BLOCKED_HOST_SUFFIXES.some((s) => hostname.endsWith(s))) {
+    return `${hostname} points at internal infrastructure`;
+  }
+  return null;
+}
+
+/**
+ * Syntactic-only verdict on a full URL: parseable, http/https, no embedded
+ * credentials, and a host that passes `syntacticHostFailure`. No DNS, so the
+ * answer is a pure function of the string.
+ *
+ * For URLs OUR servers never dial (push clickUrl/imageUrl — the handset opens
+ * them). The threat there is `javascript:`/`data:` schemes and intranet-pivot
+ * links delivered into a notification, not SSRF, so resolving would be both
+ * pointless and a per-recipient DNS round trip on the fan-out hot path.
+ */
+export function isSafeOutboundUrlSyntax(rawUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  if (url.username || url.password) return false;
+  return syntacticHostFailure(url.hostname) === null;
+}
+
+/**
  * Validate a bare hostname (no URL) — used for SMTP hosts.
  * `resolve: true` additionally requires every DNS answer to be public.
  */
@@ -93,15 +143,10 @@ export async function assertSafeOutboundHost(
   opts: { resolve?: boolean } = {},
 ): Promise<void> {
   const hostname = rawHost.trim().toLowerCase().replace(/^\[|\]$/g, '');
-  if (!hostname) unsafe('host is empty');
-  if (isAllowlisted(hostname)) return;
-  if (isIP(hostname)) {
-    if (isPrivateIp(hostname)) unsafe(`${hostname} is a private or reserved address`);
-    return;
-  }
-  if (hostname === 'localhost' || BLOCKED_HOST_SUFFIXES.some((s) => hostname.endsWith(s))) {
-    unsafe(`${hostname} points at internal infrastructure`);
-  }
+  const syntactic = syntacticHostFailure(rawHost);
+  if (syntactic) unsafe(syntactic);
+  // Allowlisted or a literal public IP: nothing left to resolve.
+  if (isAllowlisted(hostname) || isIP(hostname)) return;
   if (opts.resolve !== false) {
     let addresses: { address: string }[];
     try {
