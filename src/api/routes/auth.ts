@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { env } from '../../config/env';
-import { hashPassword, verifyPassword } from '../../auth/password';
+import { hashPassword, verifyDummyPassword, verifyPassword } from '../../auth/password';
 import {
   addMember,
   createApiKey,
@@ -101,8 +101,14 @@ export function registerAuthRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'invalid body' });
     }
     const user = await getUserByEmail(parsed.data.email);
-    if (!user || !(await verifyPassword(parsed.data.password, user.password_hash))) {
-      // Same response for unknown email and wrong password.
+    // An unknown email still pays for a full scrypt verify (against a fixed
+    // dummy hash) instead of returning early, so "no such account" and "wrong
+    // password" cost the same time as well as sending the same body — latency
+    // would otherwise enumerate which addresses are registered.
+    const passwordOk = user
+      ? await verifyPassword(parsed.data.password, user.password_hash)
+      : await verifyDummyPassword(parsed.data.password);
+    if (!user || !passwordOk) {
       return reply.code(401).send({ error: 'invalid email or password' });
     }
     return {

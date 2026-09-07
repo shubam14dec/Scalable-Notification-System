@@ -49,11 +49,24 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       on /auth/* AND /v1/ops/handoffs (bot token). 12 new tests. Local
       E2E is light (headers are prod-served); real proof = curl at
       ship time.
-- [ ] S1.4 deps + small fixes — npm audit highs (undici/find-my-way/
+- [x] S1.4 deps + small fixes — npm audit highs (undici/find-my-way/
       fast-uri/nodemailer root; react-router dashboard) with CLEAN-ROOM
       lockfile regen; telegram !== → timingSafeEqual; login timing
       oracle; scrypt N bump; seed/push log redactions; subject
-      double-escape fix.
+      double-escape fix. DONE 2026-09-08. Root audit 10 high -> 1
+      (nodemailer stays: fix = 4-major jump, own future slice; 2 of 8
+      advisories reachable), dashboard 2 high -> 0. Clean-room drill
+      run; @emnapi=11 law RETIRED (rolldown 1.2.7 dropped its wasm
+      binding - healthy root count is now 0) -> structural check via
+      scripts/validate-lock.cjs, skill S11 rewritten. bullmq pinned
+      exact 5.80.2 (PAIR with ioredis 5.10.1 - bullmq bumps its exact
+      ioredis in minors). scrypt N=65536 + maxmem BOTH calls, old
+      hashes verify (tested); unknown-email dummy-verify closes the
+      timing oracle; telegram timingSafeEqual; subjects render
+      unescaped + CRLF-stripped; api key/push token logs masked, push
+      body dropped. CI after the S1 batch push = the real lockfile
+      proof. Rider found, not fixed: htmlToText leaves numeric
+      entities in the text/plain alternative (own small slice).
 - [ ] S1.5 box/container hardening — USER node + no-new-privileges +
       cap_drop in prod compose; cloudflared creds 600 owned to the
       container uid; SMTP second SSRF layer; push URL render-time

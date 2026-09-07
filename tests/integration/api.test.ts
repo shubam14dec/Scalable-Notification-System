@@ -62,6 +62,11 @@ describe('auth + accounts', () => {
     expect(res.statusCode).toBe(409);
   });
 
+  // S1.4: the two failures must be indistinguishable in the RESPONSE, and the
+  // route also burns a dummy scrypt verify on the unknown-email path so they
+  // are indistinguishable in latency too (see verifyDummyPassword). Timing
+  // itself is deliberately not asserted here — measuring it in-suite is flaky;
+  // the cost is covered by tests/unit/password.test.ts.
   test('wrong password and unknown email return the same 401', async () => {
     const bad = await app.inject({
       method: 'POST',
@@ -75,7 +80,19 @@ describe('auth + accounts', () => {
     });
     expect(bad.statusCode).toBe(401);
     expect(ghost.statusCode).toBe(401);
-    expect(json(bad).error).toBe(json(ghost).error);
+    // Byte-identical body, not merely the same `error` string.
+    expect(bad.body).toBe(ghost.body);
+    expect(json(ghost)).toEqual({ error: 'invalid email or password' });
+  });
+
+  test('an unknown email is still a 401 (never a 404 or a different shape)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      payload: { email: 'definitely-nobody@itest.local', password: 'whatever123' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(json(res)).toEqual({ error: 'invalid email or password' });
   });
 
   test('refresh tokens cannot be used as access tokens', async () => {

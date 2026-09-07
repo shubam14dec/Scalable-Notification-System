@@ -10,15 +10,30 @@ import mjml2html from 'mjml';
  */
 
 const compiled = new Map<string, Handlebars.TemplateDelegate>();
+const compiledPlain = new Map<string, Handlebars.TemplateDelegate>();
 
-function compile(source: string): Handlebars.TemplateDelegate {
-  let fn = compiled.get(source);
+function compileWith(
+  cache: Map<string, Handlebars.TemplateDelegate>,
+  source: string,
+  noEscape: boolean,
+): Handlebars.TemplateDelegate {
+  let fn = cache.get(source);
   if (!fn) {
-    fn = Handlebars.compile(source, { noEscape: false });
-    if (compiled.size > 500) compiled.clear(); // crude bound; sources are cache keys
-    compiled.set(source, fn);
+    fn = Handlebars.compile(source, { noEscape });
+    if (cache.size > 500) cache.clear(); // crude bound; sources are cache keys
+    cache.set(source, fn);
   }
   return fn;
+}
+
+/** For anything rendered INTO HTML — values are escaped so payloads can't inject markup. */
+function compile(source: string): Handlebars.TemplateDelegate {
+  return compileWith(compiled, source, false);
+}
+
+/** For plain-text output, where HTML entities would be shown to the reader literally. */
+function compilePlain(source: string): Handlebars.TemplateDelegate {
+  return compileWith(compiledPlain, source, true);
 }
 
 export interface RenderedEmail {
@@ -55,7 +70,20 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-/** Subjects use Handlebars too (plain string, no MJML). */
+/**
+ * Subjects use Handlebars too (plain string, no MJML).
+ *
+ * Rendered WITHOUT escaping, unlike the body: a subject is a plain-text header,
+ * not markup, so escaping does not defend anything here — it only corrupts.
+ * `O'Brien & Co` reached inboxes as `O&#x27;Brien &amp; Co` while this shared
+ * the body's escaping compile. The body keeps escaping, which is where an
+ * injected tag would actually render.
+ *
+ * CR and LF are then stripped. Today every provider takes the subject as a JSON
+ * field, so this changes nothing; the day one of them writes a raw MIME header,
+ * a newline in a payload value would otherwise let a customer append headers of
+ * their own (Bcc:, Content-Type:) to the message.
+ */
 export function renderSubject(subjectSource: string, vars: Record<string, unknown>): string {
-  return compile(subjectSource)(vars);
+  return compilePlain(subjectSource)(vars).replace(/[\r\n]/g, '');
 }
