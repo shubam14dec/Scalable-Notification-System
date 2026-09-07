@@ -98,7 +98,7 @@ that signs dashboard tokens and the process that verifies them.
 |---|---|---|
 | `JWT_SECRET` | `openssl rand -base64 48` | **Must be byte-identical on api and ws.** |
 | `CREDENTIALS_ENCRYPTION_KEY` | `openssl rand -base64 48` | **Unrecoverable. Back it up off-box before first use.** |
-| `WEBHOOK_SIGNING_SECRET` | `openssl rand -hex 32` | Empty **disables** provider-webhook signature verification. |
+| `WEBHOOK_SIGNING_SECRET` | `openssl rand -hex 32` | ROOT secret only — never handed to a provider. Each tenant's webhook key is derived from it (see below). Empty **disables** provider-webhook signature verification. |
 | `OPS_ADMIN_TOKEN` | `openssl rand -hex 32` | Operator-only secret gating global ops writes (`PUT /v1/ops/public-url`), sent as `x-operator-token`. **Not a tenant key** — no tenant api key or dashboard JWT is accepted for that route in production. |
 | `POSTGRES_PASSWORD` | `openssl rand -base64 48` | Must match the password inside `DATABASE_URL`. |
 | `CLICKHOUSE_PASSWORD` | `openssl rand -hex 32` | Analytics only; soft-fails if wrong. |
@@ -117,6 +117,42 @@ exactly why the preflight below exists:
   (Resend, Postmark, Telegram, Slack, Twilio, LLM keys) becomes undecryptable
   ciphertext and every channel must be reconnected by hand. **A `pg_dump` taken
   without this key is worthless for restoring integrations.**
+
+### The generic provider webhook is per-tenant (S1.2)
+
+`POST /webhooks/providers/:provider/:tenantId` — the tenant is **in the URL**,
+and the signature is checked with a key derived for that tenant:
+
+```
+tenantKey = hex( HMAC-SHA256( WEBHOOK_SIGNING_SECRET, "tenant:<tenantId>" ) )
+```
+
+The root `WEBHOOK_SIGNING_SECRET` never leaves the box; a provider (or a
+customer wiring their own status callbacks) gets only that tenant's derived
+key, which can forge nothing for anyone else. Derive one on the box with:
+
+```bash
+docker compose exec api node -e "console.log(require('crypto').createHmac('sha256', process.env.WEBHOOK_SIGNING_SECRET).update('tenant:'+process.argv[1]).digest('hex'))" <TENANT_ID>
+```
+
+The wire format is unchanged (`x-webhook-timestamp` + `x-webhook-signature`
+over `` `${timestamp}.${rawBody}` ``, 300s tolerance) — only the URL and the
+key changed.
+
+> **One-time deploy step.** The old tenant-less path
+> `/webhooks/providers/:provider` now **404s** — deliberately, so nothing keeps
+> arriving unscoped. Anything configured against it (a provider console, a
+> customer's callback config) must be re-pointed at the tenant URL with the
+> tenant's derived key. Nothing in this repo mints that URL programmatically,
+> so this is a manual re-paste wherever one was set up by hand.
+
+> **Subscriber tokens die at deploy.** `nst_` tokens are now signed with a
+> per-tenant key (`subscriber:$JWT_SECRET:<tenantId>`), so every token minted
+> before this release fails verification. Widgets re-mint from the customer's
+> own session on the next load — one-time, no action required, expect a brief
+> spike of 401s on `/v1/inbox/*` and 4401 WebSocket closes. Their TTL ceiling
+> also dropped from 24h to **6h**, default **1h**; a backend explicitly asking
+> for more than 6h now gets a 400.
 
 **Preflight refuses dev defaults.** `src/config/preflight.ts` runs as the first
 statement of each entrypoint's `main()` and, when `NODE_ENV=production`,

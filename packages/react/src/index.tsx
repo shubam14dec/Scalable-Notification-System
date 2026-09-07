@@ -272,6 +272,39 @@ export interface AgentInfo {
   suggestedPrompts?: SuggestedPrompt[] | null;
 }
 
+/**
+ * A send the SERVER refused for a reason the user can act on — as opposed to
+ * a network failure, where "check your connection" is the honest advice.
+ *
+ * The distinction exists because both used to collapse into one message. Every
+ * non-2xx became `message not sent — check your connection and try again`, so
+ * hitting the platform's per-customer turn limit told the user to check a
+ * connection that was fine, and they retried immediately — into the same wall.
+ * The transport is unchanged: the send still rejects, the optimistic bubble is
+ * still rolled back, and the widget still shows `error` the way it always has.
+ * Only the sentence is now true.
+ */
+class SendRefusedError extends Error {}
+
+/** Build the error for a non-2xx send/action response. */
+async function refusal(res: Response, what: 'send' | 'action'): Promise<Error> {
+  if (res.status === 429) {
+    const body = (await res.json().catch(() => ({}))) as { retryAfterSeconds?: number };
+    const secs = body.retryAfterSeconds;
+    return new SendRefusedError(
+      secs && secs > 0
+        ? `too many messages — try again in ${secs}s`
+        : 'too many messages — try again in a moment',
+    );
+  }
+  return new Error(`${what} failed (${res.status})`);
+}
+
+/** Keep a server refusal's wording; anything else is a transport failure. */
+function asSendError(err: unknown, fallback: string): Error {
+  return err instanceof SendRefusedError ? err : new Error(fallback);
+}
+
 export function useAgentChat({
   token,
   subscriberId,
@@ -438,7 +471,7 @@ export function useAgentChat({
             body: JSON.stringify({ subscriberId, text: trimmed, messageId }),
           },
         );
-        if (!res.ok) throw new Error(`send failed (${res.status})`);
+        if (!res.ok) throw await refusal(res, 'send');
         // The 202 body carries the durable DB row id — adopt it so a later
         // edit/delete targets a real row. A duplicate:true 200 has no
         // messageId; keep the client id in that case.
@@ -448,9 +481,9 @@ export function useAgentChat({
             m.id === messageId ? { ...m, id: body.messageId ?? m.id, pending: false } : m,
           ),
         );
-      } catch {
+      } catch (err) {
         setMessages((prev) => prev.filter((m) => m.id !== messageId));
-        throw new Error('message not sent — check your connection and try again');
+        throw asSendError(err, 'message not sent — check your connection and try again');
       }
     },
     [apiUrl, agentIdentifier, subscriberId, headers],
@@ -490,7 +523,7 @@ export function useAgentChat({
             }),
           },
         );
-        if (!res.ok) throw new Error(`action failed (${res.status})`);
+        if (!res.ok) throw await refusal(res, 'action');
         // Same id swap as send(): the 202 body's messageId is the durable row.
         const body = (await res.json().catch(() => ({}))) as { messageId?: string };
         setMessages((prev) =>
@@ -498,9 +531,9 @@ export function useAgentChat({
             m.id === actionEventId ? { ...m, id: body.messageId ?? m.id, pending: false } : m,
           ),
         );
-      } catch {
+      } catch (err) {
         setMessages((prev) => prev.filter((m) => m.id !== actionEventId));
-        throw new Error('action not sent — check your connection and try again');
+        throw asSendError(err, 'action not sent — check your connection and try again');
       }
     },
     [apiUrl, agentIdentifier, subscriberId, headers],

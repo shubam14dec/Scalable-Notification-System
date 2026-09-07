@@ -13,6 +13,34 @@ export function signWebhook(secret: string, timestamp: string, rawBody: string):
   return createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
 }
 
+/**
+ * S1.2 — THE PER-TENANT PROVIDER-WEBHOOK KEY.
+ *
+ * The generic provider status webhook used to verify against one global
+ * secret for the whole platform, and the body it accepted named a message by
+ * provider id with no tenant anywhere. Anyone holding that single secret
+ * could flip ANY tenant's message to bounced/complaint — which writes a
+ * suppression and silently stops that address being mailed again. One
+ * credential, platform-wide blast radius.
+ *
+ * The fix derives a distinct key per tenant from the same root secret:
+ *
+ *   tenantKey = hex( HMAC-SHA256( WEBHOOK_SIGNING_SECRET, `tenant:${id}` ) )
+ *
+ * Standard KDF shape, deliberately NOT a new signing scheme: the wire format,
+ * the headers and the tolerance window are untouched, so anything that
+ * already speaks this webhook keeps working once it is pointed at the
+ * tenant's own URL with the tenant's own key. A holder of tenant A's key can
+ * forge only for tenant A, and the URL's tenantId is what selects the key —
+ * so a request aimed at another tenant is verified with a key the sender does
+ * not have.
+ *
+ * The root secret never leaves the server; only derived keys are handed out.
+ */
+export function tenantWebhookSecret(globalSecret: string, tenantId: string): string {
+  return createHmac('sha256', globalSecret).update(`tenant:${tenantId}`).digest('hex');
+}
+
 export function verifyWebhook(
   secret: string,
   timestamp: string | undefined,

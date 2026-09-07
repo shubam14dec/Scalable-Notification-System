@@ -411,7 +411,7 @@ target lacks.
 | `agents.canary.start / stop / promote / report` | Trial a version on a share of real conversations, then read the per-arm comparison |
 | `approvals.list / decide` | Human-in-the-loop tool-call queue |
 | `settings.getApprovals / putApprovals` | Which channels carry approval cards |
-| `subscriberToken(subscriberId, ttlSeconds?)` | Browser-safe inbox token |
+| `subscriberToken(subscriberId, ttlSeconds?)` | Browser-safe inbox token (60s–6h, default 1h) |
 
 Errors throw `AsyncifyError` with `status` and the API's message.
 

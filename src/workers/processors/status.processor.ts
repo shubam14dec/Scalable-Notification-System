@@ -30,12 +30,15 @@ const STATUS_MAP: Record<string, string> = {
  * back faster than our own 'sent' update commits.
  */
 export async function processStatus(
-  job: Job<{ provider: string; providerMessageId: string; status: string }>,
+  job: Job<{ provider: string; providerMessageId: string; status: string; tenantId?: string }>,
 ): Promise<void> {
-  const { provider, providerMessageId, status } = job.data;
+  const { provider, providerMessageId, status, tenantId } = job.data;
   const mapped = STATUS_MAP[status] ?? status;
 
-  const message = await updateMessageByProviderId(providerMessageId, mapped);
+  // S1.2: scoped to the tenant the callback was authenticated FOR. Resolving
+  // by provider id alone let a caller holding one webhook key address any
+  // tenant's message; a mismatched tenant now simply finds no row.
+  const message = await updateMessageByProviderId(providerMessageId, mapped, tenantId);
   if (!message) {
     throw new TransientError(
       `no message with provider_message_id=${providerMessageId} yet (provider=${provider})`,

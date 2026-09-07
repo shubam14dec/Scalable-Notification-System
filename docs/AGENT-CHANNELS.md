@@ -744,6 +744,11 @@ API key in front-end code. Your backend calls
 user and returns the short-lived token to your page. The component then talks
 to the `/v1/me/*` routes below using that token and nothing else.
 
+`ttlSeconds` is **60s minimum, 6h maximum, 1h by default** — a token is a
+bearer credential living in a browser with no revocation list, so its blast
+radius is exactly its lifetime. Mint it per session and re-mint when it
+expires; the call is cheap and the user never sees it.
+
 ### The `/v1/me` API (for custom UIs)
 
 If you're building your own linking UI instead of using the component, drive

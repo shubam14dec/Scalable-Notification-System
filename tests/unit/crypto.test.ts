@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'vitest';
 import { sealSecret, openSecret } from '../../src/auth/secret-box';
 import { hashPassword, verifyPassword } from '../../src/auth/password';
-import { mintSubscriberToken, verifySubscriberToken } from '../../src/auth/subscriber-token';
-import { signWebhook, verifyWebhook } from '../../src/api/webhook-signature';
+import {
+  mintSubscriberToken,
+  SUBSCRIBER_TOKEN_DEFAULT_TTL_S,
+  SUBSCRIBER_TOKEN_MAX_TTL_S,
+  verifySubscriberToken,
+} from '../../src/auth/subscriber-token';
+import { signWebhook, tenantWebhookSecret, verifyWebhook } from '../../src/api/webhook-signature';
 
 describe('secret-box (AES-256-GCM)', () => {
   test('round-trips arbitrary payloads', () => {
@@ -72,6 +77,43 @@ describe('subscriber tokens', () => {
     expect(verifySubscriberToken('nope')).toBeNull();
     expect(verifySubscriberToken('nst_abc')).toBeNull();
   });
+
+  // S1.2 — the signing key is derived per tenant, so the signature BINDS the
+  // tenant instead of merely accompanying a claim about it.
+  test('a token minted under tenant A can never verify as tenant B', () => {
+    const { token } = mintSubscriberToken('tenant-A', 'user-42', 3600);
+    const [, sig] = token.split('.');
+    // Re-point the payload at another tenant, keeping A's signature — the
+    // exact move the old single-key scheme could not detect.
+    const forged = Buffer.from(
+      JSON.stringify({ t: 'tenant-B', s: 'user-42', e: Math.floor(Date.now() / 1000) + 999 }),
+    ).toString('base64url');
+    expect(verifySubscriberToken(`nst_${forged}.${sig}`)).toBeNull();
+
+    // The genuine token still verifies, and reports the tenant it was signed for.
+    expect(verifySubscriberToken(token)).toMatchObject({ tenantId: 'tenant-A' });
+  });
+
+  test('two tenants minting for the same subscriber produce different signatures', () => {
+    const a = mintSubscriberToken('tenant-A', 'user-42', 3600).token.split('.')[1];
+    const b = mintSubscriberToken('tenant-B', 'user-42', 3600).token.split('.')[1];
+    expect(a).not.toBe(b);
+  });
+
+  test('TTL is capped at 6h even when a caller asks for more', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const { expiresAt } = mintSubscriberToken('tenant-1', 'user-42', 86_400);
+    expect(expiresAt - now).toBeLessThanOrEqual(SUBSCRIBER_TOKEN_MAX_TTL_S);
+    expect(expiresAt - now).toBeGreaterThan(SUBSCRIBER_TOKEN_MAX_TTL_S - 5);
+  });
+
+  test('the default TTL is one hour', () => {
+    const now = Math.floor(Date.now() / 1000);
+    expect(SUBSCRIBER_TOKEN_DEFAULT_TTL_S).toBe(3600);
+    const { expiresAt } = mintSubscriberToken('tenant-1', 'user-42');
+    expect(expiresAt - now).toBeGreaterThan(3595);
+    expect(expiresAt - now).toBeLessThanOrEqual(3600);
+  });
 });
 
 describe('webhook signatures', () => {
@@ -100,5 +142,29 @@ describe('webhook signatures', () => {
 
   test('missing headers rejected', () => {
     expect(verifyWebhook(secret, undefined, undefined, body).ok).toBe(false);
+  });
+
+  // S1.2 — per-tenant derivation. Same scheme, one key per tenant, so holding
+  // one tenant's key forges nothing for anybody else.
+  describe('per-tenant derivation', () => {
+    const A = '11111111-1111-1111-1111-111111111111';
+    const B = '22222222-2222-2222-2222-222222222222';
+
+    test('each tenant gets a distinct key, and none of them is the root secret', () => {
+      const ka = tenantWebhookSecret(secret, A);
+      const kb = tenantWebhookSecret(secret, B);
+      expect(ka).not.toBe(kb);
+      expect(ka).not.toBe(secret);
+      expect(ka).toMatch(/^[0-9a-f]{64}$/);
+      // Deterministic: the same inputs always derive the same key.
+      expect(tenantWebhookSecret(secret, A)).toBe(ka);
+    });
+
+    test("a signature made with tenant A's key fails under tenant B's", () => {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const sig = signWebhook(tenantWebhookSecret(secret, A), ts, body);
+      expect(verifyWebhook(tenantWebhookSecret(secret, A), ts, sig, body).ok).toBe(true);
+      expect(verifyWebhook(tenantWebhookSecret(secret, B), ts, sig, body).ok).toBe(false);
+    });
   });
 });

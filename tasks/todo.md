@@ -15,15 +15,25 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       layers, sealed creds, signed slack/twilio/email webhooks, hashed
       single-use handoff tokens, clean Actions). Full reports in the
       session; plan = the slices below.
-- [ ] S1.1 operator plane — PUT /v1/ops/public-url requires a dedicated
-      operator secret in prod (dev keeps tenant auth for `asyncify
-      dev`); /ops/queues,/breakers,/logs/stats get `authenticate`
-      (dashboard already sends its token). + preflight + DEPLOYMENT.md
-      (.env.prod gains OPS_ADMIN_TOKEN — box edit BEFORE merging).
-- [ ] S1.2 abuse brakes — shared per-IP Redis limiter (lift the handoff
-      paste budget) on /auth/login|signup|refresh; rate limit the
-      widget send-message route; nst_ TTL 24h→1h default + per-tenant
-      key derivation; per-tenant scoping on /webhooks/providers/*.
+- [x] S1.1 operator plane — DONE 2026-09-08 (cf0e2e2), his 3-check
+      local E2E passed (Overview renders, pulse ticks, anon /ops 401 +
+      keyed 200). requireOperator: prod accepts ONLY x-operator-token
+      (OPS_ADMIN_TOKEN, request-time read, fails closed, timing-safe);
+      dev delegates to authenticate (CLI untouched). 12 new tests.
+      DEPLOY ORDER: box .env.prod gains OPS_ADMIN_TOKEN before merge.
+- [x] S1.2 abuse brakes — DONE 2026-09-08. Shared ipRateLimit factory
+      (handoff budget lifted, behavior-identical); login 10/signup 3/
+      refresh 30 per min per IP; widget /messages AND /actions get
+      per-IP 60/min + per-subscriber 20 turns/min (api-key callers
+      exempt — they're the paying tenant; the browser bearer token is
+      the theft target); nst_ TTL default 1h cap 6h + per-tenant HMAC
+      key (existing tokens die once at deploy — widgets re-mint);
+      /webhooks/providers/:provider/:tenantId with per-tenant derived
+      key (KDF off WEBHOOK_SIGNING_SECRET, old path 404s — one-time
+      re-paste, runbook has the derive one-liner) + jobId replay
+      collapse; twilio status jobId dedupe; widget 429 shows "try
+      again in Ns" not the connection lie. 31 new tests; changesets
+      for react+node. Awaiting his E2E.
 - [ ] S1.3 headers & transport — Caddy security headers (CSP incl. the
       SPA, HSTS, frame-ancestors none, nosniff, referrer-policy), API
       response headers, pin JWT algorithms on the API side.

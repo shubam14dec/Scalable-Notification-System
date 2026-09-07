@@ -1424,6 +1424,11 @@ export class AsyncifyClient {
   /**
    * Mint a short-lived token scoped to one subscriber — pass it to the
    * <NotificationInbox /> widget in your frontend. Never ship the api key.
+   *
+   * `ttlSeconds` is 60s minimum, **21600 (6h) maximum**, default 3600 (1h);
+   * anything above the ceiling is a 400. It is a bearer credential in a
+   * browser with no revocation list, so mint it per session and re-mint —
+   * the call is cheap and the user never sees it.
    */
   subscriberToken(
     subscriberId: string,

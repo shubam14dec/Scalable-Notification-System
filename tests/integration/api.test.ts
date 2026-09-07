@@ -206,11 +206,21 @@ describe('webhook security', () => {
   test('unsigned status callbacks are rejected when a secret is configured', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/webhooks/providers/smtp',
+      // S1.2: the tenant is part of the URL and picks the signing key.
+      url: `/webhooks/providers/smtp/${devEnvId}`,
       payload: { providerMessageId: 'x', status: 'bounced' },
     });
     // 401 when WEBHOOK_SIGNING_SECRET is set (as in dev/.env); the route
     // only accepts unsigned callbacks when no secret is configured.
     expect([401, 200]).toContain(res.statusCode);
+  });
+
+  test('the tenant-less path no longer exists', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/providers/smtp',
+      payload: { providerMessageId: 'x', status: 'bounced' },
+    });
+    expect(res.statusCode).toBe(404);
   });
 });

@@ -373,7 +373,7 @@ npm run reconcile                             # DR drill: settle finished events
 | GET | `/v1/inbox/:subscriberId` | In-app inbox + unread count |
 | POST | `/v1/inbox/:subscriberId/read` | Mark inbox messages read (all, or by ids) |
 | WS | `ws://:3001/?apiKey=...&subscriberId=...` | Live in-app push |
-| POST | `/webhooks/providers/:provider` | Provider delivery-status callbacks |
+| POST | `/webhooks/providers/:provider/:tenantId` | Provider delivery-status callbacks (per-tenant signed) |
 | GET | `/health` | Liveness (Postgres + Redis) |
 | GET | `/ops/queues` | Waiting/active/delayed/failed per queue |
 | GET | `/ops/breakers` | Circuit-breaker states |
