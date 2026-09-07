@@ -6,14 +6,42 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase S1 — Security hardening (PLANNING, opened 2026-09-08)
+### Phase S1 — Security hardening (IN PROGRESS, approved 2026-09-08)
 His call after closing U1: "nobody should be able to steal or do some
-other malicious activity." Step 1 = three parallel audit sweeps (auth/
-session surface, inbound integrity, outbound+data protection) → ranked
-findings → plan presented to him before any implementation. Known
-accepted risks going in: open /auth/signup, unauth /ops aggregates,
-unsigned tools stub.
-- [ ] S1.0 audit + ranked plan (in flight)
+other malicious activity." Plan approved 2026-09-08 after the audit.
+- [x] S1.0 audit — three parallel Opus sweeps (auth surface / inbound
+      integrity / outbound+data), ranked findings with file:line
+      pointers; foundations confirmed strong (SQL params, dual SSRF
+      layers, sealed creds, signed slack/twilio/email webhooks, hashed
+      single-use handoff tokens, clean Actions). Full reports in the
+      session; plan = the slices below.
+- [ ] S1.1 operator plane — PUT /v1/ops/public-url requires a dedicated
+      operator secret in prod (dev keeps tenant auth for `asyncify
+      dev`); /ops/queues,/breakers,/logs/stats get `authenticate`
+      (dashboard already sends its token). + preflight + DEPLOYMENT.md
+      (.env.prod gains OPS_ADMIN_TOKEN — box edit BEFORE merging).
+- [ ] S1.2 abuse brakes — shared per-IP Redis limiter (lift the handoff
+      paste budget) on /auth/login|signup|refresh; rate limit the
+      widget send-message route; nst_ TTL 24h→1h default + per-tenant
+      key derivation; per-tenant scoping on /webhooks/providers/*.
+- [ ] S1.3 headers & transport — Caddy security headers (CSP incl. the
+      SPA, HSTS, frame-ancestors none, nosniff, referrer-policy), API
+      response headers, pin JWT algorithms on the API side.
+- [ ] S1.4 deps + small fixes — npm audit highs (undici/find-my-way/
+      fast-uri/nodemailer root; react-router dashboard) with CLEAN-ROOM
+      lockfile regen; telegram !== → timingSafeEqual; login timing
+      oracle; scrypt N bump; seed/push log redactions; subject
+      double-escape fix.
+- [ ] S1.5 box/container hardening — USER node + no-new-privileges +
+      cap_drop in prod compose; cloudflared creds 600 owned to the
+      container uid; SMTP second SSRF layer; push URL render-time
+      re-check.
+- [ ] S1.6 Google sign-in — "Continue with Google" (OIDC, basic scopes,
+      free) alongside password login, account-link by email; replaces
+      email verification as the junk-tenant answer; his hands: OAuth
+      client in Google console + .env.prod paste.
+- [ ] S1.7 (his call at close-out) — refresh-token rotation+revocation;
+      Postgres retention purge (messages/exec logs).
 
 ### Phase U1 — Dashboard UI polish — SHIPPED 2026-09-08 (review)
 Post-deploy phase, driven by HIS list: he clicks around the live-ish
