@@ -97,8 +97,13 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       stays closed, provisioning extracted + shared with signup,
       schema additive (google_sub unique, password_hash nullable). No
       new deps (hand-rolled cookie). 26 tests. Client ID minted (his
-      console, both origins added); HIS steps left: .env secret paste
-      + browser E2E.
+      console, both origins added); HIS E2E passed 2026-09-09: button, consent,
+      link-not-duplicate, password door intact; S1.5 send-test also
+      verified. BUILD PHASE COMPLETE - remaining: his pending doubt,
+      then the S1 batch ship (box pre-steps: OPS_ADMIN_TOKEN + google
+      env into .env.prod, creds chown 65532+600; PR; post-deploy proof
+      pass: headers curl, prod google login, nonroot containers, CI
+      lockfile green).
 - [ ] S1.7 (his call at close-out) — refresh-token rotation+revocation;
       Postgres retention purge (messages/exec logs).
 
