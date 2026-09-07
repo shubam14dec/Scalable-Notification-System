@@ -6,7 +6,16 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase U1 — Dashboard UI polish (IN PROGRESS, started 2026-09-07)
+### Phase S1 — Security hardening (PLANNING, opened 2026-09-08)
+His call after closing U1: "nobody should be able to steal or do some
+other malicious activity." Step 1 = three parallel audit sweeps (auth/
+session surface, inbound integrity, outbound+data protection) → ranked
+findings → plan presented to him before any implementation. Known
+accepted risks going in: open /auth/signup, unauth /ops aggregates,
+unsigned tools stub.
+- [ ] S1.0 audit + ranked plan (in flight)
+
+### Phase U1 — Dashboard UI polish — SHIPPED 2026-09-08 (review)
 Post-deploy phase, driven by HIS list: he clicks around the live-ish
 dashboard, names friction, we fix it item by item. Hard rule inherited
 from the opener: NO feature is deleted or changed in behavior — only
@@ -49,10 +58,16 @@ a kit component, never a one-off.
       First real deploy: PR #23 merged, run green 3m47s, box HEAD =
       merge commit ff41150, 9/9 up, /health 200. Rollback = PR Revert.
       Manual runbook stays in DEPLOYMENT.md as recovery path.
-- [ ] U1.next — next item from his list (phase stays open while he
-      keeps finding them).
-- [ ] U1 close-out — when his list runs dry: push any riders, review
-      section here.
+- [x] U1 close-out 2026-09-08 — he called the UI changes done.
+      Review: five items, all his-verified, all LIVE via the new
+      pipeline (U1.5's own first merge). Pattern that held: his click-
+      around finds the item → placement/presentation-only change →
+      one-save/no-feature-loss rule → his verification → PR promote.
+      Two architecture keepers: ConfigGroup hidden-not-unmounted (one
+      FormData across tabs) and the ui.tsx Select (native selects are
+      retired platform-wide, enforced by DESIGN.md). Revision-gate note:
+      the cross-tab scroll took two Opus misses → Fable direct fix
+      (section-commit gating beats frame counting).
 
 ### Phase A16 — SHIPPED 2026-08-31 (review)
 Landing page: "05 · THE EDIT" (plan approved 2026-08-30; pushed LIVE
