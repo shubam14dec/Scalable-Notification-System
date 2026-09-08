@@ -199,6 +199,7 @@ that signs dashboard tokens and the process that verifies them.
 | `SMTP_HOST` / `SMTP_PORT` | Resend dashboard | **Required from S1.7a** — the OPERATOR mail path that carries password-reset links. `smtp.resend.com` / `587`. Empty = `/auth/forgot` still answers 200 but nothing is delivered (a warn in the api log is the only trace). |
 | `SMTP_USER` / `SMTP_PASS` | Resend dashboard | `resend` and a Resend **API key** (Resend's SMTP mode uses the API key as the password). |
 | `SMTP_FROM` | — | `notifications@asyncify.org` — must be on a domain verified in Resend, or every reset email is rejected at the relay. |
+| `SMTP_TENANT_FALLBACK` | — | **Must be `false` in production.** The SMTP block above is the PLATFORM's sending identity; without this flag, integration-less tenants fall back to it — with open signup, that is any stranger sending mail through our domain. Platform emails (resets) ignore the flag. |
 
 **Google sign-in, one-time console setup** (skip entirely if you are not
 offering it): in [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
@@ -262,7 +263,7 @@ key changed.
 > filled in, or `POST /auth/forgot` accepts every request, answers 200, mints a
 > token — and delivers nothing. It fails exactly that quietly by design (the
 > route must never reveal whether an address exists), so the only signal is a
-> `platform email not configured` warn in the api log. Five lines in
+> `platform email not configured` warn in the api log. Six lines in
 > `.env.prod`, using Resend's SMTP mode against the domain already verified for
 > outbound mail:
 >
