@@ -6,6 +6,12 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### U2 — Settings page (BUILT 2026-09-09, awaiting his E2E)
+New sidebar item below API keys: Organization card (rename, owner/
+admin-gated PATCH /v1/account/organization) + the S1.7a Password card
+MOVED here from the API-keys page. Riders queued on main with it: eye
+toggle on account-password fields, forgot-hint copy.
+
 ### Phase S1 — Security hardening — SHIPPED 2026-09-09 (review)
 LIVE on app.asyncify.org via PR #24 (13 commits, CI green = the Linux
 lockfile proof, deploy workflow green, full non-root rebuild). Proof

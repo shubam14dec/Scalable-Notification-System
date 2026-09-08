@@ -41,6 +41,18 @@ export const session = {
   },
 };
 
+/**
+ * Subscribe to `setEnv` (above) — the other half of the event it dispatches,
+ * shaped for `useSyncExternalStore`. It lives here rather than in one consumer
+ * because more than one screen renders the selected environment (the Shell's
+ * switcher, Settings' organization card), and localStorage is not reactive:
+ * without this they read a stale value until something else re-renders them.
+ */
+export function subscribeToEnv(onChange: () => void) {
+  window.addEventListener('asyncify:env-changed', onChange);
+  return () => window.removeEventListener('asyncify:env-changed', onChange);
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -202,6 +214,21 @@ export async function signup(input: {
   if (dev) session.setEnv(dev.id);
   return res;
 }
+
+/* ---------- U2: organization ---------- */
+
+/**
+ * Rename the caller's organization. Which organization that is comes from the
+ * `x-environment-id` every request already carries — the server resolves it
+ * through the environment's owner and checks the caller's membership role, so
+ * this body is just the new name. Owner/admin only; a member gets a 403 whose
+ * message the Settings card shows verbatim.
+ */
+export const renameOrganization = (name: string) =>
+  api<{ organization: { id: string; name: string } }>('/v1/account/organization', {
+    method: 'PATCH',
+    body: { name },
+  });
 
 /* ---------- S1.7a: passwords ---------- */
 

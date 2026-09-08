@@ -122,6 +122,23 @@ export async function createOrganization(name: string): Promise<Organization> {
   return rows[0];
 }
 
+/**
+ * U2 — rename an organization. The only mutable field it has; `id` is what
+ * every other table joins on, so a rename is a pure display change and needs
+ * no cascade. Returns the updated row (null when the id does not exist, which
+ * the caller has already ruled out by resolving it through a membership).
+ */
+export async function renameOrganization(
+  orgId: string,
+  name: string,
+): Promise<Organization | null> {
+  const { rows } = await pool.query(
+    'update organizations set name = $2 where id = $1 returning id, name',
+    [orgId, name],
+  );
+  return rows[0] ?? null;
+}
+
 export async function addMember(
   organizationId: string,
   userId: string,
