@@ -2,6 +2,7 @@ import type { Channel } from '../shared/queues';
 import { PermanentError, TransientError } from '../shared/errors';
 import { breakerFor } from '../resilience/circuit-breaker';
 import { logger } from '../shared/logger';
+import { env } from '../config/env';
 import { integrationsForChannel } from '../db/integrations.repo';
 import { buildProviderFromIntegration } from './factory';
 import { SmtpEmailProvider, LogEmailProvider } from './email';
@@ -16,7 +17,14 @@ import type { ChannelProvider, RenderedMessage } from './types';
  * internal in-app provider (in-app never needs an integration).
  */
 const defaults: Record<Channel, ChannelProvider[]> = {
-  email: [new SmtpEmailProvider(), new LogEmailProvider()],
+  // The env SMTP transport joins the tenant fallback chain only where that is
+  // safe (see env.smtpTenantFallback): in production it is the PLATFORM's own
+  // sending identity, and open signup must not let a stranger ride it. With
+  // the flag off, integration-less tenants get the log provider — exactly the
+  // dead-fallback behavior prod had while SMTP_HOST was empty.
+  email: env.smtpTenantFallback
+    ? [new SmtpEmailProvider(), new LogEmailProvider()]
+    : [new LogEmailProvider()],
   sms: [new MockSmsProvider()],
   push: [new MockPushProvider()],
   inapp: [new InAppProvider()],

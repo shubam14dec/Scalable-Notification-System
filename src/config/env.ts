@@ -34,6 +34,16 @@ export const env = {
   // unauthenticated transport this file described before the pair existed.
   smtpUser: process.env.SMTP_USER ?? '',
   smtpPass: process.env.SMTP_PASS ?? '',
+  /**
+   * S1.7a rider: whether tenants WITHOUT an email integration may fall back to
+   * the env SMTP transport. Default true (dev/Mailpit convenience, historical
+   * behavior). Production sets 'false': the env SMTP there is the PLATFORM's
+   * own Resend identity (reset emails, notifications@asyncify.org), and with
+   * open signup an armed fallback would let any stranger send mail through our
+   * domain. Platform emails (src/core/platform-email.ts) ignore this flag —
+   * they are the reason the transport exists.
+   */
+  smtpTenantFallback: (process.env.SMTP_TENANT_FALLBACK ?? 'true') !== 'false',
 
   emailChaosRate: float('EMAIL_CHAOS_RATE', 0),
 
