@@ -100,6 +100,13 @@ function PasswordCard() {
               autoComplete="current-password"
               placeholder="••••••••"
             />
+            {/* The forgot-while-logged-in case: the email reset flow is the
+                identity proof when the current password is gone — the same
+                reason this field exists at all (an open session must not be
+                enough to change the lock). */}
+            <p className="mt-1 text-[11px] text-t3">
+              Forgot it? Log out and use "Forgot password?" on the login page.
+            </p>
           </Field>
         )}
         <Field label="New password" hint="At least 8 characters">
