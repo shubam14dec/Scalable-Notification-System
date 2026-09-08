@@ -392,6 +392,11 @@ set; `GET /auth/methods` reports whether it is on, and the login page hides the
 button when it is not. Google is trusted only for *verified* addresses, and a
 first sign-in provisions the same organization, environments and API keys a
 password signup does. Setup: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#secrets).
+Passwords are self-service: `POST /auth/password` sets or changes one (a
+Google-only account can set its first without a current password), and
+`/auth/forgot` → `/auth/reset` mails a single-use link that expires in 30
+minutes — `/auth/forgot` always answers `200`, so it never reveals whether an
+address is registered.
 
 Setting up push + SMS delivery (Twilio, FCM, web/native device registration,
 segment limits, delivery receipts): **[docs/PUSH-SMS.md](docs/PUSH-SMS.md)**.

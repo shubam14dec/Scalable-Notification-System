@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, session } from '../lib/api';
+import { ApiError, api, changePassword, fetchMe, session } from '../lib/api';
 import {
   Button,
   Card,
@@ -22,6 +22,114 @@ interface ApiKey {
   prefix: string;
   createdAt: string;
   revokedAt: string | null;
+}
+
+/**
+ * S1.7a — the account's own credential, on the page that already owns
+ * credentials. Two shapes, and the SERVER decides which: `hasPassword` comes
+ * from /auth/me, read out of the same ['me'] query the Shell already keeps
+ * warm, so this costs no extra request.
+ *
+ *   hasPassword  -> current + new + confirm. Re-proving possession is what
+ *                   stops a borrowed laptop becoming a permanent takeover.
+ *   !hasPassword -> a Google-only account (S1.6) that has never had one. There
+ *                   is no current password to ask for, so the card asks for
+ *                   nothing it cannot get.
+ *
+ * On success it invalidates ['me'], and the card flips to the has-password
+ * shape on the refetch — the state is the server's, not a local flag that could
+ * drift from it.
+ */
+function PasswordCard() {
+  const queryClient = useQueryClient();
+  const { data: me, isLoading } = useQuery({ queryKey: ['me'], queryFn: fetchMe, retry: false });
+  const [error, setError] = useState('');
+  const [done, setDone] = useState(false);
+
+  const hasPassword = me?.hasPassword ?? false;
+
+  const save = useMutation({
+    mutationFn: changePassword,
+    onSuccess: () => {
+      setDone(true);
+      setError('');
+      void queryClient.invalidateQueries({ queryKey: ['me'] });
+    },
+    onError: (err) =>
+      setError(err instanceof ApiError ? err.message : 'Could not reach the server'),
+  });
+
+  if (isLoading) return <Skeleton className="h-48 w-full max-w-md" />;
+
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const newPassword = String(form.get('newPassword'));
+    if (newPassword !== String(form.get('confirm'))) {
+      setDone(false);
+      setError('Those two passwords do not match.');
+      return;
+    }
+    setDone(false);
+    save.mutate({
+      newPassword,
+      // Omitted entirely when there is none — the server ignores it on that
+      // path, and sending an empty string would just be noise.
+      ...(hasPassword ? { currentPassword: String(form.get('currentPassword')) } : {}),
+    });
+  };
+
+  return (
+    <Card className="max-w-md p-5">
+      <h2 className="text-[15px] font-semibold text-t1">
+        {hasPassword ? 'Password' : 'Set a password'}
+      </h2>
+      <p className="mb-4 mt-1 text-[12px] leading-relaxed text-t3">
+        {hasPassword
+          ? 'Used to sign in with your email address.'
+          : 'You sign in with Google today. Setting a password lets you sign in without it — Google keeps working either way.'}
+      </p>
+      {/* key: remounting on the flip clears the fields the old shape held. */}
+      <form key={hasPassword ? 'change' : 'set'} onSubmit={submit} className="space-y-4">
+        {hasPassword && (
+          <Field label="Current password">
+            <Input
+              name="currentPassword"
+              type="password"
+              required
+              autoComplete="current-password"
+              placeholder="••••••••"
+            />
+          </Field>
+        )}
+        <Field label="New password" hint="At least 8 characters">
+          <Input
+            name="newPassword"
+            type="password"
+            minLength={8}
+            required
+            autoComplete="new-password"
+            placeholder="••••••••"
+          />
+        </Field>
+        <Field label="Confirm new password">
+          <Input
+            name="confirm"
+            type="password"
+            minLength={8}
+            required
+            autoComplete="new-password"
+            placeholder="••••••••"
+          />
+        </Field>
+        {error && <p className="text-[12px] text-err">{error}</p>}
+        {done && !error && <p className="text-[12px] text-t2">Password updated.</p>}
+        <Button variant="primary" type="submit" disabled={save.isPending}>
+          {save.isPending ? 'Saving…' : hasPassword ? 'Change password' : 'Set password'}
+        </Button>
+      </form>
+    </Card>
+  );
 }
 
 export default function ApiKeysPage() {
@@ -123,6 +231,10 @@ export default function ApiKeysPage() {
           body="Create a key to trigger notifications from your backend. Keys are shown once and stored hashed."
         />
       )}
+
+      <div className="mt-10">
+        <PasswordCard />
+      </div>
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Create API key">
         <form

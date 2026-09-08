@@ -28,6 +28,12 @@ export const env = {
   smtpHost: process.env.SMTP_HOST ?? 'localhost',
   smtpPort: int('SMTP_PORT', 1025),
   smtpFrom: process.env.SMTP_FROM ?? 'notifications@example.com',
+  // S1.7a: the operator relay needs credentials in production (Resend's SMTP
+  // mode wants user `resend` + the API key). Empty in dev — Mailpit takes
+  // anything — and an empty user leaves `auth` undefined, which is exactly the
+  // unauthenticated transport this file described before the pair existed.
+  smtpUser: process.env.SMTP_USER ?? '',
+  smtpPass: process.env.SMTP_PASS ?? '',
 
   emailChaosRate: float('EMAIL_CHAOS_RATE', 0),
 

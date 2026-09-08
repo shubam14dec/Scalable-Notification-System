@@ -116,6 +116,13 @@ export class SmtpEmailProvider implements ChannelProvider {
       host: env.smtpHost,
       port: env.smtpPort,
       from: env.smtpFrom,
+      // S1.7a added SMTP_USER/SMTP_PASS for the operator relay. Carried here
+      // too, so an operator who points the box at an AUTHENTICATED relay does
+      // not end up with a default email provider that silently can't log in.
+      // Unset in dev (Mailpit), where an empty user leaves `auth` undefined —
+      // byte-identical to the behaviour before the pair existed.
+      user: env.smtpUser || undefined,
+      pass: env.smtpPass || undefined,
     };
     this.from = cfg.from;
     this.tenantHost = config ? cfg.host : null;

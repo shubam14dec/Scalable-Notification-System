@@ -142,6 +142,15 @@ export interface Org {
 export interface Me {
   user: { id: string; name: string; email: string };
   organizations: Org[];
+  /**
+   * S1.7a — whether this account has a password at all. False for an account
+   * that has only ever signed in with Google, which is what makes the Password
+   * card show "Set a password" instead of asking for a current one.
+   *
+   * Optional in the type because the sign-in responses below reuse `Me` and do
+   * not carry it; only /auth/me does.
+   */
+  hasPassword?: boolean;
 }
 
 export const fetchMe = () => api<Me>('/auth/me');
@@ -193,6 +202,28 @@ export async function signup(input: {
   if (dev) session.setEnv(dev.id);
   return res;
 }
+
+/* ---------- S1.7a: passwords ---------- */
+
+/**
+ * Set or change the signed-in user's password. `currentPassword` is omitted
+ * for an account that has none yet (Google-only) — the server decides which
+ * shape applies from the row, so sending it there would just be ignored.
+ */
+export const changePassword = (input: { currentPassword?: string; newPassword: string }) =>
+  api<{ ok: true }>('/auth/password', { method: 'POST', body: input });
+
+/**
+ * Ask for a reset link. ALWAYS resolves — the server answers 200 whether or
+ * not the address is registered, and the UI must say the same thing either
+ * way, or the dashboard becomes the enumeration oracle the endpoint isn't.
+ */
+export const requestPasswordReset = (email: string) =>
+  api<{ ok: true }>('/auth/forgot', { method: 'POST', body: { email } });
+
+/** Spend a reset token. Mints no session: the user logs in with the new one. */
+export const resetPassword = (token: string, newPassword: string) =>
+  api<{ ok: true }>('/auth/reset', { method: 'POST', body: { token, newPassword } });
 
 export function logout() {
   session.clear();

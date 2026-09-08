@@ -54,6 +54,18 @@ export async function getUserById(id: string): Promise<User | null> {
   return rows[0] ?? null;
 }
 
+/**
+ * S1.7a — set or replace a user's password hash.
+ *
+ * Touches `password_hash` and NOTHING else. `google_sub` is deliberately not in
+ * the SET list: a reset (or a first password set on a Google-only account) adds
+ * a door, it never closes one — someone who resets their password must still be
+ * able to Continue with Google afterwards, and vice versa.
+ */
+export async function setUserPassword(userId: string, passwordHash: string): Promise<void> {
+  await pool.query('update users set password_hash = $2 where id = $1', [userId, passwordHash]);
+}
+
 // ---------- S1.6: Google identities ----------
 
 /** Look a user up by Google's stable `sub` claim (the returning-user path). */

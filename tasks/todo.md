@@ -104,6 +104,19 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       env into .env.prod, creds chown 65532+600; PR; post-deploy proof
       pass: headers curl, prod google login, nonroot containers, CI
       lockfile green).
+- [x] S1.7a password set/change + forgot-reset (DONE 2026-09-09, added
+      2026-09-09 from his doubt: a Google-only signup has no password
+      for a device where Google is unavailable). In-app Set/Change
+      password card (Google-only: no current needed); /auth/forgot ->
+      always-200 no-enumeration email with 30-min single-use hashed
+      token -> /auth/reset; platform email = operator SMTP (prod ship
+      step: Resend SMTP creds into .env.prod - FIVE vars incl. new
+      SMTP_USER/SMTP_PASS, and NOTE: filling SMTP also arms the env-
+      default tenant email fallback, un-parking a deliberate stub -
+      his call at ship). Both doors stay open after either path;
+      tokens + emails sha256'd in redis keys; send fired unawaited
+      (timing-flat); Password card on /keys reads the warm ['me']
+      cache. 21 tests. Awaiting his E2E.
 - [ ] S1.7 (his call at close-out) — refresh-token rotation+revocation;
       Postgres retention purge (messages/exec logs).
 

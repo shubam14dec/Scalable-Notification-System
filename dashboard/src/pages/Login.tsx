@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { fetchAuthMethods, login, redeemGoogleCode, signup, ApiError } from '../lib/api';
+import {
+  fetchAuthMethods,
+  login,
+  redeemGoogleCode,
+  requestPasswordReset,
+  signup,
+  ApiError,
+} from '../lib/api';
 import { Button, Card, Field, Input } from '../ui';
 
-function AuthFrame({ children, title }: { children: React.ReactNode; title: string }) {
+/** Shared by every signed-out page, including /reset-password. */
+export function AuthFrame({ children, title }: { children: React.ReactNode; title: string }) {
   return (
     <div className="flex h-full items-center justify-center bg-app">
       <div className="w-full max-w-[360px] px-4">
@@ -34,11 +42,80 @@ function GoogleMark() {
   );
 }
 
+/**
+ * "Forgot password?" — the same card, one field.
+ *
+ * The confirmation NEVER varies: whether or not that address has an account,
+ * the answer is the same sentence, because the server deliberately returns the
+ * same 200 either way. A friendlier "we couldn't find that email" here would
+ * hand back exactly the account-enumeration oracle /auth/forgot is built to
+ * withhold.
+ */
+export function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState('');
+
+  if (sent) {
+    return (
+      <>
+        <p className="text-[13px] leading-relaxed text-t2">
+          If that account exists, a reset link is on its way. The link works for 30 minutes.
+        </p>
+        <Button type="button" className="mt-4 w-full" onClick={onBack}>
+          Back to log in
+        </Button>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <form
+        className="space-y-4"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const email = String(new FormData(e.currentTarget).get('email'));
+          setBusy(true);
+          setError('');
+          try {
+            await requestPasswordReset(email);
+            setSent(true);
+          } catch {
+            // Only a transport/limit failure can land here — the endpoint has
+            // no unhappy answer of its own.
+            setError('Could not reach the server. Try again in a moment.');
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <p className="text-[12px] leading-relaxed text-t3">
+          Enter the email you sign in with and we'll send a link to choose a new password.
+        </p>
+        <Field label="Email">
+          <Input name="email" type="email" required autoFocus placeholder="you@company.com" />
+        </Field>
+        {error && <p className="text-[12px] text-err">{error}</p>}
+        <Button variant="primary" type="submit" className="w-full" disabled={busy}>
+          {busy ? 'Sending…' : 'Send reset link'}
+        </Button>
+      </form>
+      <p className="mt-4 text-center text-[12px] text-t3">
+        <button type="button" className="text-t1 underline underline-offset-2" onClick={onBack}>
+          Back to log in
+        </button>
+      </p>
+    </>
+  );
+}
+
 export function LoginPage() {
   const navigate = useNavigate();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [forgot, setForgot] = useState(false);
 
   // The one-time code the Google callback bounced us back with. Read once per
   // mount; a re-render must not re-read a URL we are about to rewrite.
@@ -84,6 +161,14 @@ export function LoginPage() {
     }
   };
 
+  if (forgot) {
+    return (
+      <AuthFrame title="Reset your password">
+        <ForgotPasswordForm onBack={() => setForgot(false)} />
+      </AuthFrame>
+    );
+  }
+
   return (
     <AuthFrame title="Log in">
       <form onSubmit={submit} className="space-y-4">
@@ -98,6 +183,18 @@ export function LoginPage() {
           {busy ? 'Logging in…' : 'Log in'}
         </Button>
       </form>
+      {/* Quiet on purpose: t3, no border, no button chrome. It belongs to the
+          small fraction of sign-ins that need it, and should not compete with
+          the primary action above it. */}
+      <p className="mt-3 text-center text-[12px]">
+        <button
+          type="button"
+          className="text-t3 transition-colors hover:text-t1"
+          onClick={() => setForgot(true)}
+        >
+          Forgot password?
+        </button>
+      </p>
       {googleEnabled && (
         <>
           <div className="my-4 flex items-center gap-3">

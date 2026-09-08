@@ -196,6 +196,9 @@ that signs dashboard tokens and the process that verifies them.
 | `GOOGLE_CLIENT_ID` | Google Cloud console | **Optional** ("Continue with Google"). Empty = feature off: `/auth/google` 404s and the login page hides the button. |
 | `GOOGLE_CLIENT_SECRET` | Google Cloud console | **Optional**, and required together with the id — one without the other still reads as off. |
 | `GOOGLE_POST_LOGIN_ORIGIN` | — | **Leave empty in production** (the SPA and the API are one origin behind Caddy). Only local dev sets it, to `http://localhost:5173`. |
+| `SMTP_HOST` / `SMTP_PORT` | Resend dashboard | **Required from S1.7a** — the OPERATOR mail path that carries password-reset links. `smtp.resend.com` / `587`. Empty = `/auth/forgot` still answers 200 but nothing is delivered (a warn in the api log is the only trace). |
+| `SMTP_USER` / `SMTP_PASS` | Resend dashboard | `resend` and a Resend **API key** (Resend's SMTP mode uses the API key as the password). |
+| `SMTP_FROM` | — | `notifications@asyncify.org` — must be on a domain verified in Resend, or every reset email is rejected at the relay. |
 
 **Google sign-in, one-time console setup** (skip entirely if you are not
 offering it): in [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
@@ -254,6 +257,32 @@ key changed.
 > spike of 401s on `/v1/inbox/*` and 4401 WebSocket closes. Their TTL ceiling
 > also dropped from 24h to **6h**, default **1h**; a backend explicitly asking
 > for more than 6h now gets a 400.
+
+> **Deploying the S1.7a password slice:** production needs the **operator SMTP**
+> filled in, or `POST /auth/forgot` accepts every request, answers 200, mints a
+> token — and delivers nothing. It fails exactly that quietly by design (the
+> route must never reveal whether an address exists), so the only signal is a
+> `platform email not configured` warn in the api log. Five lines in
+> `.env.prod`, using Resend's SMTP mode against the domain already verified for
+> outbound mail:
+>
+> ```
+> SMTP_HOST=smtp.resend.com
+> SMTP_PORT=587
+> SMTP_USER=resend
+> SMTP_PASS=<the Resend API key>
+> SMTP_FROM=notifications@asyncify.org
+> ```
+>
+> This is the **platform's** mailbox, not a tenant's: reset mail goes out
+> through these env settings and never through a customer's provider chain, so
+> a locked-out admin is not blocked by their own broken integration. Note this
+> also arms the env-default email provider (`src/providers/registry.ts`), which
+> until now was an unconfigured stub in production — tenants with their own
+> Resend/SendGrid integration are unaffected, since an integration always wins.
+> Gate: from the dashboard log-in page, "Forgot password?" with a real account
+> address delivers a link within a minute; `docker compose logs api | grep
+> 'platform email'` is silent.
 
 **Preflight refuses dev defaults.** `src/config/preflight.ts` runs as the first
 statement of each entrypoint's `main()` and, when `NODE_ENV=production`,
@@ -485,8 +514,9 @@ follows the new domain by itself.
 
 ## Deliberately not deployed
 
-- **Mailpit.** A dev SMTP sink. Production sends through Resend with a real
-  verified domain; `SMTP_HOST` is left empty.
+- **Mailpit.** A dev SMTP sink. Production points `SMTP_HOST` at Resend's SMTP
+  relay instead (see Secrets) — as of S1.7a that path is no longer optional,
+  because it is what carries password-reset links.
 - **Jaeger.** The dev all-in-one stores spans **in RAM** — a bounded window,
   wiped on restart. `OTEL_ENABLED=false` at launch (see fast-follows).
 - **`npm run seed`.** It mints `dev-api-key-123`, a key published in this repo.
