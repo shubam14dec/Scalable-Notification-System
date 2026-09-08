@@ -16,6 +16,7 @@ import TopicsPage, { TopicDetailPage } from './pages/Topics';
 import TemplatesPage, { TemplateEditorPage } from './pages/Templates';
 import IntegrationsPage from './pages/Integrations';
 import ApiKeysPage from './pages/ApiKeys';
+import SettingsPage from './pages/Settings';
 import InboxPreviewPage from './pages/InboxPreview';
 import AgentsPage from './pages/Agents';
 import AgentDetailPage from './pages/AgentDetail';
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/keys" element={<ApiKeysPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="/inbox-preview" element={<InboxPreviewPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

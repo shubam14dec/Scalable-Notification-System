@@ -8,7 +8,7 @@ import {
   signup,
   ApiError,
 } from '../lib/api';
-import { Button, Card, Field, Input } from '../ui';
+import { Button, Card, Field, Input, PasswordInput } from '../ui';
 
 /** Shared by every signed-out page, including /reset-password. */
 export function AuthFrame({ children, title }: { children: React.ReactNode; title: string }) {
@@ -176,7 +176,7 @@ export function LoginPage() {
           <Input name="email" type="email" required autoFocus placeholder="you@company.com" />
         </Field>
         <Field label="Password">
-          <Input name="password" type="password" required placeholder="••••••••" />
+          <PasswordInput name="password" required placeholder="••••••••" />
         </Field>
         {error && <p className="text-[12px] text-err">{error}</p>}
         <Button variant="primary" type="submit" className="w-full" disabled={busy}>
@@ -265,7 +265,7 @@ export function SignupPage() {
           <Input name="email" type="email" required placeholder="you@company.com" />
         </Field>
         <Field label="Password" hint="At least 8 characters">
-          <Input name="password" type="password" minLength={8} required placeholder="••••••••" />
+          <PasswordInput name="password" minLength={8} required placeholder="••••••••" />
         </Field>
         {error && <p className="text-[12px] text-err">{error}</p>}
         <Button variant="primary" type="submit" className="w-full" disabled={busy}>

@@ -14,13 +14,14 @@ import {
   LogOut,
   MessagesSquare,
   Moon,
+  Settings,
   ShieldCheck,
   Sun,
   Tag,
   Users,
   Workflow,
 } from 'lucide-react';
-import { api, fetchMe, logout, session } from '../lib/api';
+import { api, fetchMe, logout, session, subscribeToEnv } from '../lib/api';
 import { Select } from '../ui';
 import { useAdminEvents } from '../lib/adminEvents';
 
@@ -39,6 +40,7 @@ const NAV = [
   { to: '/integrations', label: 'Integrations', icon: Blocks },
   { to: '/inbox-preview', label: 'Inbox preview', icon: Bell },
   { to: '/keys', label: 'API keys', icon: KeyRound },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
 /**
@@ -152,11 +154,6 @@ function ThemeToggle() {
       {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
     </button>
   );
-}
-
-function subscribeToEnv(onChange: () => void) {
-  window.addEventListener('asyncify:env-changed', onChange);
-  return () => window.removeEventListener('asyncify:env-changed', onChange);
 }
 
 export default function Shell() {
