@@ -6,7 +6,7 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### U2 — Settings page (BUILT 2026-09-09, awaiting his E2E)
+### U2 — Settings page — SHIPPED 2026-09-09 (his E2E passed; cards side-by-side rider included)
 New sidebar item below API keys: Organization card (rename, owner/
 admin-gated PATCH /v1/account/organization) + the S1.7a Password card
 MOVED here from the API-keys page. Riders queued on main with it: eye
