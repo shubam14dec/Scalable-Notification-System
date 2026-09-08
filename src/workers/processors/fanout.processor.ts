@@ -25,6 +25,7 @@ import { evaluateConditions } from '../../core/conditions';
 import { renderSubject } from '../../core/email-template';
 import { getTemplate, type TemplateRow } from '../../db/templates.repo';
 import { logExec } from '../../core/execution-log';
+import { isSafeOutboundUrlSyntax } from '../../core/safe-url';
 import { traceCarrier, withSpan, type TraceCarrier } from '../../shared/tracing';
 
 function addressFor(step: WorkflowStep, sub: Subscriber): Record<string, string> | null {
@@ -46,19 +47,35 @@ function addressFor(step: WorkflowStep, sub: Subscriber): Record<string, string>
 
 /**
  * Renders a push step's rich extras against the trigger vars at fan-out.
- * Every field is optional and dropped when empty or (for URLs) invalid after
- * rendering — FCM rejects empty/invalid fields, so we never snapshot them.
+ * Every field is optional and dropped when empty or (for URLs) rejected after
+ * rendering — FCM rejects empty/invalid fields, and this is the ENFORCEMENT
+ * point for URL safety (the write-time gate in src/api/routes/admin.ts cannot
+ * vet a `{{var}}`-bearing template — there is no host in it yet).
+ *
+ * Rejections are recorded in `dropped` (keyed step:field, first offender wins)
+ * so the caller emits ONE exec-log line per step+field per batch instead of
+ * one per recipient — a broadcast with a bad template would otherwise write a
+ * log line per subscriber.
  */
 function renderPushExtras(
   push: NonNullable<WorkflowStep['push']>,
   vars: Record<string, unknown>,
+  stepIndex: number,
+  dropped: Map<string, string>,
 ): { clickUrl?: string; imageUrl?: string; data?: Record<string, string> } | undefined {
   const out: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> } = {};
 
-  const clickUrl = push.clickUrl && renderUrl(push.clickUrl, vars);
-  if (clickUrl) out.clickUrl = clickUrl;
-  const imageUrl = push.imageUrl && renderUrl(push.imageUrl, vars);
-  if (imageUrl) out.imageUrl = imageUrl;
+  for (const field of ['clickUrl', 'imageUrl'] as const) {
+    const template = push[field];
+    if (!template) continue;
+    const rendered = renderUrl(template, vars);
+    if (rendered.ok) {
+      if (rendered.url) out[field] = rendered.url;
+      continue;
+    }
+    const key = `${stepIndex}:${field}`;
+    if (!dropped.has(key)) dropped.set(key, rendered.rejected);
+  }
 
   if (push.data) {
     const data: Record<string, string> = {};
@@ -72,16 +89,25 @@ function renderPushExtras(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Render a URL field's vars; drop it if it's empty or no longer a valid URL. */
-function renderUrl(template: string, vars: Record<string, unknown>): string | undefined {
+/**
+ * Render a URL field's vars, then re-check the RESULT.
+ *
+ * Our servers never dial these — the recipient's handset does — so this is a
+ * syntactic check, not an SSRF one: no DNS, and the answer is a pure function
+ * of the rendered string. What it stops is a `{{var}}` that renders into a
+ * `javascript:`/`data:` scheme or an intranet-pivot link (`http://169.254.169.254/…`,
+ * `http://router.local/…`) arriving on a customer's phone as a tappable
+ * notification.
+ *
+ * Empty after render is not a rejection (the field simply isn't there);
+ * anything that fails the check is, and the caller logs it.
+ */
+type RenderedUrl = { ok: true; url?: string } | { ok: false; rejected: string };
+
+function renderUrl(template: string, vars: Record<string, unknown>): RenderedUrl {
   const value = render(template, vars).trim();
-  if (!value) return undefined;
-  try {
-    new URL(value);
-    return value;
-  } catch {
-    return undefined;
-  }
+  if (!value) return { ok: true };
+  return isSafeOutboundUrlSyntax(value) ? { ok: true, url: value } : { ok: false, rejected: value };
 }
 
 /** The vendor-facing address a suppression can apply to (none for in-app). */
@@ -177,6 +203,9 @@ async function fanOutBatch(
   }
 
   const planned: PlannedMessage[] = [];
+  // Push URLs rejected at render time, `stepIndex:field` → the first offending
+  // rendered value. Flushed as one exec-log line each after the loop.
+  const droppedPushUrls = new Map<string, string>();
 
   for (const sub of subscribers) {
     const vars = {
@@ -243,7 +272,9 @@ async function fanOutBatch(
           continue;
         }
 
-        const pushExtras = step.push ? renderPushExtras(step.push, vars) : undefined;
+        const pushExtras = step.push
+          ? renderPushExtras(step.push, vars, stepIndex, droppedPushUrls)
+          : undefined;
 
         if (step.digest) {
           // v1 limitation: digest windows are keyed per-subscriber, so a
@@ -371,6 +402,19 @@ async function fanOutBatch(
         delayMs: step.delaySeconds ? step.delaySeconds * 1000 : undefined,
       });
     }
+  }
+
+  // Dropping a bad URL never fails the send — the notification still goes out,
+  // just without its tap target or image — so the exec log is where an
+  // operator finds out it happened.
+  for (const [key, url] of droppedPushUrls) {
+    const [stepIndex, field] = key.split(':');
+    logExec({
+      tenantId: event.tenant_id,
+      transactionId: event.transaction_id,
+      level: 'warn',
+      detail: `dropped unsafe push ${field} on step ${stepIndex} after rendering: ${url.slice(0, 200)}`,
+    });
   }
 
   if (planned.length === 0) return;

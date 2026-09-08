@@ -43,9 +43,19 @@ export class InAppProvider implements ChannelProvider {
     );
 
     if (receivers > 0) {
+      // S1.2: carries its own tenantId so the status processor's update is
+      // tenant-scoped on every producer, not only the webhook ones. No jobId
+      // here on purpose — this receipt is minted by us, exactly once per
+      // successful publish, so there is no untrusted replay to collapse, and
+      // a re-delivered send SHOULD be able to re-confirm.
       await getQueue(QUEUE.STATUS).add(
         'status',
-        { provider: this.id, providerMessageId, status: 'delivered' },
+        {
+          provider: this.id,
+          tenantId: message.tenantId,
+          providerMessageId,
+          status: 'delivered',
+        },
         { attempts: 5 },
       );
     }

@@ -73,7 +73,8 @@ async function fireOtp(i: number): Promise<number> {
 }
 
 async function backlogNow(): Promise<number> {
-  const res = await fetch(`${BASE}/ops/queues`);
+  // S1.1: /ops/queues is authenticated — platform-wide telemetry is not public.
+  const res = await fetch(`${BASE}/ops/queues`, { headers: { 'x-api-key': API_KEY } });
   const depths = (await res.json()) as Record<string, Record<string, number>>;
   let total = 0;
   for (const [name, c] of Object.entries(depths)) {

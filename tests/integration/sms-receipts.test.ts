@@ -27,6 +27,7 @@ import {
   isSuppressed,
 } from '../../src/db/repositories';
 import { processStatus } from '../../src/workers/processors/status.processor';
+import { statusJobId } from '../../src/api/routes/webhooks';
 import { TwilioSmsProvider } from '../../src/providers/sms';
 import { setPublicUrl, clearPublicUrlCache } from '../../src/config/public-url';
 import { env } from '../../src/config/env';
@@ -205,6 +206,52 @@ describe('Twilio delivery-receipt webhook', () => {
     const res = await postCallback(messageId, { MessageStatus: 'sent', MessageSid: sid });
     expect(res.statusCode).toBe(204);
     expect(await statusJobFor(sid)).toBeUndefined();
+  });
+
+  // S1.2 — Twilio retries a callback until it gets a 2xx, so the same fact can
+  // arrive several times. A deterministic jobId collapses the duplicates.
+  test('a redelivered callback is a no-op: one job, keyed on (tenant, sid, status)', async () => {
+    const sid = 'SM_replay_1';
+    const messageId = await seedSmsMessage({ phone: '+15005550007', sid });
+    const params = { MessageStatus: 'delivered', MessageSid: sid };
+
+    expect((await postCallback(messageId, params)).statusCode).toBe(204);
+    expect((await postCallback(messageId, params)).statusCode).toBe(204);
+    expect((await postCallback(messageId, params)).statusCode).toBe(204);
+
+    const jobs = await getQueue(QUEUE.STATUS).getJobs([
+      'waiting',
+      'prioritized',
+      'delayed',
+      'active',
+      'completed',
+      'failed',
+    ]);
+    const mine = jobs.filter((j) => j.data?.providerMessageId === sid);
+    expect(mine).toHaveLength(1);
+    expect(mine[0].id).toBe(statusJobId(tenantId, sid, 'delivered'));
+    expect(mine[0].data.tenantId).toBe(tenantId);
+  });
+
+  test('a DIFFERENT terminal status from the same sid is its own job', async () => {
+    const sid = 'SM_replay_2';
+    const messageId = await seedSmsMessage({ phone: '+15005550008', sid });
+    expect(
+      (await postCallback(messageId, { MessageStatus: 'delivered', MessageSid: sid })).statusCode,
+    ).toBe(204);
+    expect(
+      (await postCallback(messageId, { MessageStatus: 'undelivered', MessageSid: sid })).statusCode,
+    ).toBe(204);
+
+    const jobs = await getQueue(QUEUE.STATUS).getJobs([
+      'waiting',
+      'prioritized',
+      'delayed',
+      'active',
+      'completed',
+      'failed',
+    ]);
+    expect(jobs.filter((j) => j.data?.providerMessageId === sid)).toHaveLength(2);
   });
 
   test('ErrorCode 21610 (STOP) writes an sms suppression with reason "stop"', async () => {

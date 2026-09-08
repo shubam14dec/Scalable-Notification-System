@@ -434,15 +434,27 @@ export async function updateMessage(
   );
 }
 
+/**
+ * Apply a provider's delivery status to the message it names.
+ *
+ * S1.2: `tenantId` scopes the UPDATE. Provider message ids are chosen by the
+ * provider, not by us, so resolving one globally made "which message" a
+ * question the caller's identity had no say in — the tenant-scoped provider
+ * webhook now passes the tenant from its own URL, and this is where that
+ * scoping actually bites. Optional only so a job enqueued by an older API
+ * replica mid-deploy still applies; every producer supplies it.
+ */
 export async function updateMessageByProviderId(
   providerMessageId: string,
   status: string,
+  tenantId?: string,
 ): Promise<MessageRow | null> {
   const { rows } = await pool.query(
     `update messages set status = $2, updated_at = now()
      where provider_message_id = $1
+       and ($3::uuid is null or tenant_id = $3::uuid)
      returning *`,
-    [providerMessageId, status],
+    [providerMessageId, status, tenantId ?? null],
   );
   return rows[0] ?? null;
 }

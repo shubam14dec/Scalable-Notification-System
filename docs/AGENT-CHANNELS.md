@@ -56,9 +56,13 @@ URL only (no path or query).
 
 ```bash
 # Set the runtime public URL (instantly, across api + worker).
+# The write is OPERATOR-only in production — the value is global, so a tenant
+# api key is not accepted there; send OPS_ADMIN_TOKEN instead. Locally
+# (NODE_ENV != production) the api key below is what `asyncify dev` uses.
 curl -X PUT -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
   https://api.asyncify.org/v1/ops/public-url \
   -d '{"url":"https://random-words.trycloudflare.com"}'
+# production: -H "x-operator-token: $OPS_ADMIN_TOKEN"   (instead of x-api-key)
 
 # Read the value in force and where it came from.
 curl -H "x-api-key: $API_KEY" \
@@ -739,6 +743,11 @@ API key in front-end code. Your backend calls
 `POST /v1/subscriber-tokens` (an `x-api-key` admin route) for the signed-in
 user and returns the short-lived token to your page. The component then talks
 to the `/v1/me/*` routes below using that token and nothing else.
+
+`ttlSeconds` is **60s minimum, 6h maximum, 1h by default** — a token is a
+bearer credential living in a browser with no revocation list, so its blast
+radius is exactly its lifetime. Mint it per session and re-mint when it
+expires; the call is cheap and the user never sees it.
 
 ### The `/v1/me` API (for custom UIs)
 

@@ -341,9 +341,9 @@ The email appears in Mailpit at http://localhost:8025.
 ```bash
 # watch retries, circuit breaking and failover: make SMTP fail 70% of the time
 EMAIL_CHAOS_RATE=0.7 npm run worker
-curl http://localhost:3000/ops/breakers       # breaker states
+curl -H "x-api-key: dev-api-key-123" http://localhost:3000/ops/breakers    # breaker states
 npm run loadtest -- 200                       # burst 200 events, watch queues drain
-curl http://localhost:3000/ops/queues         # live queue depths
+curl -H "x-api-key: dev-api-key-123" http://localhost:3000/ops/queues      # live queue depths
 npm run dlq:replay                            # re-inject dead-lettered jobs
 
 # digest demo: 3 events inside the 15s window -> ONE combined message
@@ -352,7 +352,7 @@ curl -X POST http://localhost:3000/v1/events/trigger \
   -d '{"workflowKey":"activity-digest","to":[{"subscriberId":"alice","email":"alice@example.com"}],"payload":{"actor":"sam","action":"commented"}}'
 # (repeat 2-3x quickly, then wait 15s and check Mailpit / the inbox)
 
-curl http://localhost:3000/ops/logs/stats     # log analytics from ClickHouse
+curl -H "x-api-key: dev-api-key-123" http://localhost:3000/ops/logs/stats  # log analytics from ClickHouse
 
 # distributed tracing: open http://localhost:16686 (Jaeger), service
 # "notification-api" — every trigger is one trace across api + workers
@@ -373,12 +373,30 @@ npm run reconcile                             # DR drill: settle finished events
 | GET | `/v1/inbox/:subscriberId` | In-app inbox + unread count |
 | POST | `/v1/inbox/:subscriberId/read` | Mark inbox messages read (all, or by ids) |
 | WS | `ws://:3001/?apiKey=...&subscriberId=...` | Live in-app push |
-| POST | `/webhooks/providers/:provider` | Provider delivery-status callbacks |
+| POST | `/webhooks/providers/:provider/:tenantId` | Provider delivery-status callbacks (per-tenant signed) |
 | GET | `/health` | Liveness (Postgres + Redis) |
 | GET | `/ops/queues` | Waiting/active/delayed/failed per queue |
 | GET | `/ops/breakers` | Circuit-breaker states |
 
-Auth: `x-api-key` header on all `/v1/*` routes.
+Auth: `x-api-key` header on all `/v1/*` and `/ops/*` routes (`/health` and
+`/metrics` stay open for probes and Prometheus). `PUT /v1/ops/public-url` writes
+a PLATFORM-wide value, so in production it takes an operator secret instead:
+`x-operator-token: $OPS_ADMIN_TOKEN`.
+
+Dashboard sign-in is separate: `/auth/signup` and `/auth/login` mint a JWT
+access + refresh pair. **"Continue with Google"** is an optional second door —
+a server-side OAuth 2.0 authorization-code flow with PKCE (no Google script is
+ever loaded, which is what keeps the dashboard's `script-src 'self'` CSP
+strict). It is off unless `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are
+set; `GET /auth/methods` reports whether it is on, and the login page hides the
+button when it is not. Google is trusted only for *verified* addresses, and a
+first sign-in provisions the same organization, environments and API keys a
+password signup does. Setup: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#secrets).
+Passwords are self-service: `POST /auth/password` sets or changes one (a
+Google-only account can set its first without a current password), and
+`/auth/forgot` → `/auth/reset` mails a single-use link that expires in 30
+minutes — `/auth/forgot` always answers `200`, so it never reveals whether an
+address is registered.
 
 Setting up push + SMS delivery (Twilio, FCM, web/native device registration,
 segment limits, delivery receipts): **[docs/PUSH-SMS.md](docs/PUSH-SMS.md)**.

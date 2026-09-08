@@ -28,6 +28,22 @@ export const env = {
   smtpHost: process.env.SMTP_HOST ?? 'localhost',
   smtpPort: int('SMTP_PORT', 1025),
   smtpFrom: process.env.SMTP_FROM ?? 'notifications@example.com',
+  // S1.7a: the operator relay needs credentials in production (Resend's SMTP
+  // mode wants user `resend` + the API key). Empty in dev — Mailpit takes
+  // anything — and an empty user leaves `auth` undefined, which is exactly the
+  // unauthenticated transport this file described before the pair existed.
+  smtpUser: process.env.SMTP_USER ?? '',
+  smtpPass: process.env.SMTP_PASS ?? '',
+  /**
+   * S1.7a rider: whether tenants WITHOUT an email integration may fall back to
+   * the env SMTP transport. Default true (dev/Mailpit convenience, historical
+   * behavior). Production sets 'false': the env SMTP there is the PLATFORM's
+   * own Resend identity (reset emails, notifications@asyncify.org), and with
+   * open signup an armed fallback would let any stranger send mail through our
+   * domain. Platform emails (src/core/platform-email.ts) ignore this flag —
+   * they are the reason the transport exists.
+   */
+  smtpTenantFallback: (process.env.SMTP_TENANT_FALLBACK ?? 'true') !== 'false',
 
   emailChaosRate: float('EMAIL_CHAOS_RATE', 0),
 
@@ -75,10 +91,39 @@ export const env = {
   // verification (dev only — always set this in production).
   webhookSigningSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
 
+  // Operator-only secret gating GLOBAL ops writes (PUT /v1/ops/public-url —
+  // one value shared by every tenant). NOT a tenant API key: no tenant
+  // credential can substitute for it in production. Empty in dev, where
+  // requireOperator falls back to ordinary tenant auth so `asyncify dev`
+  // works with nothing configured. Preflight refuses to boot without it in
+  // production. NOTE: the request-time check in src/api/auth.ts reads
+  // process.env directly (this object is a module-load snapshot).
+  opsAdminToken: process.env.OPS_ADMIN_TOKEN ?? '',
+
   // Master key for encrypting provider credentials at rest (AES-256-GCM).
   // Always override in production; source from KMS/secret manager.
   credentialsEncryptionKey:
     process.env.CREDENTIALS_ENCRYPTION_KEY ?? 'dev-credentials-key-change-me',
+
+  /**
+   * S1.6 — "Continue with Google" (server-side authorization-code + OIDC).
+   *
+   * OPTIONAL FEATURE, OFF BY DEFAULT: both id and secret empty = the routes
+   * 404 and the dashboard hides the button, so nothing here is a preflight
+   * requirement — a deployment without a Google project keeps working exactly
+   * as it does today with email + password.
+   *
+   * postLoginOrigin is the origin the callback bounces the browser back to
+   * with the one-time login code. Empty = same origin (production: the SPA and
+   * the API are one origin behind Caddy). Dev sets http://localhost:5173,
+   * because the callback lands on the API at :3000 while the SPA runs on the
+   * vite port — and only the SPA's own origin can write its localStorage.
+   */
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+    postLoginOrigin: (process.env.GOOGLE_POST_LOGIN_ORIGIN ?? '').replace(/\/$/, ''),
+  },
 
   // Dashboard/user auth (JWT). Always override the secret in production.
   jwtSecret: process.env.JWT_SECRET ?? 'dev-jwt-secret-change-me',

@@ -142,19 +142,48 @@ export interface Org {
 export interface Me {
   user: { id: string; name: string; email: string };
   organizations: Org[];
+  /**
+   * S1.7a — whether this account has a password at all. False for an account
+   * that has only ever signed in with Google, which is what makes the Password
+   * card show "Set a password" instead of asking for a current one.
+   *
+   * Optional in the type because the sign-in responses below reuse `Me` and do
+   * not carry it; only /auth/me does.
+   */
+  hasPassword?: boolean;
 }
 
 export const fetchMe = () => api<Me>('/auth/me');
 
-export async function login(email: string, password: string) {
-  const res = await api<Me & { accessToken: string; refreshToken: string }>('/auth/login', {
-    method: 'POST',
-    body: { email, password },
-  });
+type SignedIn = Me & { accessToken: string; refreshToken: string };
+
+/** Store a fresh session and pick a default environment. One code path for
+ *  every sign-in door — password today, Google (S1.6) alongside it. */
+function adoptSession(res: SignedIn): SignedIn {
   session.setTokens(res.accessToken, res.refreshToken);
   const firstEnv = res.organizations[0]?.environments[0];
   if (firstEnv && !session.envId) session.setEnv(firstEnv.id);
   return res;
+}
+
+export async function login(email: string, password: string) {
+  return adoptSession(
+    await api<SignedIn>('/auth/login', { method: 'POST', body: { email, password } }),
+  );
+}
+
+/** Which sign-in doors this deployment offers. Cheap and public — the login
+ *  page asks once so the Google button only appears where it works. */
+export const fetchAuthMethods = () => api<{ google: boolean }>('/auth/methods');
+
+/**
+ * Trade the one-time code the Google callback put in our URL for a real
+ * session. This runs on the SPA's OWN origin, which is the whole point of the
+ * code hop: the callback lands on the API's origin, and only this origin may
+ * write the localStorage the session lives in (src/api/routes/google-auth.ts).
+ */
+export async function redeemGoogleCode(code: string) {
+  return adoptSession(await api<SignedIn>('/auth/google/redeem', { method: 'POST', body: { code } }));
 }
 
 export async function signup(input: {
@@ -173,6 +202,28 @@ export async function signup(input: {
   if (dev) session.setEnv(dev.id);
   return res;
 }
+
+/* ---------- S1.7a: passwords ---------- */
+
+/**
+ * Set or change the signed-in user's password. `currentPassword` is omitted
+ * for an account that has none yet (Google-only) — the server decides which
+ * shape applies from the row, so sending it there would just be ignored.
+ */
+export const changePassword = (input: { currentPassword?: string; newPassword: string }) =>
+  api<{ ok: true }>('/auth/password', { method: 'POST', body: input });
+
+/**
+ * Ask for a reset link. ALWAYS resolves — the server answers 200 whether or
+ * not the address is registered, and the UI must say the same thing either
+ * way, or the dashboard becomes the enumeration oracle the endpoint isn't.
+ */
+export const requestPasswordReset = (email: string) =>
+  api<{ ok: true }>('/auth/forgot', { method: 'POST', body: { email } });
+
+/** Spend a reset token. Mints no session: the user logs in with the new one. */
+export const resetPassword = (token: string, newPassword: string) =>
+  api<{ ok: true }>('/auth/reset', { method: 'POST', body: { token, newPassword } });
 
 export function logout() {
   session.clear();

@@ -1,6 +1,6 @@
 import { pool } from './pool';
 import { upsertWorkflow, upsertSubscriber } from './repositories';
-import { logger } from '../shared/logger';
+import { logger, maskSecret } from '../shared/logger';
 
 const API_KEY = 'dev-api-key-123';
 
@@ -13,7 +13,9 @@ async function main() {
     [API_KEY],
   );
   const tenant = rows[0];
-  logger.info({ tenantId: tenant.id, apiKey: API_KEY }, 'tenant ready');
+  // Masked even though this key is a well-known dev constant: the seed script
+  // is where the habit is set, and it runs against real environments too.
+  logger.info({ tenantId: tenant.id, apiKey: maskSecret(API_KEY) }, 'tenant ready');
 
   await upsertWorkflow(tenant.id, 'welcome', 'Welcome flow', [
     {

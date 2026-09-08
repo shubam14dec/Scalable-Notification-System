@@ -2,8 +2,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { authenticate } from '../auth';
+import { ipRateLimit } from '../rate-limit';
 import { pool } from '../../db/pool';
-import { redis } from '../../shared/redis';
 import { getPublicUrl } from '../../config/public-url';
 import { sealSecret, openSecret } from '../../auth/secret-box';
 import { logExec } from '../../core/execution-log';
@@ -19,24 +19,19 @@ import { parseBotFatherToken } from '../../shared/botfather';
  */
 
 const HANDOFF_TTL_MS = 5 * 60 * 1000;
-/** Public paste endpoint: per-IP burst wall (unauthenticated surface). */
+/**
+ * Public paste endpoint: per-IP burst wall (unauthenticated surface). The
+ * counter itself is the shared `ipRateLimit` brake (src/api/rate-limit.ts) —
+ * this route was where that pattern was born; S1.2 lifted it out so
+ * /auth/* and the widget's send route could share it. The name 'handoff'
+ * keeps the Redis key shape (`handoff-rl:<ip>:<minute>`) exactly as it was,
+ * and the HTML `onLimit` keeps the phone-facing 429 a readable page rather
+ * than a JSON blob.
+ */
 const PASTE_LIMIT_PER_MIN = 10;
 
 function hashHandoffToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
-}
-
-/**
- * Redis per-IP+minute counter — the same Redis-backed idiom as tenantRateLimit
- * (src/api/rate-limit.ts), so the wall holds across API replicas. Returns true
- * when this request is within the 10/min budget.
- */
-async function withinPasteBudget(ip: string): Promise<boolean> {
-  const minute = Math.floor(Date.now() / 60_000);
-  const key = `handoff-rl:${ip}:${minute}`;
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, 61);
-  return count <= PASTE_LIMIT_PER_MIN;
 }
 
 /** A whole standalone HTML document — no framework, no tenant data, mobile-first. */
@@ -226,11 +221,19 @@ export function registerHandoffRoutes(app: FastifyInstance) {
   /** Accept the pasted BotFather message (form or JSON), parse, seal, consume. */
   app.post<{ Params: { token: string }; Body: unknown }>(
     '/handoff/:token',
+    {
+      preHandler: [
+        ipRateLimit('handoff', PASTE_LIMIT_PER_MIN, {
+          onLimit: (_req, reply) =>
+            sendHtml(
+              reply,
+              429,
+              htmlPage('<h1>Too many attempts</h1><p>Please wait a minute and try again.</p>'),
+            ),
+        }),
+      ],
+    },
     async (req, reply) => {
-      if (!(await withinPasteBudget(req.ip))) {
-        return sendHtml(reply, 429, htmlPage('<h1>Too many attempts</h1><p>Please wait a minute and try again.</p>'));
-      }
-
       const body = (req.body ?? {}) as { message?: unknown };
       const message = typeof body.message === 'string' ? body.message : '';
 

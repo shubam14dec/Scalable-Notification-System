@@ -257,7 +257,15 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   em-dash/arrow becomes mojibake (proven on tasks/todo.md 2026-07-07).
   Edit files with the Edit/Write tools only.
 - **ioredis is pinned to exactly 5.10.1** to match bullmq's bundled copy;
-  upgrading only one side breaks typechecking.
+  upgrading only one side breaks typechecking. **bullmq is now pinned to
+  exactly 5.80.2 for the same reason** (found in S1.4, 2026-09-07): bullmq
+  depends on an EXACT ioredis, and it bumps that pin in ordinary MINOR
+  releases — 5.80.2 wants ioredis 5.10.1, 5.81.4 wants 5.11.1. Under a `^`
+  range npm then installs a SECOND ioredis nested under bullmq, and the two
+  structurally-incompatible `Redis` types fail `tsc` at every
+  `connection:` site (queues.ts, workers/index.ts). The pin is a PAIR — move
+  both together or neither, and re-run `npm ls ioredis bullmq` (one deduped
+  copy = healthy) after any dependency work.
 - **@types/mjml declares `mjml2html` as async** — always `await` it.
 - **Legacy `nk_` API keys remain valid** (hash lookup); new keys are `ak_`.
 - **The dashboard imports `packages/react` source directly** (vite
@@ -354,6 +362,24 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   shims exist (untracked, safe) → clean-room-regenerate the lock it just
   poisoned. Verify with `grep -c @emnapi package-lock.json` (healthy = 11
   as of 2026-07).
+  **The @emnapi grep is a PROXY, not the rule — verify STRUCTURALLY instead**
+  (S1.4, 2026-09-07): the real defect is a lock that keeps a `*-wasm32-wasi`
+  entry while dropping the `@emnapi/core` + `@emnapi/runtime` entries it
+  hard-depends on, so `npm ci` has nothing to resolve them to on Linux. Check
+  it directly: for every entry in `packages`, each name in its `dependencies`
+  must resolve to another entry by npm's node_modules walk-up —
+  `node scripts/validate-lock.cjs <lockfile>` does exactly this. That check
+  caught the poisoning in `dashboard/` (12 → 9 @emnapi, 2 dangling deps) this
+  round. Two traps the raw count sets: (1) the count is bound to the package
+  that pulls the wasm fallback — rolldown DROPPED
+  `@rolldown/binding-wasm32-wasi` from its optionalDependencies at 1.2.7, so
+  the healthy ROOT count is now **0**, not 11, and a 0 is not evidence of
+  poisoning; (2) seeding the clean room with the old lock does NOT cure it —
+  a re-resolve prunes the same entries with no Windows node_modules present
+  at all. The lock must still be BORN in the clean room. Expect a
+  clean-room rebuild to float the WHOLE tree to latest-satisfying (207 version
+  changes this round) — typecheck, full suite and dashboard build after it,
+  not just the audit.
 
 - **Never register a freshly-minted hostname with a third party before it
   resolves** (Phase 16 E2E, 2026-07-13): `asyncify dev` called telegram
@@ -480,6 +506,23 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   browser's push subscription: the old FCM token goes dead (our dead-token
   cleanup then deletes the device row — by design) and the page must mint
   + re-register a fresh one.
+- **`cap_drop: [ALL]` can kill a container at EXEC, not at bind time**
+  (S1.5, 2026-09-08): the official `caddy` image ships
+  `/usr/bin/caddy` with the file capability `cap_net_bind_service=ep`,
+  and the kernel fails `execve` with EPERM when a binary's EFFECTIVE
+  file-cap bit is set but that capability is absent from the container's
+  bounding set. `web` died instantly with `exec /usr/bin/caddy:
+  operation not permitted` — even though our Caddyfile binds :8080 and
+  never uses the capability. `no-new-privileges:true` alone is harmless;
+  only the drop triggers it. Before hardening ANY third-party image,
+  run `docker run --rm --entrypoint sh <image> -c 'getcap <binary>'` and
+  add back exactly what the file declares (`cap_add: [NET_BIND_SERVICE]`
+  here), or strip it in the image with `setcap -r`. Our own image is
+  immune — plain `node`, no file caps — and `cloudflare/cloudflared`
+  (distroless nonroot) is too, both verified. Sibling rule: the DATA
+  tier (postgres/redis/clickhouse) must keep its caps — those
+  entrypoints start as root and drop privileges themselves via
+  su-exec/gosu, which needs CAP_SETUID/SETGID/CHOWN.
 
 ## 12. Tests own Redis db 15 — never share queues with the dev fleet
 

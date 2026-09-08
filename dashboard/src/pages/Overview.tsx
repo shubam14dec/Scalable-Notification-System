@@ -24,10 +24,9 @@ export default function OverviewPage() {
 
   const { data: queues } = useQuery({
     queryKey: ['queues'],
-    queryFn: async () => {
-      const res = await fetch('/ops/queues');
-      return (await res.json()) as Record<string, Record<string, number>>;
-    },
+    // S1.1: /ops/queues is authenticated now — it must go through api(), which
+    // attaches the bearer token (a raw fetch gets a 401 and a blank stat).
+    queryFn: () => api<Record<string, Record<string, number>>>('/ops/queues'),
     // Phase 25 D8: depths are pushed live (queue.depths → setQueryData on this
     // same key); 60s is the safety poll. Seed-on-mount stays (the first fetch).
     refetchInterval: 60_000,

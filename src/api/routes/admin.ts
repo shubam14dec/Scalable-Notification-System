@@ -96,10 +96,16 @@ const WorkflowSchema = z.object({
 });
 
 /**
- * SSRF write-time gate for a push step's clickUrl/imageUrl (the worker/device
- * dials these). Skipped when the URL carries Handlebars vars — those resolve
- * per-recipient at fan-out, so there is no literal host to vet here; a literal
- * internal target is the risk this catches. Mirrors agent-tools' endpoint gate.
+ * Write-time gate for a push step's clickUrl/imageUrl — fast authoring
+ * feedback, NOT the enforcement point. Skipped when the URL carries Handlebars
+ * vars: those resolve per-recipient at fan-out, so there is no host to vet yet.
+ *
+ * The enforcement point is `renderPushExtras` in
+ * src/workers/processors/fanout.processor.ts, which re-checks the RENDERED
+ * value of every push URL (templated or not) against the same syntactic host
+ * rules and drops the field if it fails. This gate exists so a literal
+ * `http://169.254.169.254/…` is rejected with a 400 at authoring time instead
+ * of silently vanishing from every notification later.
  */
 async function unsafePushUrl(
   push?: { clickUrl?: string; imageUrl?: string },

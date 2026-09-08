@@ -85,6 +85,95 @@ why moving the gateway onto the same hostname needed no server change.
 > otherwise it silently falls through to the SPA and returns `index.html` with a
 > 200, which is much harder to debug than a 404.
 
+## Security headers (S1.3)
+
+Two writers, one header each — never both, because Caddy would *append* a
+second value rather than replace ours:
+
+| Where | Sets | On what |
+|---|---|---|
+| [`Caddyfile`](../deploy/compose/Caddyfile), site block | `Strict-Transport-Security` | **every** response on the host, API and WS included |
+| `Caddyfile`, static `handle` block | `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy` | dashboard SPA / static files only |
+| [`src/api/app.ts`](../src/api/app.ts), `onSend` hook | `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Cache-Control` | every API response |
+
+Verify a Caddyfile edit before it reaches the box — a bad one takes the whole
+site down, since Caddy fails to start rather than serving unstyled:
+
+```bash
+docker run --rm -v "$PWD/deploy/compose/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+```
+
+### What the SPA's CSP allows, and why
+
+`default-src 'self'` with these deliberate widenings — each one is in the
+policy because the *built* bundle needs it, not because a template had it:
+
+- **`script-src 'self'`** — no `'unsafe-inline'`, no hash. The shell's
+  pre-paint theme setter lives in `dashboard/public/theme.js`, **not** inline.
+  Keep it that way: `tests/unit/csp-no-inline-script.test.ts` fails the build
+  if a `<script>` body returns to `dashboard/index.html`. (A `'sha256-…'` pin
+  was the alternative and was rejected — the hash is byte-exact, and this repo
+  is checked out with `core.autocrlf=true` on Windows while the image builds
+  from an LF checkout, so the two disagree and the stale hash fails *silently*,
+  as an unthemed dashboard.)
+- **`style-src 'unsafe-inline'`** — the dashboard uses React `style={{}}`
+  attributes throughout. Unavoidable without rewriting every component.
+- **`img-src data:`** for inline icons; **`img-src https:`** for the
+  email-template **live preview**. `Templates.tsx` renders MJML output into an
+  `<iframe sandbox="" srcDoc>`, and a srcdoc document *inherits* the parent
+  policy (it has no response of its own), so tenant templates carrying remote
+  `<mj-image>` logos would show broken images under `'self'` alone — in the one
+  feature whose job is showing the recipient's-eye view. Drop `https:` if that
+  fidelity is not worth the widening; images are not a script sink and
+  `connect-src` stays `'self'`.
+- **`font-src data:`** — not boilerplate. `@fontsource` is self-hosted, but
+  vite inlines the small Geist subsets as `data:font/woff2` while emitting the
+  rest as `/assets` files. Both forms ship, so both must be allowed.
+- **`connect-src 'self'`** — the dashboard calls relative API paths (no
+  `VITE_` base URL exists) and derives its WebSocket origin from
+  `location.host` (`dashboard/src/lib/wsOrigin.ts`). CSP3 maps `'self'` onto
+  `wss:` for an `https:` origin, so same-host sockets are covered **without**
+  naming a domain — which is what keeps the "a domain move needs no rebuild"
+  property above true.
+
+**No external origin is allowed, because the dashboard touches none.** Fonts
+are self-hosted, QR codes are generated locally
+(`packages/react/src/qrcodegen.ts`), and there is **no Firebase/gstatic script
+and no FCM connect in the dashboard bundle** — web push lives in
+`@asyncify-hq/react`, which *consumers* install and serve under their own CSP
+(see [PUSH-SMS.md](PUSH-SMS.md)). If a push page is ever added to this
+dashboard, it needs `script-src https://www.gstatic.com` and the FCM
+`connect-src` entries, or push breaks with no error.
+
+### HSTS: 180 days, no `includeSubDomains`
+
+`max-age=15552000` and nothing else. **Do not add `includeSubDomains`** —
+`asyncify.org`'s apex hosts a separate marketing site, and the directive on
+`app.asyncify.org` would pin HTTPS-only on every sibling hostname for 180 days
+with no way to take it back early. Same reason there is no `preload`.
+
+### The API's own headers
+
+`Referrer-Policy: no-referrer` here is stricter than the SPA's
+`strict-origin-when-cross-origin`: API URLs carry ids and handoff tokens **in
+the path**, and no API response has a reason to leak its own URL onward.
+`Cache-Control: no-store` covers `/auth/*`, whose bodies carry access and
+refresh tokens.
+
+The API's CSP branches on the **outgoing content type**, not on a path list
+that would drift: `text/html` responses — the phone-facing bot-setup handoff
+(`routes/handoff.ts`) and the Slack OAuth result page (`routes/slack.ts`) — get
+`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'`, because
+both are styled (a `<style>` block and `style=""` attributes) and neither has a
+script of any kind. Everything else gets `default-src 'none'`, which only bites
+if someone points a browser tab straight at an endpoint.
+
+JWT algorithms are pinned on both sides (`sign.algorithm` / `verify.algorithms`
+= HS256), matching what the WS gateway already enforced. Before the pin, a
+token forged with **HS512 and the same secret was accepted** by both guards —
+that regression is now covered by `tests/integration/security-headers.test.ts`.
+
 ## Secrets
 
 All of them live in one file, `.env.prod` (chmod 600, gitignored, never
@@ -98,11 +187,28 @@ that signs dashboard tokens and the process that verifies them.
 |---|---|---|
 | `JWT_SECRET` | `openssl rand -base64 48` | **Must be byte-identical on api and ws.** |
 | `CREDENTIALS_ENCRYPTION_KEY` | `openssl rand -base64 48` | **Unrecoverable. Back it up off-box before first use.** |
-| `WEBHOOK_SIGNING_SECRET` | `openssl rand -hex 32` | Empty **disables** provider-webhook signature verification. |
+| `WEBHOOK_SIGNING_SECRET` | `openssl rand -hex 32` | ROOT secret only — never handed to a provider. Each tenant's webhook key is derived from it (see below). Empty **disables** provider-webhook signature verification. |
+| `OPS_ADMIN_TOKEN` | `openssl rand -hex 32` | Operator-only secret gating global ops writes (`PUT /v1/ops/public-url`), sent as `x-operator-token`. **Not a tenant key** — no tenant api key or dashboard JWT is accepted for that route in production. |
 | `POSTGRES_PASSWORD` | `openssl rand -base64 48` | Must match the password inside `DATABASE_URL`. |
 | `CLICKHOUSE_PASSWORD` | `openssl rand -hex 32` | Analytics only; soft-fails if wrong. |
 | `OUTBOUND_URL_ALLOW` | — | **Must stay empty.** It is the SSRF guard's dev escape hatch. |
 | `TUNNEL_ID` | `cloudflared tunnel create` | Box-local UUID; creds JSON is never committed. |
+| `GOOGLE_CLIENT_ID` | Google Cloud console | **Optional** ("Continue with Google"). Empty = feature off: `/auth/google` 404s and the login page hides the button. |
+| `GOOGLE_CLIENT_SECRET` | Google Cloud console | **Optional**, and required together with the id — one without the other still reads as off. |
+| `GOOGLE_POST_LOGIN_ORIGIN` | — | **Leave empty in production** (the SPA and the API are one origin behind Caddy). Only local dev sets it, to `http://localhost:5173`. |
+| `SMTP_HOST` / `SMTP_PORT` | Resend dashboard | **Required from S1.7a** — the OPERATOR mail path that carries password-reset links. `smtp.resend.com` / `587`. Empty = `/auth/forgot` still answers 200 but nothing is delivered (a warn in the api log is the only trace). |
+| `SMTP_USER` / `SMTP_PASS` | Resend dashboard | `resend` and a Resend **API key** (Resend's SMTP mode uses the API key as the password). |
+| `SMTP_FROM` | — | `notifications@asyncify.org` — must be on a domain verified in Resend, or every reset email is rejected at the relay. |
+| `SMTP_TENANT_FALLBACK` | — | **Must be `false` in production.** The SMTP block above is the PLATFORM's sending identity; without this flag, integration-less tenants fall back to it — with open signup, that is any stranger sending mail through our domain. Platform emails (resets) ignore the flag. |
+
+**Google sign-in, one-time console setup** (skip entirely if you are not
+offering it): in [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
+create an **OAuth 2.0 Client ID** of type *Web application*, and register both
+authorized redirect URIs on it — `https://app.asyncify.org/auth/google/callback`
+(production) and `http://localhost:3000/auth/google/callback` (local dev, the
+API port). Google compares the redirect URI byte for byte, so the dev tunnel
+hostname is deliberately never used here: it rotates on every `asyncify dev`
+run and could not be registered ahead of time.
 
 Two of these have failure modes that are silent rather than loud, which is
 exactly why the preflight below exists:
@@ -117,15 +223,113 @@ exactly why the preflight below exists:
   ciphertext and every channel must be reconnected by hand. **A `pg_dump` taken
   without this key is worthless for restoring integrations.**
 
+### The generic provider webhook is per-tenant (S1.2)
+
+`POST /webhooks/providers/:provider/:tenantId` — the tenant is **in the URL**,
+and the signature is checked with a key derived for that tenant:
+
+```
+tenantKey = hex( HMAC-SHA256( WEBHOOK_SIGNING_SECRET, "tenant:<tenantId>" ) )
+```
+
+The root `WEBHOOK_SIGNING_SECRET` never leaves the box; a provider (or a
+customer wiring their own status callbacks) gets only that tenant's derived
+key, which can forge nothing for anyone else. Derive one on the box with:
+
+```bash
+docker compose exec api node -e "console.log(require('crypto').createHmac('sha256', process.env.WEBHOOK_SIGNING_SECRET).update('tenant:'+process.argv[1]).digest('hex'))" <TENANT_ID>
+```
+
+The wire format is unchanged (`x-webhook-timestamp` + `x-webhook-signature`
+over `` `${timestamp}.${rawBody}` ``, 300s tolerance) — only the URL and the
+key changed.
+
+> **One-time deploy step.** The old tenant-less path
+> `/webhooks/providers/:provider` now **404s** — deliberately, so nothing keeps
+> arriving unscoped. Anything configured against it (a provider console, a
+> customer's callback config) must be re-pointed at the tenant URL with the
+> tenant's derived key. Nothing in this repo mints that URL programmatically,
+> so this is a manual re-paste wherever one was set up by hand.
+
+> **Subscriber tokens die at deploy.** `nst_` tokens are now signed with a
+> per-tenant key (`subscriber:$JWT_SECRET:<tenantId>`), so every token minted
+> before this release fails verification. Widgets re-mint from the customer's
+> own session on the next load — one-time, no action required, expect a brief
+> spike of 401s on `/v1/inbox/*` and 4401 WebSocket closes. Their TTL ceiling
+> also dropped from 24h to **6h**, default **1h**; a backend explicitly asking
+> for more than 6h now gets a 400.
+
+> **Deploying the S1.7a password slice:** production needs the **operator SMTP**
+> filled in, or `POST /auth/forgot` accepts every request, answers 200, mints a
+> token — and delivers nothing. It fails exactly that quietly by design (the
+> route must never reveal whether an address exists), so the only signal is a
+> `platform email not configured` warn in the api log. Six lines in
+> `.env.prod`, using Resend's SMTP mode against the domain already verified for
+> outbound mail:
+>
+> ```
+> SMTP_HOST=smtp.resend.com
+> SMTP_PORT=587
+> SMTP_USER=resend
+> SMTP_PASS=<the Resend API key>
+> SMTP_FROM=notifications@asyncify.org
+> ```
+>
+> This is the **platform's** mailbox, not a tenant's: reset mail goes out
+> through these env settings and never through a customer's provider chain, so
+> a locked-out admin is not blocked by their own broken integration. Note this
+> also arms the env-default email provider (`src/providers/registry.ts`), which
+> until now was an unconfigured stub in production — tenants with their own
+> Resend/SendGrid integration are unaffected, since an integration always wins.
+> Gate: from the dashboard log-in page, "Forgot password?" with a real account
+> address delivers a link within a minute; `docker compose logs api | grep
+> 'platform email'` is silent.
+
 **Preflight refuses dev defaults.** `src/config/preflight.ts` runs as the first
 statement of each entrypoint's `main()` and, when `NODE_ENV=production`,
 fatal-exits on: a dev-default or sub-32-char `JWT_SECRET`, a dev-default or
-sub-32-char `CREDENTIALS_ENCRYPTION_KEY`, an empty `WEBHOOK_SIGNING_SECRET`, or
-a non-empty `OUTBOUND_URL_ALLOW`. It warns (without exiting) on a localhost
-`PUBLIC_URL`. This exists because `src/config/env.ts` gives every variable a
-fallback — so without the preflight, a missing secret doesn't crash anything, it
-boots a fully working system on values published in this repo. Preflight is
-never called inside `buildApp()` / `startGateway()`, so tests are unaffected.
+sub-32-char `CREDENTIALS_ENCRYPTION_KEY`, an empty `WEBHOOK_SIGNING_SECRET`, an
+empty or sub-32-char `OPS_ADMIN_TOKEN`, or a non-empty `OUTBOUND_URL_ALLOW`.
+It warns (without exiting) on a localhost `PUBLIC_URL`. This exists because
+`src/config/env.ts` gives every variable a fallback — so without the preflight,
+a missing secret doesn't crash anything, it boots a fully working system on
+values published in this repo. Preflight is never called inside `buildApp()` /
+`startGateway()`, so tests are unaffected.
+
+> **Deploying the S1.1 operator-plane slice:** add `OPS_ADMIN_TOKEN` to
+> `/root/asyncify/.env.prod` **before** merging it — preflight refuses to boot
+> without it, so api, worker and ws will all fatal-exit on the first restart.
+
+> **Deploying the S1.5 box-hardening slice:** two host-side steps, both on the
+> box, both before `docker compose up -d --build`.
+>
+> 1. **Tighten the tunnel credentials.** They are 644 on every box deployed
+>    before S1.5 — readable by any account on the machine. Fix them in place:
+>    ```bash
+>    cd /root/asyncify
+>    sudo chown 65532:65532 deploy/compose/cloudflared/creds.json
+>    sudo chmod 600 deploy/compose/cloudflared/creds.json
+>    docker compose -f docker-compose.prod.yml restart cloudflared
+>    ```
+>    **Why uid 65532 and not `root`:** `cloudflare/cloudflared` is a distroless
+>    image whose process runs as the `nonroot` user, uid 65532. The bind mount
+>    carries the host's numeric owner straight into the container — there is no
+>    uid translation — so 600 plus the right numeric owner is the only way the
+>    container can read the file without anyone else on the host being able to.
+>    That uid is unallocated on Ubuntu, so nothing on the host gains access.
+>    Gate: `ls -ln deploy/compose/cloudflared/creds.json` shows `-rw------- …
+>    65532 65532`, and the cloudflared log registers 4 edge connections after
+>    the restart (a permissions mistake shows up as an immediate
+>    `error parsing credentials` crash-loop, not a silent degradation).
+> 2. **Rebuild the app image.** The runtime user changed from root to `node`
+>    (uid 1000) and `docker-compose.prod.yml` now drops every Linux capability
+>    from api / worker / ws / acme-tools / web / cloudflared, so a plain
+>    `restart` is not enough — `docker compose -f docker-compose.prod.yml up -d
+>    --build` is. Nothing binds a port under 1024, so no capability is needed
+>    back. Gate: `docker compose exec api id -u` prints `1000`, and all four
+>    health endpoints answer as in step 6 below. The data tier (postgres,
+>    redis, clickhouse) is deliberately untouched — see the comment block at the
+>    top of `docker-compose.prod.yml`.
 
 Per-tenant provider credentials (a Resend API key, a Telegram bot token) are
 **not** environment config — they are encrypted rows added from the dashboard's
@@ -159,7 +363,14 @@ Gate: both proxied CNAMEs are visible in the Cloudflare dashboard.
 ```bash
 git clone <repo> asyncify && cd asyncify
 cp ~/.cloudflared/<UUID>.json deploy/compose/cloudflared/creds.json
-chmod 600 deploy/compose/cloudflared/creds.json
+# The creds file is a bearer credential for the whole tunnel. It is bind-mounted
+# read-only into a container that runs as the distroless `nonroot` user, uid
+# 65532 — a uid that does not exist on the host, so it cannot be reached
+# through group or "other" bits without making the file world-readable. Give the
+# file to that uid NUMERICALLY and take every other bit away; do NOT settle for
+# 644 to make the container happy.
+sudo chown 65532:65532 deploy/compose/cloudflared/creds.json
+sudo chmod 600 deploy/compose/cloudflared/creds.json
 cp .env.prod.example .env.prod && chmod 600 .env.prod
 $EDITOR .env.prod                                   # fill every <gen>
 ```
@@ -198,9 +409,12 @@ curl -s  https://tools.asyncify.org/ -X POST -d '{"args":{"orderId":"X"}}'
 Then sign up in the browser to hold a production API key, and publish the
 runtime public URL:
 ```bash
+# The PUT is operator-only in production: x-operator-token = OPS_ADMIN_TOKEN
+# from .env.prod. A tenant api key is rejected (401 operator token required).
 curl -X PUT https://app.asyncify.org/v1/ops/public-url \
-  -H "x-api-key: <key>" -H "content-type: application/json" \
+  -H "x-operator-token: <OPS_ADMIN_TOKEN>" -H "content-type: application/json" \
   -d '{"url":"https://app.asyncify.org"}'
+# The GET stays tenant-readable.
 curl -s https://app.asyncify.org/v1/ops/public-url -H "x-api-key: <key>"
 # → {"url":"https://app.asyncify.org","source":"runtime"}   ← the gate
 ```
@@ -273,7 +487,8 @@ docker compose --env-file .env.prod exec -T postgres \
 Keep the dumps off-box, and keep `CREDENTIALS_ENCRYPTION_KEY` off-box with
 them — **a dump without that key cannot restore a single integration.**
 
-**Domain migration** is one `PUT /v1/ops/public-url` plus reconnecting the
+**Domain migration** is one `PUT /v1/ops/public-url` (operator-only —
+`x-operator-token: $OPS_ADMIN_TOKEN`) plus reconnecting the
 channels that store a callback (Telegram, Slack, Postmark). No restart, no
 rebuild: the dashboard's WS origin is derived from `location.host`, so it
 follows the new domain by itself.
@@ -300,8 +515,9 @@ follows the new domain by itself.
 
 ## Deliberately not deployed
 
-- **Mailpit.** A dev SMTP sink. Production sends through Resend with a real
-  verified domain; `SMTP_HOST` is left empty.
+- **Mailpit.** A dev SMTP sink. Production points `SMTP_HOST` at Resend's SMTP
+  relay instead (see Secrets) — as of S1.7a that path is no longer optional,
+  because it is what carries password-reset links.
 - **Jaeger.** The dev all-in-one stores spans **in RAM** — a bounded window,
   wiped on restart. `OTEL_ENABLED=false` at launch (see fast-follows).
 - **`npm run seed`.** It mints `dev-api-key-123`, a key published in this repo.

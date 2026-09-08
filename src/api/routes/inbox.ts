@@ -1,7 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authenticate } from '../auth';
-import { mintSubscriberToken, verifySubscriberToken } from '../../auth/subscriber-token';
+import {
+  mintSubscriberToken,
+  SUBSCRIBER_TOKEN_DEFAULT_TTL_S,
+  SUBSCRIBER_TOKEN_MAX_TTL_S,
+  verifySubscriberToken,
+} from '../../auth/subscriber-token';
 import { getEnvironment } from '../../db/accounts.repo';
 import { inboxForSubscriber, markInboxRead, unreadCount } from '../../db/repositories';
 
@@ -48,12 +53,26 @@ async function authenticateInbox(
  * accelerator — this is the durable inbox clients load on open/reconnect.
  */
 export function registerInboxRoutes(app: FastifyInstance) {
-  /** Mint a short-lived, single-subscriber token (for the inbox widget). */
+  /**
+   * Mint a short-lived, single-subscriber token (for the inbox widget).
+   *
+   * S1.2: the ceiling is 6h and the default is 1h (was 24h/1h). A token is a
+   * bearer credential sitting in a browser with no way to revoke it, so its
+   * blast radius is exactly its lifetime; re-minting is one silent call from
+   * the customer's own session. Bounds are stated twice on purpose — zod
+   * gives the caller a 400 that names the limit, and mintSubscriberToken
+   * clamps, so no other caller can widen it.
+   */
   app.post('/v1/subscriber-tokens', { preHandler: [authenticate] }, async (req, reply) => {
     const parsed = z
       .object({
         subscriberId: z.string().min(1).max(255),
-        ttlSeconds: z.number().int().min(60).max(86_400).default(3600),
+        ttlSeconds: z
+          .number()
+          .int()
+          .min(60)
+          .max(SUBSCRIBER_TOKEN_MAX_TTL_S)
+          .default(SUBSCRIBER_TOKEN_DEFAULT_TTL_S),
       })
       .safeParse(req.body);
     if (!parsed.success) {

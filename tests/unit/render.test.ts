@@ -24,8 +24,32 @@ describe('handlebars subject rendering', () => {
     );
   });
 
-  test('HTML-escapes values (payload cannot inject markup)', () => {
-    expect(renderSubject('{{evil}}', { evil: '<script>' })).not.toContain('<script>');
+  // A subject is a plain-text header, not markup. Escaping it does not defend
+  // anything (nobody parses a subject as HTML) and actively corrupts ordinary
+  // punctuation, so real customer names must survive verbatim.
+  test('apostrophes and ampersands render literally, not as HTML entities', () => {
+    expect(renderSubject('Welcome, {{company}}', { company: "O'Brien & Co" })).toBe(
+      "Welcome, O'Brien & Co",
+    );
+  });
+
+  test('a literal subject with punctuation is untouched', () => {
+    expect(renderSubject('Your "receipt" <#{{id}}> — 50% off', { id: 9 })).toBe(
+      'Your "receipt" <#9> — 50% off',
+    );
+  });
+
+  // Header-injection hygiene: providers take the subject as a JSON field today,
+  // but a raw-MIME path must not let a payload value append its own headers.
+  test('CR and LF in a rendered value are stripped', () => {
+    const out = renderSubject('Order {{ref}}', { ref: 'A1\r\nBcc: evil@example.com' });
+    expect(out).not.toContain('\r');
+    expect(out).not.toContain('\n');
+    expect(out).toBe('Order A1Bcc: evil@example.com');
+  });
+
+  test('CR and LF in the subject template itself are stripped too', () => {
+    expect(renderSubject('Hi\r\nthere', {})).toBe('Hithere');
   });
 });
 
@@ -43,6 +67,24 @@ describe('MJML template rendering', () => {
   test('payload values are escaped inside the email', async () => {
     const out = await renderMjmlTemplate(mjml, { name: '<img src=x onerror=alert(1)>' });
     expect(out.html).not.toContain('<img src=x');
+  });
+
+  // The subject stopped escaping; the BODY must not have followed it. This is
+  // the same input the subject test asserts renders literally — here it has to
+  // come out as entities, because this one really is HTML.
+  test('body escaping survived the subject fix', async () => {
+    const out = await renderMjmlTemplate(mjml, { name: "O'Brien & Co" });
+    // Same input the subject test asserts renders literally; here it must come
+    // out as entities, because this one really is HTML.
+    expect(out.html).toContain('&amp;');
+    expect(out.html).toContain('&#x27;');
+    expect(out.html).not.toContain("O'Brien & Co");
+    // The plain-text alternative decodes the named entities htmlToText knows.
+    // NOTE: it does not decode NUMERIC ones, so the apostrophe survives as
+    // `&#x27;` in the text/plain part — a real (pre-existing) defect in
+    // htmlToText, out of scope here and reported rather than silently fixed.
+    expect(out.text).toContain('&');
+    expect(out.text).toContain('&#x27;Brien');
   });
 });
 

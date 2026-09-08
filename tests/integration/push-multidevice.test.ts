@@ -19,6 +19,7 @@ import { processDelivery } from '../../src/workers/processors/delivery.processor
 import { upsertDeviceToken, listDeviceTokens } from '../../src/db/device-tokens.repo';
 import { FcmPushProvider } from '../../src/providers/push';
 import { PermanentError } from '../../src/shared/errors';
+import { EXEC_LOG_BUFFER_KEY } from '../../src/core/execution-log';
 
 let app: FastifyInstance;
 let devKey = '';
@@ -70,6 +71,19 @@ async function messagesForEvent(eventId: string) {
     error: string | null;
     content: { to: Record<string, string>; push?: { clickUrl?: string; imageUrl?: string; data?: Record<string, string> } };
   }>;
+}
+
+/**
+ * Drain the exec-log buffer. logExec is fire-and-forget (the send path never
+ * waits on bookkeeping), so poll briefly rather than assuming the RPUSH landed.
+ */
+async function execLogLines(waitFor: RegExp): Promise<string[]> {
+  for (let i = 0; i < 40; i++) {
+    const lines = await redis.lrange(EXEC_LOG_BUFFER_KEY, 0, -1);
+    if (lines.some((l) => waitFor.test(l))) return lines;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return redis.lrange(EXEC_LOG_BUFFER_KEY, 0, -1);
 }
 
 beforeAll(async () => {
@@ -307,6 +321,88 @@ describe('phone normalization + push-URL SSRF at authoring', () => {
       },
     });
     expect(res.statusCode).toBe(200);
+  });
+
+  test('a templated push URL that renders into a private host is DROPPED at fan-out, and the send still succeeds', async () => {
+    const sub = await putSubscriber({ subscriberId: 'push-render-gate' });
+    await upsertDeviceToken(tenantId, sub.id!, 'tok-render-gate', 'web');
+
+    const save = await app.inject({
+      method: 'PUT',
+      url: '/v1/workflows',
+      headers: { 'x-api-key': devKey },
+      payload: {
+        key: 'push-render-gate',
+        name: 'render gate',
+        steps: [
+          {
+            channel: 'push',
+            body: 'hi',
+            push: {
+              // Both are var-bearing, so admin.ts cannot vet them — there is no
+              // host in `https://{{host}}/x` yet. Fan-out is the enforcement point.
+              clickUrl: 'https://{{host}}/orders',
+              imageUrl: "javascript:alert('{{x}}')",
+              data: { orderId: '{{orderId}}' },
+            },
+          },
+        ],
+      },
+    });
+    expect(save.statusCode).toBe(200); // templated → allowed through authoring
+
+    await redis.del(EXEC_LOG_BUFFER_KEY);
+    const eventId = await trigger('push-render-gate', 'push-render-gate', {
+      host: '169.254.169.254', // cloud metadata — an intranet-pivot tap target
+      x: 'boom',
+      orderId: 'A1',
+    });
+    await fanout(eventId, 'push-render-gate');
+
+    const [row] = await messagesForEvent(eventId);
+    // Both URLs gone; the rest of the notification is untouched.
+    expect(row.content.push?.clickUrl).toBeUndefined();
+    expect(row.content.push?.imageUrl).toBeUndefined();
+    expect(row.content.push?.data).toEqual({ orderId: 'A1' });
+    expect(row.status).toBe('queued');
+
+    // One exec-log line per step+field naming what was dropped (not one per
+    // recipient — a broadcast would otherwise write a line per subscriber).
+    const logged = await execLogLines(/dropped unsafe push imageUrl/);
+    expect(logged.filter((l) => /dropped unsafe push clickUrl/.test(l))).toHaveLength(1);
+    expect(logged.some((l) => l.includes('169.254.169.254'))).toBe(true);
+    expect(logged.filter((l) => /dropped unsafe push imageUrl/.test(l))).toHaveLength(1);
+    expect(logged.some((l) => l.includes('javascript:alert'))).toBe(true);
+
+    // The notification itself still delivers — dropping a field never fails a send.
+    await processDelivery({ data: { messageId: row.id }, attemptsMade: 0 } as unknown as Job);
+    const { rows } = await pool.query('select status from messages where id = $1', [row.id]);
+    expect(rows[0].status).toBe('sent');
+  });
+
+  test('a templated push URL that renders into a safe https URL is KEPT', async () => {
+    const sub = await putSubscriber({ subscriberId: 'push-render-ok' });
+    await upsertDeviceToken(tenantId, sub.id!, 'tok-render-ok', 'web');
+    await app.inject({
+      method: 'PUT',
+      url: '/v1/workflows',
+      headers: { 'x-api-key': devKey },
+      payload: {
+        key: 'push-render-ok',
+        name: 'render ok',
+        steps: [{ channel: 'push', body: 'hi', push: { clickUrl: 'https://{{host}}/orders' } }],
+      },
+    });
+
+    await redis.del(EXEC_LOG_BUFFER_KEY);
+    const eventId = await trigger('push-render-ok', 'push-render-ok', { host: 'shop.example.com' });
+    await fanout(eventId, 'push-render-ok');
+
+    const [row] = await messagesForEvent(eventId);
+    expect(row.content.push?.clickUrl).toBe('https://shop.example.com/orders');
+    // Wait for fan-out's own "queued" line, then prove no drop was recorded.
+    const logged = await execLogLines(/queued push message/);
+    expect(logged.some((l) => /dropped unsafe push/.test(l))).toBe(false);
   });
 
   test('push extras on a non-push step are rejected', async () => {

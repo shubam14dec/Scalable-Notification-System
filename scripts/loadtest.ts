@@ -39,7 +39,8 @@ async function trigger(i: number): Promise<{ status: number; overflow: boolean }
 }
 
 async function queuesDrained(): Promise<{ drained: boolean; backlog: number }> {
-  const res = await fetch(`${BASE}/ops/queues`);
+  // S1.1: /ops/queues is authenticated — platform-wide telemetry is not public.
+  const res = await fetch(`${BASE}/ops/queues`, { headers: { 'x-api-key': API_KEY } });
   const depths = (await res.json()) as Record<string, Record<string, number>>;
   let backlog = 0;
   for (const [name, counts] of Object.entries(depths)) {

@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { session } from './lib/api';
 import Shell from './components/Shell';
 import { LoginPage, SignupPage } from './pages/Login';
+import ResetPasswordPage from './pages/ResetPassword';
 import OverviewPage from './pages/Overview';
 import ActivityPage from './pages/Activity';
 import WorkflowsPage from './pages/Workflows';
@@ -32,6 +33,9 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+        {/* Signed-OUT by design: the ?token in the URL is the credential, and
+            the person clicking it is someone who cannot log in. */}
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route
           element={
             <RequireAuth>

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PermanentError, TransientError } from '../shared/errors';
-import { logger } from '../shared/logger';
+import { logger, maskSecret } from '../shared/logger';
 import { addSuppression } from '../db/repositories';
 import { deleteDeviceToken } from '../db/device-tokens.repo';
 import type { ChannelProvider, RenderedMessage, SendResult } from './types';
@@ -125,7 +125,10 @@ export class MockPushProvider implements ChannelProvider {
     if (!message.to.pushToken) {
       throw new PermanentError('subscriber has no push token');
     }
-    logger.info({ token: message.to.pushToken, body: message.body }, '[push-mock] push "sent"');
+    // Masked token, and no body at all: a device token is a send-anything
+    // credential for that handset, and the body is customer content that has no
+    // business sitting in a log line.
+    logger.info({ token: maskSecret(message.to.pushToken) }, '[push-mock] push "sent"');
     return { providerMessageId: `push_${randomUUID()}` };
   }
 }

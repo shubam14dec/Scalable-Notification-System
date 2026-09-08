@@ -206,7 +206,8 @@ Other API surfaces: `/v1/workflows` · `/v1/templates` + `/preview` ·
 `/v1/integrations` + `/test` · `/v1/topics` · `/v1/subscribers` ·
 `/v1/subscriber-tokens` · `/v1/inbox/:subscriberId` ·
 `/v1/events/:txn/timeline` · `/v1/events/broadcast` · `/v1/suppressions` ·
-`/v1/analytics` · `/webhooks/:provider` · `/o/:messageId.gif` · `/metrics`
+`/v1/analytics` · `/webhooks/providers/:provider/:tenantId` ·
+`/o/:messageId.gif` · `/metrics`
 
 > ⬇ **trigger** queue · jobId = `evt-{transactionId}`
 

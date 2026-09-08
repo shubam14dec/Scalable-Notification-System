@@ -20,6 +20,11 @@ import { logger } from '../shared/logger';
  *    provider credential is bricked and every channel must be reconnected.
  *  - WEBHOOK_SIGNING_SECRET empty → signature verification on provider status
  *    webhooks is DISABLED (see env.ts), so anyone can post delivery statuses.
+ *  - OPS_ADMIN_TOKEN missing → PUT /v1/ops/public-url has no operator
+ *    credential to check against, so the one global setting every tenant's
+ *    webhooks and tracking pixels are built from cannot be rotated at all.
+ *    Booting without it would leave the operator plane locked out and the
+ *    lockout invisible until a tunnel rotation needed it.
  *  - OUTBOUND_URL_ALLOW non-empty → the SSRF guard (src/core/safe-url.ts) has
  *    holes punched in it. That list exists for local development, where tool
  *    URLs point at private addresses; in production it must be empty.
@@ -69,6 +74,16 @@ export function assertProductionConfig(role: string): void {
       'WEBHOOK_SIGNING_SECRET',
       'is empty, which DISABLES signature verification on provider status ' +
         'webhooks. Generate one (openssl rand -hex 32).',
+    );
+  }
+
+  if (env.opsAdminToken === '' || env.opsAdminToken.length < 32) {
+    fatal(
+      'OPS_ADMIN_TOKEN',
+      'is empty or shorter than 32 chars. It is the ONLY credential accepted ' +
+        'by PUT /v1/ops/public-url in production — the global setting every ' +
+        'tenant webhook and tracking pixel is built from. Generate one ' +
+        '(openssl rand -hex 32); it is an operator secret, never a tenant key.',
     );
   }
 

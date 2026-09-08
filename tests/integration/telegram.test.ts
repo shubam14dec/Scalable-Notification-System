@@ -362,6 +362,35 @@ describe('inbound webhook', () => {
     expect(noHeader.statusCode).toBe(401);
   });
 
+  // S1.4: the compare is constant-time, which makes it fussier about its input.
+  // A same-length near-miss must be rejected by the comparison itself (not by
+  // the cheap length check), and a non-string header must not blow up or slip
+  // through — timingSafeEqual throws on a length mismatch and a Buffer built
+  // from an array is not the secret either way.
+  test('rejects a same-length secret that differs by one character', async () => {
+    const wrong = `${webhookSecretSeen.slice(0, -1)}${webhookSecretSeen.endsWith('a') ? 'b' : 'a'}`;
+    expect(wrong).toHaveLength(webhookSecretSeen.length);
+    expect(wrong).not.toBe(webhookSecretSeen);
+    expect((await postUpdate(tgUpdate(1, 'hi'), wrong)).statusCode).toBe(401);
+  });
+
+  test('rejects a repeated secret-token header instead of throwing', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/webhooks/telegram/${connectionId}`,
+      headers: {
+        'x-telegram-bot-api-secret-token': [webhookSecretSeen, webhookSecretSeen],
+      } as unknown as Record<string, string>,
+      payload: tgUpdate(1, 'hi'),
+    });
+    expect(res.statusCode).toBe(401);
+    expect(json(res).error).toBe('bad secret token');
+  });
+
+  test('the correct secret is still accepted', async () => {
+    expect((await postUpdate(tgUpdate(2, 'hi'))).statusCode).toBe(200);
+  });
+
   test('unknown connection is a 404', async () => {
     const res = await app.inject({
       method: 'POST',

@@ -65,7 +65,12 @@ import { enqueueHandbackFold } from '../../core/rolling';
 import { emitTenantEvent } from '../../core/tenant-events';
 import { CardSchema } from '../../shared/cards';
 import { logExec } from '../../core/execution-log';
-import { tenantRateLimit } from '../rate-limit';
+import {
+  countSubscriberTurn,
+  ipRateLimit,
+  SUBSCRIBER_TURNS_PER_MIN,
+  tenantRateLimit,
+} from '../rate-limit';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../../core/safe-url';
 import {
   agentHealth,
@@ -109,6 +114,17 @@ import {
  */
 const HEALTH_TTL_MS = 60_000;
 const healthCache = new Map<string, { value: AgentHealth; at: number }>();
+
+/**
+ * S1.2 — the outer wall on the two inbound-turn routes: 60 requests per
+ * client IP per minute. Loose on purpose. It is not the spend limit (the
+ * per-subscriber budget is, see `turnBudgetExceeded`); it exists so one
+ * machine cannot hold the route open with junk that never authenticates,
+ * and it has to sit above anything a real office behind one NAT could
+ * legitimately produce — a chat widget's human sends a turn every few
+ * seconds at most, so 60/min leaves plenty of room for several people.
+ */
+const AGENT_INBOUND_PER_IP_PER_MIN = 60;
 
 function cacheHealth(key: string, value: AgentHealth): void {
   const now = Date.now();
@@ -575,6 +591,47 @@ export async function authenticateSender(
   }
   await authenticate(req, reply);
   return Boolean(req.tenant) && !reply.sent;
+}
+
+/**
+ * S1.2 — the per-customer half of the inbound-turn brake (the per-IP half is
+ * the `ipRateLimit('agent-msg')` preHandler on the routes themselves).
+ *
+ * Called AFTER the sender is authenticated — the budget belongs to a real
+ * (tenant, subscriber) pair, so a stranger can never spend someone else's —
+ * and BEFORE anything is written or enqueued. Counting before the write is
+ * deliberate: refusing after the user row exists would leave a question in
+ * the transcript that no brain job will ever answer, and the client's own
+ * messageId dedupe would then make a retry a no-op forever.
+ *
+ * SCOPED TO THE WIDGET'S CREDENTIAL. The thing this bounds is an END USER
+ * holding a bearer token in a browser: that token is the one credential here
+ * an attacker can actually come by, and the only one whose holder is not the
+ * party paying the model bill. An api-key caller IS the tenant — it is its
+ * own spend, it already has the per-agent daily token budget (Phase 22 G2)
+ * and the operator's own `subscriber_rate` knob (A8) above it, and walling it
+ * at twenty turns a minute would break the legitimate server-side use of this
+ * route (bulk imports, replays, load tests) to stop nothing. Both credentials
+ * still pass the per-IP wall on the route.
+ *
+ * Returns true when the caller is over budget and a 429 has been sent.
+ */
+async function turnBudgetExceeded(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  subscriberId: string,
+): Promise<boolean> {
+  const token = req.headers['x-subscriber-token'];
+  if (typeof token !== 'string' || token.length === 0) return false;
+
+  const { count, retryAfterSeconds } = await countSubscriberTurn(req.tenant.id, subscriberId);
+  if (count <= SUBSCRIBER_TURNS_PER_MIN) return false;
+  await reply
+    .code(429)
+    .header('Retry-After', String(retryAfterSeconds))
+    // The widget renders `error` verbatim; retryAfterSeconds lets it say when.
+    .send({ error: 'rate limited', retryAfterSeconds });
+  return true;
 }
 
 /**
@@ -1680,6 +1737,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { identifier: string } }>(
     '/v1/agents/:identifier/messages',
+    // S1.2: this route authenticates INSIDE the handler (it accepts the
+    // widget's subscriber token as well as an api key), so it cannot use the
+    // preHandler `authenticate` + `tenantRateLimit` pair its authed siblings
+    // do — and every accepted turn enqueues a paid brain job. The per-IP
+    // brake is the cheap outer wall (one machine, any identity); the
+    // per-subscriber budget inside the handler is the one that bounds spend.
+    { preHandler: [ipRateLimit('agent-msg', AGENT_INBOUND_PER_IP_PER_MIN)] },
     async (req, reply) => {
       const parsed = InboundMessageSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1692,6 +1756,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       if (agent.status !== 'active') {
         return reply.code(409).send({ error: 'agent is disabled' });
       }
+      if (await turnBudgetExceeded(req, reply, parsed.data.subscriberId)) return;
 
       const subscriber = await upsertSubscriber(req.tenant.id, {
         subscriberId: parsed.data.subscriberId,
@@ -1740,6 +1805,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
   /** A button click — same pipeline as a message, structured as an action. */
   app.post<{ Params: { identifier: string } }>(
     '/v1/agents/:identifier/actions',
+    // Same brakes as /messages, and for the same reason: a button click is
+    // the same accepted turn and the same paid brain job, reached through a
+    // different door. Limiting only /messages would leave the brake one
+    // `curl` away from being bypassed. Both routes share ONE per-subscriber
+    // budget — the thing being bounded is turns, not endpoints.
+    { preHandler: [ipRateLimit('agent-msg', AGENT_INBOUND_PER_IP_PER_MIN)] },
     async (req, reply) => {
       const parsed = InboundActionSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1752,6 +1823,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       if (agent.status !== 'active') {
         return reply.code(409).send({ error: 'agent is disabled' });
       }
+      if (await turnBudgetExceeded(req, reply, parsed.data.subscriberId)) return;
 
       const subscriber = await upsertSubscriber(req.tenant.id, {
         subscriberId: parsed.data.subscriberId,

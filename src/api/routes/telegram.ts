@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { authenticate } from '../auth';
 import { getPublicUrl } from '../../config/public-url';
@@ -48,6 +48,13 @@ export interface TelegramCredentials {
 
 export function credentials(connection: AgentConnection): TelegramCredentials {
   return JSON.parse(openSecret(connection.credentials)) as TelegramCredentials;
+}
+
+/** Constant-time secret comparison; length is checked first (timingSafeEqual throws on a mismatch). */
+function secretsMatch(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
 export async function webhookUrl(connectionId: string): Promise<string> {
@@ -286,8 +293,11 @@ export function registerTelegramRoutes(app: FastifyInstance) {
       const connection = await getConnectionById(req.params.connectionId);
       if (!connection) return reply.code(404).send({ error: 'unknown connection' });
 
+      // A repeated header arrives as string[]; anything but a single string is
+      // simply not a valid secret, and the compare is constant-time so a
+      // guesser learns nothing from how long the rejection took.
       const secret = req.headers['x-telegram-bot-api-secret-token'];
-      if (secret !== credentials(connection).webhookSecret) {
+      if (typeof secret !== 'string' || !secretsMatch(secret, credentials(connection).webhookSecret)) {
         return reply.code(401).send({ error: 'bad secret token' });
       }
 

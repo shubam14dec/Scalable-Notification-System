@@ -5,6 +5,7 @@ import { integrationsForChannel } from '../../db/integrations.repo';
 import { addSuppression, getMessage } from '../../db/repositories';
 import { logger } from '../../shared/logger';
 import { getQueue, QUEUE } from '../../shared/queues';
+import { statusJobId } from './webhooks';
 
 /** Constant-time compare of two ASCII strings (unequal lengths -> false). */
 function safeEqual(a: string, b: string): boolean {
@@ -119,14 +120,25 @@ export function registerSmsWebhookRoutes(app: FastifyInstance) {
       // shared status processor applies the state flip (and suppression, for
       // hard failures) off the request path. provider carries the message
       // row's instance id, matching how updateMessageByProviderId is keyed.
+      //
+      // S1.2: tenantId comes from the MESSAGE ROW this callback named (the
+      // route already resolved and signature-checked it), so the processor's
+      // update is tenant-scoped like the generic webhook's. The jobId keys on
+      // the RAW MessageStatus rather than our mapped one, so `failed` and
+      // `undelivered` — two distinct facts Twilio reports — stay two jobs
+      // while a redelivery of either collapses into one.
       await getQueue(QUEUE.STATUS).add(
         'status',
         {
           provider: message.provider ?? 'twilio',
+          tenantId: message.tenant_id,
           providerMessageId: params.MessageSid,
           status: mapped,
         },
-        { attempts: 5 },
+        {
+          attempts: 5,
+          jobId: statusJobId(message.tenant_id, params.MessageSid, params.MessageStatus),
+        },
       );
       return reply.code(204).send();
     },
