@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, resetPassword } from '../lib/api';
-import { Button, Field, Input } from '../ui';
+import { Button, Field, PasswordInput } from '../ui';
 import { AuthFrame, ForgotPasswordForm } from './Login';
 
 /**
@@ -81,9 +81,8 @@ export default function ResetPasswordPage() {
     <AuthFrame title="Choose a new password">
       <form onSubmit={submit} className="space-y-4">
         <Field label="New password" hint="At least 8 characters">
-          <Input
+          <PasswordInput
             name="password"
-            type="password"
             minLength={8}
             required
             autoFocus
@@ -92,9 +91,8 @@ export default function ResetPasswordPage() {
           />
         </Field>
         <Field label="Confirm new password">
-          <Input
+          <PasswordInput
             name="confirm"
-            type="password"
             minLength={8}
             required
             autoComplete="new-password"

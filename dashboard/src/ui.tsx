@@ -9,7 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Copy, Loader2 } from 'lucide-react';
+import { Check, ChevronDown, Copy, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
 /* Monochrome component kit. Rule 1: no colored buttons, ever.
@@ -42,6 +42,38 @@ export function Input({
       className={`h-8 w-full rounded-md border border-bd bg-transparent px-2.5 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong ${className}`}
       {...props}
     />
+  );
+}
+
+/**
+ * An account-password field with a show/hide toggle. For ACCOUNT passwords
+ * only (login, signup, reset, the change-password card) — pasted API keys and
+ * webhook secrets keep the plain masked Input, where revealing is a different
+ * decision (SecretReveal covers the agent case). The toggle is type="button"
+ * so it can never submit the form it sits in, and the eye rides INSIDE the
+ * input's box (pr-9 keeps typed text clear of it).
+ */
+export function PasswordInput({
+  className = '',
+  ...props
+}: Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div className="relative">
+      <Input {...props} type={shown ? 'text' : 'password'} className={`pr-9 ${className}`} />
+      <button
+        type="button"
+        aria-label={shown ? 'Hide password' : 'Show password'}
+        onClick={() => setShown((s) => !s)}
+        className="absolute inset-y-0 right-0 flex items-center px-2.5 text-t3 transition-colors hover:text-t1"
+      >
+        {shown ? (
+          <EyeOff className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+        ) : (
+          <Eye className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+        )}
+      </button>
+    </div>
   );
 }
 

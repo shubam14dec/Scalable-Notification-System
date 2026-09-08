@@ -11,6 +11,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  PasswordInput,
   Skeleton,
   td,
   th,
@@ -93,9 +94,8 @@ function PasswordCard() {
       <form key={hasPassword ? 'change' : 'set'} onSubmit={submit} className="space-y-4">
         {hasPassword && (
           <Field label="Current password">
-            <Input
+            <PasswordInput
               name="currentPassword"
-              type="password"
               required
               autoComplete="current-password"
               placeholder="••••••••"
@@ -110,9 +110,8 @@ function PasswordCard() {
           </Field>
         )}
         <Field label="New password" hint="At least 8 characters">
-          <Input
+          <PasswordInput
             name="newPassword"
-            type="password"
             minLength={8}
             required
             autoComplete="new-password"
@@ -120,9 +119,8 @@ function PasswordCard() {
           />
         </Field>
         <Field label="Confirm new password">
-          <Input
+          <PasswordInput
             name="confirm"
-            type="password"
             minLength={8}
             required
             autoComplete="new-password"
