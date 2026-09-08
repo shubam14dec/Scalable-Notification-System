@@ -6,7 +6,23 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### Phase S1 — Security hardening (IN PROGRESS, approved 2026-09-08)
+### Phase S1 — Security hardening — SHIPPED 2026-09-09 (review)
+LIVE on app.asyncify.org via PR #24 (13 commits, CI green = the Linux
+lockfile proof, deploy workflow green, full non-root rebuild). Proof
+pass: headers/CSP/HSTS live, anon /ops 401, operator token 200-with/
+401-without (used from the box, never seen), api/worker/ws uid 1000,
+9/9 up; HIS live checks: prod Google login, reset email via Resend to
+his real inbox, send test. Review: the audit->slices->batch-ship shape
+worked - three parallel Opus sweeps found the real holes (the global
+public-url write being the worst), every slice carried his local E2E
+before the one promote, and the two-miss revision gate never fired
+this phase. Keepers: requireOperator tier, ipRateLimit factory,
+per-tenant KDF pattern (webhook + nst_), enumeration-flat responses,
+the structural lock validator, SMTP_TENANT_FALLBACK (operator identity
+never reachable through tenant-shaped doors). Post-ship rider: change-
+password card forgot-hint (local, rides next promote). Open: S1.7
+rotation+retention (his call), nodemailer 10 slice, caddy nonroot
+slice, One Tap.
 His call after closing U1: "nobody should be able to steal or do some
 other malicious activity." Plan approved 2026-09-08 after the audit.
 - [x] S1.0 audit — three parallel Opus sweeps (auth surface / inbound
@@ -116,7 +132,7 @@ other malicious activity." Plan approved 2026-09-08 after the audit.
       his call at ship). Both doors stay open after either path;
       tokens + emails sha256'd in redis keys; send fired unawaited
       (timing-flat); Password card on /keys reads the warm ['me']
-      cache. 21 tests. Awaiting his E2E.
+      cache. 21 tests. His 4-check E2E passed 2026-09-09.
 - [ ] S1.7 (his call at close-out) — refresh-token rotation+revocation;
       Postgres retention purge (messages/exec logs).
 
