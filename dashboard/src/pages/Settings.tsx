@@ -63,7 +63,7 @@ function OrganizationCard() {
   };
 
   return (
-    <Card className="max-w-md p-5">
+    <Card className="w-full max-w-md p-5">
       <h2 className="text-[15px] font-semibold text-t1">Organization</h2>
       <p className="mb-4 mt-1 text-[12px] leading-relaxed text-t3">
         The name shown beside each environment in the sidebar. Renaming it changes nothing else —
@@ -147,7 +147,7 @@ function PasswordCard() {
   };
 
   return (
-    <Card className="max-w-md p-5">
+    <Card className="w-full max-w-md p-5">
       <h2 className="text-[15px] font-semibold text-t1">
         {hasPassword ? 'Password' : 'Set a password'}
       </h2>
@@ -207,7 +207,10 @@ export default function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" />
-      <div className="space-y-10">
+      {/* Side by side where the viewport allows (his call), stacked on
+          narrow windows; items-start keeps the shorter card from being
+          stretched to the taller one's height. */}
+      <div className="flex flex-wrap items-start gap-6">
         <OrganizationCard />
         <PasswordCard />
       </div>
