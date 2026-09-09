@@ -163,6 +163,15 @@ export interface Me {
    * not carry it; only /auth/me does.
    */
   hasPassword?: boolean;
+  /**
+   * B1 — whether this account holds the human operator seat (its address is in
+   * the deployment's OPERATOR_EMAILS). It decides ONE thing here: whether the
+   * Requests nav item and page render. It is not a permission — every operator
+   * route re-checks server-side, so flipping this in a console buys a 403.
+   *
+   * Optional for the same reason as `hasPassword`: only /auth/me carries it.
+   */
+  operator?: boolean;
 }
 
 export const fetchMe = () => api<Me>('/auth/me');
@@ -184,9 +193,19 @@ export async function login(email: string, password: string) {
   );
 }
 
+export interface AuthMethods {
+  google: boolean;
+  /**
+   * B1 — 'open' is self-serve signup; 'invite' replaces the signup card with a
+   * request-access form everywhere except a URL that already carries a code.
+   */
+  signupMode: 'open' | 'invite';
+}
+
 /** Which sign-in doors this deployment offers. Cheap and public — the login
- *  page asks once so the Google button only appears where it works. */
-export const fetchAuthMethods = () => api<{ google: boolean }>('/auth/methods');
+ *  page asks once so the Google button only appears where it works, and so it
+ *  knows whether new people sign up or ask. */
+export const fetchAuthMethods = () => api<AuthMethods>('/auth/methods');
 
 /**
  * Trade the one-time code the Google callback put in our URL for a real
@@ -203,6 +222,12 @@ export async function signup(input: {
   email: string;
   password: string;
   organizationName: string;
+  /**
+   * B1 — the code out of an invite email. Required by the server only when the
+   * deployment runs SIGNUP_MODE=invite; sent as undefined otherwise, where it
+   * is ignored entirely.
+   */
+  inviteCode?: string;
 }) {
   const res = await api<{
     accessToken: string;
@@ -251,6 +276,41 @@ export const requestPasswordReset = (email: string) =>
 /** Spend a reset token. Mints no session: the user logs in with the new one. */
 export const resetPassword = (token: string, newPassword: string) =>
   api<{ ok: true }>('/auth/reset', { method: 'POST', body: { token, newPassword } });
+
+/* ---------- B1: the beta gate ---------- */
+
+/**
+ * Ask to be let in. ALWAYS resolves for a well-formed body — the server answers
+ * the same 200 whether this is a first ask, a repeat, an address that was
+ * already declined, or one that already has an account, and the UI must say the
+ * same thing to all four or it becomes the enumeration oracle the endpoint
+ * refuses to be.
+ */
+export const requestAccess = (input: { name: string; email: string; useCase: string }) =>
+  api<{ ok: true }>('/auth/request-access', { method: 'POST', body: input });
+
+export interface AccessRequestRow {
+  id: string;
+  name: string;
+  email: string;
+  useCase: string;
+  status: 'pending' | 'approved' | 'declined';
+  createdAt: string;
+  decidedAt: string | null;
+  inviteExpiresAt: string | null;
+  consumedAt: string | null;
+}
+
+/** Operator-only (OPERATOR_EMAILS); anyone else gets a 403 from all three. */
+export const listAccessRequests = (status: 'pending' | 'approved' | 'declined') =>
+  api<{ requests: AccessRequestRow[] }>(`/v1/ops/access-requests?status=${status}`);
+
+/** Also the RESEND path: approving an already-approved row re-mints its code. */
+export const approveAccessRequest = (id: string) =>
+  api<{ request: AccessRequestRow }>(`/v1/ops/access-requests/${id}/approve`, { method: 'POST' });
+
+export const declineAccessRequest = (id: string) =>
+  api<{ request: AccessRequestRow }>(`/v1/ops/access-requests/${id}/decline`, { method: 'POST' });
 
 export function logout() {
   session.clear();

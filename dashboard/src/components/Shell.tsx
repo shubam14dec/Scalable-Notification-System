@@ -18,14 +18,25 @@ import {
   ShieldCheck,
   Sun,
   Tag,
+  UserPlus,
   Users,
   Workflow,
+  type LucideIcon,
 } from 'lucide-react';
 import { api, fetchMe, logout, session, subscribeToEnv } from '../lib/api';
 import { Select } from '../ui';
 import { useAdminEvents } from '../lib/adminEvents';
 
-const NAV = [
+interface NavItem {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  end?: boolean;
+  /** B1: rendered only for the human operator seat (me.operator). */
+  operatorOnly?: boolean;
+}
+
+const NAV: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
   { to: '/activity', label: 'Activity', icon: Activity },
   { to: '/workflows', label: 'Workflows', icon: Workflow },
@@ -40,6 +51,7 @@ const NAV = [
   { to: '/integrations', label: 'Integrations', icon: Blocks },
   { to: '/inbox-preview', label: 'Inbox preview', icon: Bell },
   { to: '/keys', label: 'API keys', icon: KeyRound },
+  { to: '/requests', label: 'Requests', icon: UserPlus, operatorOnly: true },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -212,7 +224,7 @@ export default function Shell() {
         </div>
 
         <nav className="flex-1 space-y-0.5 px-2">
-          {NAV.map(({ to, label, icon: Icon, end }) => (
+          {NAV.filter((item) => !item.operatorOnly || me?.operator).map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}

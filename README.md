@@ -398,6 +398,19 @@ Google-only account can set its first without a current password), and
 minutes — `/auth/forgot` always answers `200`, so it never reveals whether an
 address is registered.
 
+**Invite-gated beta.** A deployment can close its front door with
+`SIGNUP_MODE=invite`: signup then demands a single-use invite code that was
+issued to the exact address being registered (every failure — missing, junk,
+expired, spent, or somebody else's — returns the same `403`), the Google door
+stops *creating* accounts while still letting every existing user in, and the
+sign-up card becomes a request form (`POST /auth/request-access`, which always
+answers `200` so it cannot be used to probe for registered addresses). The
+people listed in `OPERATOR_EMAILS` get the request by email and work it on the
+dashboard's **Requests** page; approving mails a `/login?invite=<code>` link
+that lives 7 days, stored only as its sha256. Launching is one variable —
+`SIGNUP_MODE=open` — and nothing else changes. Details:
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#beta-gate--launch-switch-b1).
+
 Setting up push + SMS delivery (Twilio, FCM, web/native device registration,
 segment limits, delivery receipts): **[docs/PUSH-SMS.md](docs/PUSH-SMS.md)**.
 

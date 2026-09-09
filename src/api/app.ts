@@ -33,6 +33,7 @@ import { registerSmsWebhookRoutes } from './routes/sms-webhooks';
 import { registerConnectionRoutes } from './routes/connections';
 import { registerHandoffRoutes } from './routes/handoff';
 import { registerSettingsRoutes } from './routes/settings';
+import { registerAccessRequestRoutes } from './routes/access-requests';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -146,6 +147,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   registerAuthRoutes(app);
   registerGoogleAuthRoutes(app);
+  registerAccessRequestRoutes(app);
   registerAccountRoutes(app);
   registerIntegrationRoutes(app);
   registerTopicRoutes(app);

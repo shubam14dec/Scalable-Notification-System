@@ -13,6 +13,10 @@ import {
   linkGoogleSub,
   type User,
 } from '../../db/accounts.repo';
+import {
+  consumeAccessRequest,
+  findLiveInviteForEmail,
+} from '../../db/access-requests.repo';
 import { defaultOrganizationName, provisionAccount } from '../../auth/provisioning';
 import { ipRateLimit } from '../rate-limit';
 import { sessionResponse } from './auth';
@@ -42,7 +46,7 @@ import { sessionResponse } from './auth';
  *                                    access+refresh pair /auth/login mints.
  *
  * Off by default: with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET unset every
- * route here 404s and /auth/methods reports `{ google: false }`, so the
+ * route here 404s and /auth/methods reports `google: false`, so the
  * dashboard hides the button. Nothing about this feature is required to boot.
  */
 
@@ -275,6 +279,18 @@ async function exchangeCode(code: string, verifier: string, redirectUri: string)
 // ----------------------------------------------------------- account model --
 
 /**
+ * What a Google sign-in resolved to. A union rather than `User | null` because
+ * B1 added a THIRD outcome that must not be rendered as a failure: "you are not
+ * in the beta yet" is not an error, it is a redirect to the request form.
+ */
+export type GoogleSignIn =
+  | { user: User }
+  /** The address belongs to a different Google account — we refuse to re-point it. */
+  | { refused: 'conflict' }
+  /** B1 invite mode: no live invite for this address, so nothing was created. */
+  | { refused: 'invite' };
+
+/**
  * Resolve a Google identity to one of our users, creating the account on first
  * sight. Three cases, in this order:
  *
@@ -293,19 +309,42 @@ async function exchangeCode(code: string, verifier: string, redirectUri: string)
  * The (c)->(b) fallback covers the race where two callbacks for the same new
  * address arrive at once: the losing insert returns null and the loser links
  * instead, so both requests end at one user.
+ *
+ * B1 gates case (c) ONLY. Cases (a) and (b) are people who already exist here —
+ * an invite gate that turned an existing customer away from a door they have
+ * always used would be a lockout, not a gate — so the beta never touches them.
  */
-export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<User | null> {
+export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<GoogleSignIn> {
   const bySub = await getUserByGoogleSub(identity.sub);
-  if (bySub) return bySub;
+  if (bySub) return { user: bySub };
 
   const byEmail = await getUserByEmail(identity.email);
   if (byEmail) {
     // Already carrying a DIFFERENT sub (two Google accounts, one address —
     // possible after a Workspace migration): linkGoogleSub returns null and we
     // refuse rather than silently re-point the account.
-    return byEmail.google_sub === identity.sub
-      ? byEmail
-      : await linkGoogleSub(byEmail.id, identity.sub);
+    if (byEmail.google_sub === identity.sub) return { user: byEmail };
+    const linked = await linkGoogleSub(byEmail.id, identity.sub);
+    return linked ? { user: linked } : { refused: 'conflict' };
+  }
+
+  /**
+   * B1 — the invite gate on the CREATE branch.
+   *
+   * A Google sign-in carries no invite code (nobody clicked a link out of our
+   * email to get here), so the thing being matched is the ADDRESS Google has
+   * vouched for — which is exactly as strong as the code path's check, because
+   * `email_verified` is already required above and the code path also insists
+   * the invite was issued to the address being registered.
+   *
+   * Consumed BEFORE creating, for the same reason and with the same trade as
+   * the password door: the atomic UPDATE is what makes one invite mean one
+   * account even when two tabs race.
+   */
+  if (env.signupMode === 'invite') {
+    const invite = await findLiveInviteForEmail(identity.email);
+    if (!invite) return { refused: 'invite' };
+    if (!(await consumeAccessRequest(invite.id))) return { refused: 'invite' };
   }
 
   const created = await createGoogleUser(
@@ -315,12 +354,14 @@ export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<
   );
   if (!created) {
     const raced = await getUserByEmail(identity.email);
-    if (!raced) return null;
-    return raced.google_sub === identity.sub ? raced : await linkGoogleSub(raced.id, identity.sub);
+    if (!raced) return { refused: 'conflict' };
+    if (raced.google_sub === identity.sub) return { user: raced };
+    const linked = await linkGoogleSub(raced.id, identity.sub);
+    return linked ? { user: linked } : { refused: 'conflict' };
   }
 
   await provisionAccount(created, defaultOrganizationName(created.name, created.email));
-  return created;
+  return { user: created };
 }
 
 // --------------------------------------------------------------- the routes --
@@ -331,11 +372,17 @@ export function registerGoogleAuthRoutes(app: FastifyInstance) {
    * the login page to decide whether to render the Google button — a build-time
    * flag would have meant one dashboard bundle per deployment, and a hidden
    * button that 404s is worse than no button.
+   *
+   * B1 puts `signupMode` here for the same reason and on the same trip: the
+   * login page has to know whether to offer "Create an account" or "Request
+   * access", and it already asks this question. Publishing the mode leaks
+   * nothing — anyone can discover it by trying to sign up, and a beta that
+   * hides the fact that it is a beta just wastes the applicant's time.
    */
   app.get(
     '/auth/methods',
     { preHandler: [ipRateLimit('auth-methods', GOOGLE_PER_MIN)] },
-    async () => ({ google: googleAuthEnabled() }),
+    async () => ({ google: googleAuthEnabled(), signupMode: env.signupMode }),
   );
 
   /** Step 1: mint state + PKCE, park them in a cookie, bounce to Google. */
@@ -422,8 +469,20 @@ export function registerGoogleAuthRoutes(app: FastifyInstance) {
         );
       }
 
-      const user = await findOrCreateGoogleUser(claims.identity);
-      if (!user) {
+      const resolved = await findOrCreateGoogleUser(claims.identity);
+
+      /**
+       * B1 — the beta bounce. Not an error page: this person did everything
+       * right, they are simply not on the list yet, so they get sent to the
+       * login page with `?gate=request`, which renders the request-access form
+       * with a line explaining why. Nothing was created for them.
+       */
+      if ('refused' in resolved && resolved.refused === 'invite') {
+        logger.info({ email: claims.identity.email }, 'google sign-in: no invite, bounced to request form');
+        return reply.redirect(`${env.google.postLoginOrigin}/login?gate=request`, 302);
+      }
+
+      if ('refused' in resolved) {
         logger.warn({ sub: claims.identity.sub }, 'google sign-in: could not resolve a user');
         return signInErrorPage(
           reply,
@@ -431,6 +490,7 @@ export function registerGoogleAuthRoutes(app: FastifyInstance) {
           'An account already exists for this email address. Log in with your password instead.',
         );
       }
+      const { user } = resolved;
 
       /**
        * THE ONE-TIME-CODE HOP. Two reasons the tokens are not simply put in

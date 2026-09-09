@@ -12,6 +12,37 @@ function float(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * B1 — how the front door behaves. `open` is self-serve signup exactly as it
+ * has always worked; `invite` puts an operator between a stranger and an
+ * account (POST /auth/request-access -> the Requests page -> an emailed code).
+ *
+ * Anything unrecognized reads as OPEN and says so loudly at boot. Failing the
+ * other way would be worse in both directions: a typo'd `SIGNUP_MODE=Invite`
+ * that silently locked every real customer out would look exactly like an
+ * outage, and a mode nobody chose is not a security posture. The warn is the
+ * thing that gets it fixed — console.warn rather than the pino logger because
+ * this file must stay importable by anything (the logger never reads config,
+ * but a config->logger edge is a cycle waiting to happen).
+ */
+function signupMode(): 'open' | 'invite' {
+  const raw = (process.env.SIGNUP_MODE ?? 'open').trim().toLowerCase();
+  if (raw === 'open' || raw === 'invite') return raw;
+  console.warn(
+    `[config] SIGNUP_MODE=${process.env.SIGNUP_MODE} is not 'open' or 'invite' — ` +
+      'reading it as open (self-serve signup is ON).',
+  );
+  return 'open';
+}
+
+/** A comma-separated env list, trimmed, lowercased, empties dropped. */
+function csvLower(name: string): string[] {
+  return (process.env[name] ?? '')
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part.length > 0);
+}
+
 export const env = {
   port: int('PORT', 3000),
 
@@ -124,6 +155,28 @@ export const env = {
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
     postLoginOrigin: (process.env.GOOGLE_POST_LOGIN_ORIGIN ?? '').replace(/\/$/, ''),
   },
+
+  /**
+   * B1 — THE BETA GATE.
+   *
+   * `signupMode` decides whether /auth/signup (and the CREATE branch of the
+   * Google door) is self-serve or needs an invite. Default 'open': a fresh
+   * clone and every existing deployment behave exactly as they did before this
+   * slice existed. Flipping it back to 'open' in production IS the launch.
+   *
+   * `operatorEmails` is the HUMAN operator seat — the addresses that may read
+   * the Requests page, approve/decline access requests, and receive the "someone
+   * asked for access" notification. It is NOT `opsAdminToken` above: that one is
+   * a machine credential on a header for global ops writes; this one names
+   * people who are already signed in with their own account. Default empty =
+   * nobody, so a deployment that never sets it simply has no operator plane
+   * rather than an implicitly privileged first user.
+   *
+   * Both are read at REQUEST time off this object (never re-snapshotted), which
+   * is what lets a test flip them the way S1.6's suite flips `google`.
+   */
+  signupMode: signupMode() as 'open' | 'invite',
+  operatorEmails: csvLower('OPERATOR_EMAILS'),
 
   // Dashboard/user auth (JWT). Always override the secret in production.
   jwtSecret: process.env.JWT_SECRET ?? 'dev-jwt-secret-change-me',

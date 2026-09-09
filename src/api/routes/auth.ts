@@ -15,8 +15,15 @@ import {
   setUserPassword,
   type User,
 } from '../../db/accounts.repo';
+import {
+  consumeAccessRequest,
+  findLiveInvite,
+  getAccessRequestByEmail,
+  insertAccessRequest,
+  reopenDeclinedRequest,
+} from '../../db/access-requests.repo';
 import { provisionAccount } from '../../auth/provisioning';
-import { requireUser } from '../jwt-auth';
+import { isOperatorEmail, operatorEmails, requireUser } from '../jwt-auth';
 import { ipRateLimit } from '../rate-limit';
 
 /**
@@ -52,6 +59,14 @@ const FORGOT_PER_MIN = 3;
 const RESET_PER_MIN = 10;
 
 /**
+ * B1 adds one more, the same shape as `forgot` and for the same reason: one
+ * human asks to be let in once. Anything faster is a script, and every accepted
+ * call costs an outbound email to a REAL PERSON (the operator), who is the one
+ * this budget actually protects.
+ */
+const REQUEST_ACCESS_PER_MIN = 3;
+
+/**
  * The reset token's life. Long enough to walk to another device and find the
  * mail, short enough that a link sitting in an unattended inbox stops being a
  * key to the account by the time anyone wanders past.
@@ -85,11 +100,48 @@ const resetKey = (token: string) => `pwreset:${createHash('sha256').update(token
 const resetBudgetKey = (email: string) =>
   `pwreset-budget:${createHash('sha256').update(email.toLowerCase()).digest('hex')}`;
 
+/**
+ * B1 — the same per-mailbox idiom for access requests, and the mailbox it
+ * protects is the OPERATOR's: without it, one address could be walked through
+ * request -> decline -> request forever, and every lap costs the operator an
+ * email. Three asks per rolling hour is far more than any real applicant needs.
+ * The address is hashed for the same PII reason as above.
+ */
+const ACCESS_REQUESTS_PER_HOUR = 3;
+const ACCESS_REQUEST_WINDOW_S = 3600;
+const accessBudgetKey = (email: string) =>
+  `access-budget:${createHash('sha256').update(email.trim().toLowerCase()).digest('hex')}`;
+
 const SignupSchema = z.object({
   name: z.string().min(1).max(255),
   email: z.string().email().max(255),
   password: z.string().min(8).max(255),
   organizationName: z.string().min(1).max(255),
+});
+
+/**
+ * B1 — the invite code, validated SEPARATELY from the body above rather than as
+ * a fourth required field on it. The distinction is the whole point: a
+ * malformed body is a 400 that tells a developer what they got wrong, while
+ * anything at all to do with the invite — missing, junk, expired, spent, or
+ * issued to a different address — is the one identical 403 below. Folding it
+ * into SignupSchema would have made "no code" a 400 and every other failure a
+ * 403, which is a free oracle for whether a guessed code exists.
+ */
+const InviteCodeSchema = z.string().min(1).max(256);
+
+/**
+ * The ONLY answer any invite failure gets. Deliberately says nothing about
+ * WHICH failure it was: a stranger holding a random code learns nothing, and a
+ * real invitee who typed the wrong email gets a message that tells them what to
+ * do without confirming that a code they hold is otherwise valid.
+ */
+const INVITE_REQUIRED = 'a valid invite for this email is required';
+
+const RequestAccessSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  email: z.string().trim().email().max(320),
+  useCase: z.string().trim().min(1).max(500),
 });
 
 /** Mirrors signup's password rule — one strength policy, set in one place. */
@@ -144,8 +196,9 @@ export async function sessionResponse(app: FastifyInstance, user: User) {
 }
 
 /**
- * Where the reset link points. The page is a DASHBOARD route, so this is the
- * SPA's origin, not the API's.
+ * Where a link we EMAIL points — reset links (S1.7a), invite links and the
+ * operator's "open the Requests page" pointer (B1). The pages are DASHBOARD
+ * routes, so this is the SPA's origin, not the API's.
  *
  * In production those are the same host (the SPA and the API sit behind one
  * Caddy), so the runtime public URL is exactly right — and a domain move needs
@@ -158,7 +211,7 @@ export async function sessionResponse(app: FastifyInstance, user: User) {
  * for the same reason: dev's real SPA origin is a fixed local port, and the
  * rotating tunnel URL is never it.
  */
-async function resetLinkOrigin(): Promise<string> {
+export async function dashboardOrigin(): Promise<string> {
   return process.env.NODE_ENV === 'production' ? await getPublicUrl() : 'http://localhost:5173';
 }
 
@@ -197,7 +250,7 @@ async function issueResetLink(userId: string, email: string): Promise<void> {
 
   const token = randomBytes(32).toString('hex');
   await redis.set(resetKey(token), userId, 'EX', RESET_TTL_S);
-  const link = `${await resetLinkOrigin()}/reset-password?token=${token}`;
+  const link = `${await dashboardOrigin()}/reset-password?token=${token}`;
 
   // NOT awaited. See the note in the route: the send is the one step whose cost
   // is unbounded and variable, and awaiting it here would make "this address is
@@ -211,6 +264,40 @@ async function issueResetLink(userId: string, email: string): Promise<void> {
   });
 }
 
+/**
+ * B1 — tell every human operator that someone is knocking.
+ *
+ * One email per address in OPERATOR_EMAILS, each fired WITHOUT being awaited,
+ * for the same reason /auth/forgot does it: the send is the one unbounded,
+ * network-shaped step in the request, and the applicant's 200 must not wait on
+ * it — nor vary with how many operators there are, nor with whether their mail
+ * relay is having a bad afternoon.
+ *
+ * With no operator configured this sends nothing at all, quietly and by design:
+ * the request is still recorded, and it is waiting on the Requests page for
+ * whoever eventually gets the seat.
+ */
+function notifyOperators(name: string, email: string, useCase: string, origin: string): void {
+  const text = [
+    `${name} asked for access to asyncify.`,
+    '',
+    `Email:    ${email}`,
+    `Use case: ${useCase}`,
+    '',
+    `Approve or decline it on the Requests page: ${origin}/requests`,
+  ].join('\n');
+
+  for (const operator of operatorEmails()) {
+    void sendPlatformEmail({
+      to: operator,
+      subject: `Access request from ${name}`,
+      text,
+    }).catch((err: Error) => {
+      logger.warn({ err: err.message }, 'access request: operator notification threw');
+    });
+  }
+}
+
 export function registerAuthRoutes(app: FastifyInstance) {
   const tokens = (userId: string) => mintSessionTokens(app, userId);
 
@@ -218,6 +305,11 @@ export function registerAuthRoutes(app: FastifyInstance) {
    * Self-serve onboarding: one call creates the user, their organization,
    * Development + Production environments, and one API key per environment.
    * The plaintext keys appear in THIS response only — they are stored hashed.
+   *
+   * B1: with SIGNUP_MODE=invite this door additionally demands a live invite
+   * code issued to THIS address (see the block below). In the default open mode
+   * the behavior is byte-identical to what it has always been, and an
+   * `inviteCode` sent anyway is simply not read — SignupSchema strips it.
    */
   app.post('/auth/signup', { preHandler: [ipRateLimit('signup', SIGNUP_PER_MIN)] }, async (req, reply) => {
     const parsed = SignupSchema.safeParse(req.body);
@@ -225,6 +317,33 @@ export function registerAuthRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
     }
     const body = parsed.data;
+
+    if (env.signupMode === 'invite') {
+      const code = InviteCodeSchema.safeParse((req.body as { inviteCode?: unknown })?.inviteCode);
+      const invite = code.success ? await findLiveInvite(code.data) : null;
+
+      // The address the invite was ISSUED to must be the address being
+      // registered. Without this the gate would be a bearer token for the whole
+      // beta: one approved invitee could hand their link to anyone, and the
+      // operator's decision would name a person who never signs up.
+      if (!invite || invite.email !== body.email.trim().toLowerCase()) {
+        return reply.code(403).send({ error: INVITE_REQUIRED });
+      }
+
+      // Spend it BEFORE creating anything. Two browsers on one code both reach
+      // this line; the conditional UPDATE inside picks exactly one winner, and
+      // the loser is refused with the same 403 as an invented code.
+      //
+      // The cost of this order is that a code is burned if the user insert then
+      // fails (a duplicate email, a database blip). That is the deliberate
+      // trade: a burned invite is one click for an operator to re-approve
+      // (which re-mints and re-sends), while the other order — create, then
+      // consume — would let a lost race create a SECOND account off one invite,
+      // which is the exact thing this gate exists to prevent.
+      if (!(await consumeAccessRequest(invite.id))) {
+        return reply.code(403).send({ error: INVITE_REQUIRED });
+      }
+    }
 
     const user = await createUser(body.email, body.name, await hashPassword(body.password));
     if (!user) {
@@ -295,6 +414,14 @@ export function registerAuthRoutes(app: FastifyInstance) {
        * about a password should ever leave the server.
        */
       hasPassword: user.password_hash !== null,
+      /**
+       * B1. Whether this account holds the human operator seat — the same check
+       * `requireOperatorUser` enforces, exposed so the dashboard knows whether
+       * to render the Requests nav item at all. It is a CONVENIENCE, never the
+       * gate: every operator route runs the check again server-side, so a
+       * forged `true` in a browser buys a 403 and nothing else.
+       */
+      operator: isOperatorEmail(user.email),
     };
   });
 
@@ -424,6 +551,89 @@ export function registerAuthRoutes(app: FastifyInstance) {
       await setUserPassword(user.id, await hashPassword(parsed.data.newPassword));
       logger.info({ userId: user.id }, 'password reset completed');
       return { ok: true };
+    },
+  );
+
+  /* ------------------------------------------------------------------ *
+   * B1 — ASK TO BE LET IN.
+   * ------------------------------------------------------------------ */
+
+  /**
+   * The public door of the beta gate. Registered UNCONDITIONALLY, in both
+   * signup modes: an operator who flips SIGNUP_MODE back and forth must not
+   * find that requests sent during the switch vanished, and a 404 that appears
+   * only in invite mode would advertise the deployment's posture to anyone who
+   * probed for it.
+   *
+   * ALWAYS the identical 200 {ok:true} for a valid body — for exactly the
+   * reasons /auth/forgot does it. Every branch below (first ask, repeat ask,
+   * already approved, already declined, already a customer) is a different
+   * amount of work and a different set of side effects, and NONE of them may be
+   * visible from out here: "this address already has an account" and "this
+   * address was declined" are both facts a stranger could otherwise harvest an
+   * address list with. A malformed body still gets a 400 — that is a developer
+   * integrating, not an oracle.
+   */
+  app.post(
+    '/auth/request-access',
+    { preHandler: [ipRateLimit('request-access', REQUEST_ACCESS_PER_MIN)] },
+    async (req, reply) => {
+      const parsed = RequestAccessSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'invalid body', details: parsed.error.issues });
+      }
+      const { name, useCase } = parsed.data;
+      const email = parsed.data.email.toLowerCase();
+
+      // The per-mailbox budget is spent by EVERY valid request, before any
+      // branching — including the ones that turn out to be no-ops. Uniform on
+      // purpose: a budget that only counted the requests which "did something"
+      // would make the response time (and the eventual lockout) depend on
+      // exactly the hidden state the identical 200 exists to conceal.
+      const budgetKey = accessBudgetKey(email);
+      const used = await redis.incr(budgetKey);
+      if (used === 1) await redis.expire(budgetKey, ACCESS_REQUEST_WINDOW_S);
+      if (used > ACCESS_REQUESTS_PER_HOUR) {
+        logger.warn(
+          { perHour: ACCESS_REQUESTS_PER_HOUR },
+          'access request: per-address hourly budget exhausted, ignoring',
+        );
+        return reply.send({ ok: true });
+      }
+
+      // Already a customer: nothing to request, and nothing to say about it.
+      // (Their door is /auth/login, which they can find on their own; telling
+      // them here would confirm the address is registered.)
+      if (await getUserByEmail(email)) {
+        return reply.send({ ok: true });
+      }
+
+      const existing = await getAccessRequestByEmail(email);
+
+      if (!existing) {
+        // First ask. A null return means another request inserted the same
+        // address a millisecond ago — the no-op is correct, and the operator
+        // gets one email rather than two.
+        if (await insertAccessRequest(email, name, useCase)) {
+          notifyOperators(name, email, useCase, await dashboardOrigin());
+        }
+        return reply.send({ ok: true });
+      }
+
+      if (existing.status === 'declined') {
+        // A declined address may ask again — people's circumstances change, and
+        // a decline is not a ban. It goes back to pending with the new words
+        // they wrote, and the operator hears about it once.
+        if (await reopenDeclinedRequest(email, name, useCase)) {
+          notifyOperators(name, email, useCase, await dashboardOrigin());
+        }
+        return reply.send({ ok: true });
+      }
+
+      // pending or approved: it is already on the operator's list (or already
+      // in their inbox as an invite). Re-notifying would turn an impatient
+      // applicant refreshing a form into a way to bury the operator.
+      return reply.send({ ok: true });
     },
   );
 }
