@@ -6,6 +6,26 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### B1 — Invite-gated beta access (IN FLIGHT, plan approved 2026-09-10)
+SIGNUP_MODE open|invite (env, prod=invite; open = today, byte-
+identical) + OPERATOR_EMAILS human operator seat (dev
+shubam@xmobility.ai, prod shubamp981@gmail.com). access_requests table
+(email unique, code sha256, 7d expiry, atomic consume, Postgres).
+POST /auth/request-access (always-200, IP+email budgets, notifies
+operators via platform email); operator-gated /v1/ops/access-requests
+list/approve/decline/resend (route-level gate, sidebar courtesy);
+signup requires code + EMAIL MATCH in invite mode; GOOGLE new-user
+door gated too (no approval = bounce, no account); Requests page;
+login page request-access + invite-prefilled signup. Launch reversal =
+one env flip. Not in v1: decline emails, CAPTCHA, waitlist metrics.
+- [x] B1.1 implementation DONE 2026-09-10 (Opus, reviewed): repo in
+      its own access-requests.repo.ts (conditional UPDATE..RETURNING
+      everywhere), requireOperatorUser distinct from the machine gate,
+      google door returns a refused-union (302 gate=request, nothing
+      created), budget spent by every valid body (state-leak-proof),
+      race test = one 201 one 403 one org. 40 tests; suite 1322 green.
+- [ ] B1.2 his local E2E -> promote -> prod env lines -> his live E2E
+
 ### U2 — Settings page — SHIPPED 2026-09-09 (his E2E passed; cards side-by-side rider included)
 New sidebar item below API keys: Organization card (rename, owner/
 admin-gated PATCH /v1/account/organization) + the S1.7a Password card

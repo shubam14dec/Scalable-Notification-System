@@ -1,5 +1,11 @@
 # @asyncify-hq/react
 
+## 0.8.1
+
+### Patch Changes
+
+- 0ae60cb: Chat widget: tell the user when a send was rate limited instead of blaming their connection. A 429 from the agent message/action routes now surfaces as "too many messages — try again in Ns" (using the server's `retryAfterSeconds`) through the existing error line; other failures keep the connection wording.
+
 ## 0.8.0
 
 ### Minor Changes

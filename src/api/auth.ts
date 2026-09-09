@@ -92,6 +92,11 @@ function secretsMatch(a: string, b: string): boolean {
  * matching `OPS_ADMIN_TOKEN` — a tenant api key or a dashboard JWT is not
  * enough, no matter how privileged its holder is inside their own org.
  *
+ * NOT the same thing as B1's `requireOperatorUser` (src/api/jwt-auth.ts): this
+ * is a MACHINE credential on a header, that one is a signed-in HUMAN whose
+ * address is listed in OPERATOR_EMAILS. Neither substitutes for the other —
+ * see the table in that function's doc comment.
+ *
  * Outside production it falls through to ordinary tenant auth, so the
  * `asyncify dev` CLI keeps publishing tunnel URLs locally with nothing extra
  * configured. Both NODE_ENV and the token are read at REQUEST time (not from

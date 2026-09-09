@@ -23,6 +23,7 @@ import AgentDetailPage from './pages/AgentDetail';
 import ConnectionsPage from './pages/Connections';
 import ConversationsPage, { ConversationDetailPage } from './pages/Conversations';
 import ApprovalsPage from './pages/Approvals';
+import RequestsPage from './pages/Requests';
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   return session.authed ? children : <Navigate to="/login" replace />;
@@ -71,6 +72,10 @@ export default function App() {
           <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/keys" element={<ApiKeysPage />} />
+          {/* B1: operator-only in practice — the Shell hides the nav item
+              unless me.operator, and the routes behind it 403 for everyone
+              else, which the page renders as "not your page". */}
+          <Route path="/requests" element={<RequestsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/inbox-preview" element={<InboxPreviewPage />} />
         </Route>

@@ -200,6 +200,40 @@ that signs dashboard tokens and the process that verifies them.
 | `SMTP_USER` / `SMTP_PASS` | Resend dashboard | `resend` and a Resend **API key** (Resend's SMTP mode uses the API key as the password). |
 | `SMTP_FROM` | — | `notifications@asyncify.org` — must be on a domain verified in Resend, or every reset email is rejected at the relay. |
 | `SMTP_TENANT_FALLBACK` | — | **Must be `false` in production.** The SMTP block above is the PLATFORM's sending identity; without this flag, integration-less tenants fall back to it — with open signup, that is any stranger sending mail through our domain. Platform emails (resets) ignore the flag. |
+| `SIGNUP_MODE` | — | `invite` at launch (the beta gate, B1) or `open` for self-serve signup. Anything unrecognized reads as `open` with a warn at boot. **Flipping it to `open` is the launch switch** — see below. |
+| `OPERATOR_EMAILS` | — | Comma-separated list of the HUMAN operator seat: who may open the dashboard's **Requests** page, approve/decline access requests, and who is emailed when somebody asks. Matched case-insensitively against the signed-in account's address. Empty = nobody. **Not `OPS_ADMIN_TOKEN`** — that is a machine header for global ops writes; this names people with their own accounts. |
+
+### Beta gate / launch switch (B1)
+
+With `SIGNUP_MODE=invite` the front door is closed to strangers:
+
+- `POST /auth/signup` demands a live invite code that was issued to **the
+  address being registered**. Every failure — no code, junk code, expired,
+  already spent, issued to somebody else — is the same `403`, so a guessed code
+  learns nothing.
+- **Continue with Google** still lets every EXISTING account in (sub match, or
+  the email-link path onto a password account). Only the *create* branch is
+  gated: an unknown Google address with no invite is bounced to
+  `/login?gate=request`, which shows the request form. No user row is created.
+- The dashboard's sign-up card is replaced by a **request access** form
+  (`POST /auth/request-access` — 3/min per IP, 3/hour per address, and always
+  the same `200` regardless of what it found, so it cannot be used to test
+  whether an address is registered).
+- Everyone in `OPERATOR_EMAILS` is emailed when a request arrives and works the
+  queue on the dashboard's **Requests** page. Approving mints a single-use code,
+  stores only its sha256, and emails a `/login?invite=<code>` link that lives
+  **7 days**. Approving an already-approved row is the **resend** (it re-mints,
+  killing the previous code).
+
+**Launching = setting `SIGNUP_MODE=open` and restarting api.** Nothing else
+changes: existing accounts, invites already spent, and every other route behave
+identically, and the Requests page just stops receiving new rows (it stays
+visible to operators, showing the history). Going back to `invite` later is the
+same one-line move.
+
+`OPERATOR_EMAILS` empty is a working configuration, not a broken one: requests
+are still recorded, they are simply waiting for whoever is given the seat. But
+set it before flipping to invite, or the first applicant's email goes nowhere.
 
 **Google sign-in, one-time console setup** (skip entirely if you are not
 offering it): in [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)

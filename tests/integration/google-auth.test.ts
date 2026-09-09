@@ -184,7 +184,8 @@ describe('with no Google client configured', () => {
 
       const methods = await app.inject({ method: 'GET', url: '/auth/methods' });
       expect(methods.statusCode).toBe(200);
-      expect(json(methods)).toEqual({ google: false });
+      // B1 put the signup mode on this same trip; tests run in the default open.
+      expect(json(methods)).toEqual({ google: false, signupMode: 'open' });
     } finally {
       env.google.clientId = CLIENT_ID;
       env.google.clientSecret = CLIENT_SECRET;
@@ -204,7 +205,7 @@ describe('with no Google client configured', () => {
 describe('/auth/methods with Google configured', () => {
   test('reports the door as open', async () => {
     const res = await app.inject({ method: 'GET', url: '/auth/methods' });
-    expect(json(res)).toEqual({ google: true });
+    expect(json(res)).toEqual({ google: true, signupMode: 'open' });
   });
 });
 

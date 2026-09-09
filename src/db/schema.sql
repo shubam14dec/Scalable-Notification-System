@@ -1048,3 +1048,45 @@ create unique index if not exists users_google_sub_key on users (google_sub);
 -- hash as "no password set" -> a normal 401, never a 500 (src/auth/password.ts).
 -- Idempotent: re-running on an already-nullable column is a no-op.
 alter table users alter column password_hash drop not null;
+
+-- ---- Slice B1: INVITE-GATED BETA ACCESS ----
+-- One row per ADDRESS that has asked to be let in, and the whole lifecycle of
+-- that ask: pending -> approved (an invite code is minted and emailed) ->
+-- consumed (they signed up), or pending -> declined.
+--
+-- The email is UNIQUE and always stored lowercased, which is the design and not
+-- an optimization: the identity being gated is a mailbox, so one mailbox gets
+-- one row forever. That is what makes a repeat request an idempotent no-op
+-- instead of a way to spam the operator, and it is what the signup gate
+-- compares the new account's address against.
+--
+-- `status` is plain text with no CHECK, matching org_members.role: the legal
+-- values are pending | approved | declined and they are enforced in code
+-- (src/db/access-requests.repo.ts), where the transitions live.
+--
+-- `consumed_at` is the single-use latch, NOT a fourth status: an approved row
+-- keeps saying 'approved' after signup, and the timestamp says when the invite
+-- was actually spent. Consumption is an atomic conditional UPDATE (see the
+-- repo), which is what makes two browsers racing one invite code end at exactly
+-- one account.
+create table if not exists access_requests (
+  id                uuid primary key default gen_random_uuid(),
+  email             text not null unique,
+  name              text not null,
+  use_case          text not null,
+  status            text not null default 'pending', -- pending | approved | declined
+  -- sha256 of the emailed invite code. The raw code exists only in the email,
+  -- exactly like password-reset tokens and api keys: a dump of this table
+  -- yields nothing anyone can redeem.
+  invite_code_hash  text,
+  invite_expires_at timestamptz,
+  consumed_at       timestamptz,
+  created_at        timestamptz not null default now(),
+  decided_at        timestamptz
+);
+-- The Requests page reads one status at a time, newest first.
+create index if not exists access_requests_status_idx
+  on access_requests (status, created_at desc);
+-- Every invite-mode signup does one lookup by code digest.
+create index if not exists access_requests_invite_code_hash_idx
+  on access_requests (invite_code_hash);
