@@ -155,7 +155,7 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
           every ~7s, and a successful sign-in rings a ripple out of the
           clapper ball. */}
       <svg
-        className="auth-bell -translate-x-14"
+        className="auth-bell -translate-x-20"
         width="290"
         viewBox="-70 -50 140 180"
         fill="none"
@@ -197,7 +197,7 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
           same rhetoric. The serif ships as a static woff2 (public/fonts), so
           no dependency and no external origin. A <p>, not a heading: the
           page's one real heading is the form's title. */}
-      <p className="auth-headline mt-12 -translate-x-14 text-center">
+      <p className="auth-headline mt-12 -translate-x-20 text-center">
         {/* Exactly two lines, his call: the first segment must never wrap. */}
         <span className="whitespace-nowrap">Your product has something</span>
         <br />
