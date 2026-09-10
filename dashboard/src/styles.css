@@ -171,17 +171,8 @@ body {
   opacity: 0.4;
 }
 
-/* Idle: a barely-there sway about the thread pivot — hanging, not swinging.
-   Pivot (0,0) in user units = (70,80) from the viewBox's top-left corner. */
-.auth-bell-swing {
-  transform-box: view-box;
-  transform-origin: 70px 80px;
-  animation: auth-sway 7s ease-in-out infinite alternate;
-}
-@keyframes auth-sway {
-  from { transform: rotate(-1.6deg); }
-  to   { transform: rotate(1.6deg); }
-}
+/* The bell hangs STILL (his call — no idle sway). The group and its pivot
+   stay in place for the ring-out; motion here is only the glint and the ring. */
 
 /* The rim glint: the site's one green line at rest, surfacing every ~7s. */
 .ab-glint {
@@ -275,7 +266,6 @@ body {
 /* Motion is decoration here, all of it. The global rule above already crushes
    durations, but an infinite 0.01ms loop is not "off" — these say off. */
 @media (prefers-reduced-motion: reduce) {
-  .auth-bell-swing,
   .ab-glint,
   .ab-ring-out,
   .auth-ticker-line,
