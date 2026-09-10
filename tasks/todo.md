@@ -6,7 +6,22 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### U3 — Auth pages redesign (IN FLIGHT, approved 2026-09-11)
+### U3 — Auth pages redesign — DONE 2026-09-11 (his live-dialed E2E)
+Final state after ~25 of his dial-in rounds (all committed singly):
+ONE near-black canvas page-wide (theme-invariant), brand column left /
+card right floating in a centered 1200px frame with real edge margins;
+the site hero's BELL drawn path-for-path hanging still from a short
+thread (250px, glint every ~7s) with PROOF RECEIPTS falling out of its
+mouth one at a time (the bottom ticker died for it); headline in the
+site's exact recipe (Instrument Serif italic say., static woff2), line
+1 sets the left edge, to-say centers under it, three mark-led points
+flush on the same edge (site subline / struck noreply@ / workflows +
+timing craft + signup nudge); form card = Overview recipe with
+centered title+subtitle, Google-first, AuthFooter switch band;
+retired at his call: breathing mark, idle sway, pulse line, success
+ring. Zero functional change throughout; suite + CSP guard green.
+REMINDER: reference-platform naming scrubbed from comments/board/
+commit history mid-phase (ledger sharpened).
 His ask: the front door should say 'the developer really spent time'.
 Concept approved: split frame — brand panel LEFT (near-black site
 canvas, theme-invariant; site headline 'Your product has something to
