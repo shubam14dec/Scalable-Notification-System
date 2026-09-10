@@ -113,6 +113,20 @@ body {
     transform: translateY(0);
   }
 }
+/* Chrome autofill: picking a saved name/email repaints the field with the
+   browser's own colors, and against our transparent inputs that fight was
+   resolving to plain white (his report). Pin the state to Chrome's classic
+   light-blue instead — the inset-shadow trick is the only thing autofill's
+   internal !important styles respect — with dark ink so the value reads on
+   the blue in both themes. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #e8f0fe inset;
+  -webkit-text-fill-color: #171717;
+  caret-color: #171717;
+}
+
 /* Thin scrollbars that match the chrome */
 * {
   scrollbar-width: thin;
