@@ -144,7 +144,7 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
   // only sizes and arranges. CSS hides it below the breakpoint; `onScreen`
   // also stops paying for the ticker interval.
   return (
-    <div className="hidden w-full max-w-[480px] shrink flex-col items-center min-[900px]:flex">
+    <div className="hidden w-full max-w-[580px] shrink flex-col items-center min-[900px]:flex">
       {/* THE BELL — the site hero's own drawing, path for path (index.html
           scene 1): crown, deliberately asymmetric profiles, the sagging
           mouth, lip curls, yoke, the clapper whose ball is the delivered-dot
