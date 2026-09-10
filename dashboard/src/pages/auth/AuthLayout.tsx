@@ -138,6 +138,16 @@ function ProofTicker() {
  *
  * `ringing` fires the one-shot success ring; the caller navigates 400ms later.
  */
+/** One left-aligned point on the brand column: the mark as the bullet. */
+function BrandPoint({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3">
+      <RippleMark size={12} className="mt-[5px] shrink-0 text-[var(--auth-muted)]" />
+      <p className="auth-subline">{children}</p>
+    </div>
+  );
+}
+
 function BrandPanel({ ringing }: { ringing: boolean }) {
   const onScreen = useMediaQuery(PANEL_QUERY);
   // The page root carries .auth-canvas (the palette lives there); this column
@@ -207,13 +217,19 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
       {/* Two lines under the headline (his call): the site's own subline,
           then the artifact this product retires — noreply@ set in mono, the
           way you'd name a part being decommissioned. */}
-      <div className="mt-4 flex -translate-x-20 flex-col items-center text-center">
-        <p className="auth-subline">
+      {/* Three POINTS, left-aligned (his call) — each led by the mark in
+          hairline grey, the way the reference pages lead bullets with icons. */}
+      <div className="mt-6 flex w-full max-w-[460px] -translate-x-20 flex-col gap-3.5 text-left">
+        <BrandPoint>
           The delivery engine for every channel, and the agents that answer back.
-        </p>
-        <p className="auth-subnote mt-4">
+        </BrandPoint>
+        <BrandPoint>
           No more <span className="auth-noreply">noreply@</span> — every message can take an answer.
-        </p>
+        </BrandPoint>
+        <BrandPoint>
+          Delays, digest windows, skip-if-already-seen — the rest of the craft is
+          inside. Sign up and put it to work.
+        </BrandPoint>
       </div>
 
       <div className="mt-auto self-stretch px-12 pb-10">{onScreen && <ProofTicker />}</div>
