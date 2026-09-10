@@ -203,7 +203,10 @@ function BrandPanel() {
           same rhetoric. The serif ships as a static woff2 (public/fonts), so
           no dependency and no external origin. A <p>, not a heading: the
           page's one real heading is the form's title. */}
-      <p className="auth-headline mt-14 -translate-x-20 text-center">
+      {/* One left-aligned block (his call): the headline's left edge is the
+          ruler, and the three points sit flush under "Your". */}
+      <div className="mt-14 flex -translate-x-20 flex-col items-start">
+      <p className="auth-headline text-left">
         {/* Exactly two lines, his call: the first segment must never wrap. */}
         <span className="whitespace-nowrap">Your product has something</span>
         <br />
@@ -215,7 +218,7 @@ function BrandPanel() {
           way you'd name a part being decommissioned. */}
       {/* Three POINTS, left-aligned (his call) — each led by the mark in
           hairline grey, the way the reference pages lead bullets with icons. */}
-      <div className="mt-6 flex w-full max-w-[460px] -translate-x-20 flex-col gap-3.5 text-left">
+      <div className="mt-6 flex w-full max-w-[460px] flex-col gap-3.5 text-left">
         <BrandPoint>
           The delivery engine for every channel, and the agents that answer back.
         </BrandPoint>
@@ -226,6 +229,7 @@ function BrandPanel() {
           Workflows with delays, digest windows, skip-if-already-seen — and
           many more. Sign up and put it to work.
         </BrandPoint>
+      </div>
       </div>
 
     </div>
