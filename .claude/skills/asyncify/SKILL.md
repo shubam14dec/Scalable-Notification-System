@@ -138,6 +138,17 @@ When the user says **"start everything"** (all commands from the repo root
    Postmark server (2026-09-10: dev/prod email separated — NEVER paste
    a dev URL into the asyncify-prod server).
 
+**"Stop everything" kills WRAPPERS, not just port-holders** (learned
+2026-09-12: 32 orphans had piled up over days — each detached start
+spawns powershell -> npm -> cmd -> node --watch -> tsx, and killing
+only the port-holding tsx leaves a four-deep idle chain alive every
+cycle; the user spotted the ghost shells). After the port kills, sweep
+Win32_Process for CommandLine matching src/server.ts | 'npm run
+(api|worker|ws)' | the repo path | 'asyncify dev' | vite-under-this-
+repo, EXCLUDING anything matching his other projects (hrms etc.) and
+Claude's own host processes. Verify zero 'our node procs remaining'
+before reporting stopped.
+
 **"Stop everything"**: stop the four Node background tasks, then
 `docker compose stop` (never `down -v` — that deletes data volumes).
 The user Ctrl-C's his own `asyncify dev` terminal (channels go dark
