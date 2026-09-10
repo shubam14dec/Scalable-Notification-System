@@ -6,7 +6,7 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### U4 — Platform email templates (IN FLIGHT, approved 2026-09-11)
+### U4 — Platform email templates — DONE 2026-09-11 (his Mailpit + render E2E)
 One branded HTML shell for every platform-sent mail (multipart: html +
 the existing text kept): white canvas, wordmark + green delivered-dot
 (styled span - Gmail strips SVG), hairline card, mono for technical
@@ -16,6 +16,16 @@ notification (escaped! stranger-typed name/use-case lands in the
 operator inbox; + Review-in-Requests button), invite approved - and
 NEW: a welcome email on account creation (his add), both doors. His
 review surface = Mailpit.
+OUTCOME: THREE mails (reset / access-request notify / invite) in one
+shell; the welcome mail was BUILT then CUT at his call (both doors,
+tests and all); invite congratulates ('Congratulations - you're in.');
+the invite-nobody joke cut. Dark mode added honestly: light inline
+base + prefers-color-scheme block (dashboard dark palette via ae-*
+classes, !important) - Apple Mail/desktop honour it, Gmail force-
+inverts regardless and the base survives it. Escaping via own esc
+incl. quotes; hostile payloads tested escaped-and-visible; zero remote
+requests + single green occurrence pinned by tests. 93 tests green
+across five suites.
 
 ### U3 — Auth pages redesign — DONE 2026-09-11 (his live-dialed E2E)
 Final state after ~25 of his dial-in rounds (all committed singly):
