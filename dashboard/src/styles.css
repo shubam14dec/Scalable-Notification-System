@@ -219,7 +219,7 @@ body {
 /* The site's .subline, verbatim recipe: 16px, dim grey, 52ch, pretty-wrapped. */
 .auth-subline {
   max-width: 52ch;
-  font-size: 16px;
+  font-size: 13.5px;
   line-height: 1.5;
   color: var(--auth-sub);
   text-wrap: pretty;
