@@ -6,6 +6,17 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### U4 — Platform email templates (IN FLIGHT, approved 2026-09-11)
+One branded HTML shell for every platform-sent mail (multipart: html +
+the existing text kept): white canvas, wordmark + green delivered-dot
+(styled span - Gmail strips SVG), hairline card, mono for technical
+values, real CTA buttons with raw-link fallback, per-mail footer
+reason, hidden preheader. Applies to: password reset, access-request
+notification (escaped! stranger-typed name/use-case lands in the
+operator inbox; + Review-in-Requests button), invite approved - and
+NEW: a welcome email on account creation (his add), both doors. His
+review surface = Mailpit.
+
 ### U3 — Auth pages redesign — DONE 2026-09-11 (his live-dialed E2E)
 Final state after ~25 of his dial-in rounds (all committed singly):
 ONE near-black canvas page-wide (theme-invariant), brand column left /
