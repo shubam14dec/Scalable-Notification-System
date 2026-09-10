@@ -6,6 +6,20 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### U3 — Auth pages redesign (IN FLIGHT, approved 2026-09-11)
+His ask: the front door should say 'the developer really spent time'.
+Concept approved: split frame — brand panel LEFT (near-black site
+canvas, theme-invariant; site headline 'Your product has something to
+say.', breathing ripple mark, mono proof-ticker), form RIGHT (Google
+button FIRST + or-divider, live platform-operational /health pulse
+under the form); ?invite= renders as a serrated receipt TICKET; login
+success = one 400ms ripple ring; request-access success prints like a
+receipt; forgot/reset in the same frame; consistent footer switch
+links. Reference-inspired arrangement, NOT its gradient/logos/colored
+CTA/terms row; reassurance line CUT at his call. CSS-only motion (no
+GSAP - lockfile), reduced-motion stills all, zero functional change.
+Riders queued with it: favicon, click-to-edit workflow name.
+
 ### B1 — Invite-gated beta access — SHIPPED 2026-09-10 (review)
 SIGNUP_MODE open|invite (env, prod=invite; open = today, byte-
 identical) + OPERATOR_EMAILS human operator seat (dev
