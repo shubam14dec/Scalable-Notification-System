@@ -19,7 +19,7 @@ import {
 } from '../../db/access-requests.repo';
 import { defaultOrganizationName, provisionAccount } from '../../auth/provisioning';
 import { ipRateLimit } from '../rate-limit';
-import { sessionResponse } from './auth';
+import { dashboardOrigin, sendWelcomeEmail, sessionResponse } from './auth';
 
 /**
  * S1.6 — CONTINUE WITH GOOGLE.
@@ -361,6 +361,12 @@ export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<
   }
 
   await provisionAccount(created, defaultOrganizationName(created.name, created.email));
+
+  // U4 — the same welcome the password door sends, and ONLY on this branch:
+  // the returning-user and account-linking cases above are people who already
+  // had an account, and "welcome to Asyncify" is a lie to both of them.
+  sendWelcomeEmail(created.email, await dashboardOrigin());
+
   return { user: created };
 }
 

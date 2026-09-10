@@ -15,6 +15,10 @@ import { buildApp } from '../../src/api/app';
 import { env } from '../../src/config/env';
 import { pool } from '../../src/db/pool';
 import { redis } from '../../src/shared/redis';
+import {
+  setPlatformEmailSender,
+  type PlatformEmail,
+} from '../../src/core/platform-email';
 
 const CLIENT_ID = 'itest-client-id.apps.googleusercontent.com';
 const CLIENT_SECRET = 'itest-client-secret';
@@ -28,6 +32,15 @@ const json = (res: { body: string }) => JSON.parse(res.body);
 
 const originalGoogle = { ...env.google };
 const originalFetch = globalThis.fetch;
+
+/**
+ * U4 — every platform email the app tried to send, in order. The second seam in
+ * this file, and it exists for one question: which branches of
+ * `findOrCreateGoogleUser` are a NEW ACCOUNT (welcome) and which are somebody
+ * who already had one (silence).
+ */
+const outbox: PlatformEmail[] = [];
+let restoreSender: () => void;
 
 // ---- the stubbed Google token endpoint -------------------------------------
 
@@ -118,6 +131,10 @@ async function orgCountFor(userId: string): Promise<number> {
 
 beforeAll(async () => {
   app = await buildApp();
+  restoreSender = setPlatformEmailSender(async (message) => {
+    outbox.push(message);
+    return true;
+  });
   stubGoogleTokenEndpoint();
   env.google.clientId = CLIENT_ID;
   env.google.clientSecret = CLIENT_SECRET;
@@ -130,9 +147,11 @@ beforeEach(async () => {
   // making the suite's own volume the thing under test.
   const keys = await redis.keys('*-rl:*');
   if (keys.length) await redis.del(...keys);
+  outbox.length = 0;
 });
 
 afterAll(async () => {
+  restoreSender();
   Object.assign(env.google, originalGoogle);
   globalThis.fetch = originalFetch;
 
@@ -336,6 +355,13 @@ describe('GET /auth/google/callback — the happy path', () => {
       [user.id],
     );
     expect(keys[0].n).toBe(2);
+
+    // U4 — a Google-created account is a new account, so it gets the same
+    // welcome the password door sends, at the address Google vouched for.
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0].to).toBe(emailFor('gnew'));
+    expect(outbox[0].subject).toBe('Welcome to Asyncify');
+    expect(outbox[0].html).toContain('href="http://localhost:5173"');
   });
 
   test('a second sign-in is the SAME user — no duplicate org', async () => {
@@ -345,6 +371,8 @@ describe('GET /auth/google/callback — the happy path', () => {
     const after = await userByEmail(emailFor('gnew'));
     expect(after.id).toBe(before.id);
     expect(await orgCountFor(after.id)).toBe(1);
+    // …and a returning user is not welcomed again.
+    expect(outbox).toHaveLength(0);
   });
 
   test('GOOGLE_POST_LOGIN_ORIGIN prefixes the bounce (the dev :3000 -> :5173 hop)', async () => {
@@ -420,6 +448,9 @@ describe('linking a Google identity onto an existing password account', () => {
     });
     expect(signup.statusCode).toBe(201);
     passwordUserId = json(signup).user.id;
+    // The password door welcomed them (U4) — exactly once, and that is the
+    // baseline the LINK branch below must not add to.
+    expect(outbox.map((m) => m.subject)).toEqual(['Welcome to Asyncify']);
 
     const res = await runCallback(claimsFor({ email, sub: `sub-linked-${suffix}` }));
     expect(res.statusCode).toBe(302);
@@ -429,6 +460,8 @@ describe('linking a Google identity onto an existing password account', () => {
     expect(user.google_sub).toBe(`sub-linked-${suffix}`);
     expect(user.password_hash).toBeTruthy(); // the password still works
     expect(await orgCountFor(user.id)).toBe(1); // no second org was provisioned
+    // Linking is not joining: still just the one welcome from the signup.
+    expect(outbox).toHaveLength(1);
   });
 
   test('the password still logs them in afterwards — both doors open', async () => {

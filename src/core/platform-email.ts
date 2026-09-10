@@ -36,8 +36,21 @@ import { logger } from '../shared/logger';
 export interface PlatformEmail {
   to: string;
   subject: string;
-  /** Plain text only. Nothing the platform says to an operator needs HTML. */
+  /**
+   * The plain-text part, and the one that is never optional. Every platform
+   * email is written as text FIRST and must read perfectly with no HTML at
+   * all — a text-only client, a screen reader, and the "show original" pane
+   * are all first-class readers of these messages.
+   */
   text: string;
+  /**
+   * U4 — the optional branded part. When present the message goes out
+   * multipart/alternative (nodemailer builds that from `text` + `html`), so a
+   * client that cannot or will not render HTML still gets the paragraph above,
+   * unchanged. Built by `src/core/platform-email-templates.ts`; nothing about
+   * the transport, the from address or the failure handling changes with it.
+   */
+  html?: string;
 }
 
 /** `false` means "not delivered" — never a throw: no caller may fail on this. */
@@ -78,6 +91,9 @@ const smtpSender: PlatformEmailSender = async (message) => {
       to: message.to,
       subject: message.subject,
       text: message.text,
+      // Omitted rather than sent as undefined when there is no HTML part, so a
+      // text-only send stays a single-part message exactly as it was before U4.
+      ...(message.html ? { html: message.html } : {}),
     });
     return true;
   } catch (err) {
