@@ -283,7 +283,12 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 - **Provider chains cache 30s per tenant+channel; auth cache 60s** — config
   changes are not instant across processes.
 - **The public repo must not name the reference systems** (the OSS platform
-  or the payments company) — scrubbed once already; keep it that way.
+  or the payments company) — scrubbed TWICE now (2026-09-11: the name leaked
+  into auth-page comments, tasks/todo.md and unpushed commit messages while
+  working from his screenshot of the reference product; filter-branch
+  scrubbed all three layers pre-push). The rule covers CODE COMMENTS, the
+  BOARD and COMMIT MESSAGES, and applies especially when he shares reference
+  screenshots — describe the pattern, never the product.
 - **Publishing is AUTOMATED — never run npm publish manually** (Phase 8,
   2026-07-10): token publishing is disallowed by npm package settings;
   the only path is release.yml via OIDC trusted publishing. The habit:
