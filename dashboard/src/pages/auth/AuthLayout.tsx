@@ -204,6 +204,18 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
         to <span className="auth-hl-accent">say.</span>
       </p>
 
+      {/* Two lines under the headline (his call): the site's own subline,
+          then the artifact this product retires — noreply@ set in mono, the
+          way you'd name a part being decommissioned. */}
+      <div className="mt-6 -translate-x-20 text-center">
+        <p className="auth-subline">
+          The delivery engine for every channel, and the agents that answer back.
+        </p>
+        <p className="auth-subline mt-2">
+          No more <span className="font-mono">noreply@</span>. Every message can take an answer.
+        </p>
+      </div>
+
       <div className="mt-auto self-stretch px-12 pb-10">{onScreen && <ProofTicker />}</div>
     </div>
   );

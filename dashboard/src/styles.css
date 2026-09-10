@@ -146,6 +146,7 @@ body {
   --auth-ink: #ededed;     /* the site's off-white type */
   --auth-muted: #6e6e6e;   /* the proof ticker's grey */
   --auth-ring: #3f3f3f;    /* the ripple ring, at rest (favicon.svg) */
+  --auth-sub: #a1a1a1;     /* the subline grey, one step up from muted */
   background: var(--auth-canvas);
   color: var(--auth-ink);
 }
@@ -214,6 +215,11 @@ body {
   line-height: 1.2;
   letter-spacing: -0.01em;
   color: var(--auth-ink);
+}
+.auth-subline {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--auth-sub);
 }
 .auth-hl-accent {
   font-family: 'Instrument Serif', Georgia, serif;
