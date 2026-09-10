@@ -150,25 +150,92 @@ body {
   color: var(--auth-ink);
 }
 
-/* The mark: the delivered-dot inside the ripple ring, breathing. SVG shapes
-   need fill-box or the transform origin is the whole viewport-ish user space. */
-.auth-mark-ring,
-.auth-mark-pulse {
-  transform-box: fill-box;
-  transform-origin: center;
-}
-.auth-mark-ring { animation: auth-breathe 4s ease-in-out infinite; }
-@keyframes auth-breathe {
-  0%, 100% { transform: scale(1);    opacity: 0.7; }
-  50%      { transform: scale(1.04); opacity: 1; }
+/* ── THE BELL (v2 — his call, replacing the breathing mark): the site hero's
+   drawing, hanging from its thread. Strokes, weights and inks mirror
+   asyncify-site/src/styles.css (.b-line/.b-silhouette/.b-detail/.c-ball/
+   .foundry/.thread), local to the panel's own palette. The green on the
+   clapper ball and the glint is the site's sanctioned identity green — this
+   panel is a picture of the site, which is where that green lives. */
+.auth-canvas { --auth-detail: #d6d6d6; --auth-green-dim: #2ba36c; --auth-green: #3dd68c; }
+.auth-bell { display: block; overflow: visible; }
+.ab-thread { stroke: var(--auth-ring); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.ab-line { fill: none; stroke: var(--auth-ink); stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.ab-sil { stroke-width: 1.25; }
+.ab-detail { stroke-width: 1; stroke: var(--auth-detail); }
+.ab-ball { fill: var(--auth-green-dim); stroke: var(--auth-green-dim); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.ab-foundry {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 6px;
+  letter-spacing: 0.16em;
+  fill: var(--auth-muted);
+  opacity: 0.4;
 }
 
-/* Sign-in accepted: the ring rings once, then the page navigates. 1.5 is the
-   ceiling — r=10.5 in a 32-wide viewBox, and an SVG root clips its overflow. */
-.auth-mark-pulse { animation: auth-ring-out 400ms ease-out both; }
+/* Idle: a barely-there sway about the thread pivot — hanging, not swinging.
+   Pivot (0,0) in user units = (70,160) from the viewBox's top-left corner. */
+.auth-bell-swing {
+  transform-box: view-box;
+  transform-origin: 70px 160px;
+  animation: auth-sway 7s ease-in-out infinite alternate;
+}
+@keyframes auth-sway {
+  from { transform: rotate(-1.6deg); }
+  to   { transform: rotate(1.6deg); }
+}
+
+/* The rim glint: the site's one green line at rest, surfacing every ~7s. */
+.ab-glint {
+  fill: none;
+  stroke: var(--auth-green);
+  stroke-width: 1;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  opacity: 0;
+  animation: auth-glint 7s ease-in-out infinite;
+}
+@keyframes auth-glint {
+  0%, 78%, 100% { opacity: 0; }
+  86%           { opacity: 0.55; }
+  92%           { opacity: 0.2; }
+}
+
+/* Sign-in accepted: a ripple rings out of the clapper ball, then the page
+   navigates. Origin = the ball's centre, (70.3, 259) from the viewBox corner. */
+.ab-ring-out {
+  fill: none;
+  stroke: var(--auth-green);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+  transform-box: view-box;
+  transform-origin: 70.3px 259px;
+  animation: auth-ring-out 400ms ease-out both;
+}
 @keyframes auth-ring-out {
   from { transform: scale(1);   opacity: 0.9; }
-  to   { transform: scale(1.5); opacity: 0; }
+  to   { transform: scale(3.4); opacity: 0; }
+}
+
+/* The site headline, its exact recipe (asyncify-site .headline/.hl-accent):
+   Geist Sans 400 with the payoff word in Instrument Serif italic at 1.08em. */
+.auth-headline {
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.22;
+  letter-spacing: -0.01em;
+  color: var(--auth-ink);
+}
+.auth-hl-accent {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-style: italic;
+  font-size: 1.08em;
+  line-height: 1;
+}
+@font-face {
+  font-family: 'Instrument Serif';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/instrument-serif-latin-400-italic.woff2') format('woff2');
 }
 
 /* The proof ticker. Each line is absolutely positioned and animates its whole
@@ -208,11 +275,15 @@ body {
 /* Motion is decoration here, all of it. The global rule above already crushes
    durations, but an infinite 0.01ms loop is not "off" — these say off. */
 @media (prefers-reduced-motion: reduce) {
-  .auth-mark-ring,
-  .auth-mark-pulse,
+  .auth-bell-swing,
+  .ab-glint,
+  .ab-ring-out,
   .auth-ticker-line,
   .auth-rule,
   .auth-line {
     animation: none !important;
   }
+  /* Still bell, but the glint stays faintly visible instead of vanishing —
+     the site does the same (it holds instead of travelling). */
+  .ab-glint { opacity: 0.4; }
 }

@@ -143,40 +143,65 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
   // marketing page, and a picture does not flip to white when the app does.
   // The CSS hides it below the breakpoint; `onScreen` also stops paying for it.
   return (
-    <div className="auth-canvas hidden w-[44%] max-w-[560px] shrink-0 flex-col justify-center px-12 min-[900px]:flex">
-      {/* A paragraph, not a heading: this is the site's line, and the page's
-          one real heading is the form's title in the column beside it. */}
-      <p className="max-w-[380px] text-[26px] font-semibold leading-[1.25] tracking-tight">
-        Your product has something to say.
+    <div className="auth-canvas hidden w-[44%] max-w-[560px] shrink-0 flex-col items-center min-[900px]:flex">
+      {/* THE BELL — the site hero's own drawing, path for path (index.html
+          scene 1): crown, deliberately asymmetric profiles, the sagging
+          mouth, lip curls, yoke, the clapper whose ball is the delivered-dot
+          (the identity green, same as the site), the foundry inscriptions
+          cast on the skirt, and the rim glint. The thread runs from the
+          panel's very top edge to the crown, so it hangs the way it hangs on
+          asyncify.org. Idle motion is a barely-there sway; a successful
+          sign-in rings a ripple out of the clapper ball. */}
+      <svg
+        className="auth-bell"
+        width="180"
+        viewBox="-70 -160 140 290"
+        fill="none"
+        aria-hidden
+        focusable="false"
+      >
+        <path className="ab-thread" d="M 0 -160 L 0 0" />
+        <g className="auth-bell-swing">
+          <defs>
+            <path id="auth-skirt-l" d="M -48.1 102.7 C -38.8 91.7 -38.6 77 -36.1 63.5" fill="none" />
+            <path id="auth-skirt-r" d="M 37.6 68.7 C 39.2 79 40 89.4 45.8 98.4" fill="none" />
+          </defs>
+          <text className="ab-foundry">
+            <textPath href="#auth-skirt-l" startOffset="50%" textAnchor="middle">ASYNCIFY</textPath>
+          </text>
+          <text className="ab-foundry">
+            <textPath href="#auth-skirt-r" startOffset="50%" textAnchor="middle">ENGINE</textPath>
+          </text>
+          <g>
+            <path className="ab-line ab-detail" d="M 0 26 C 0.7 46 -0.5 74 0.3 90" />
+            <circle className="ab-ball" cx="0.3" cy="99" r="9.5" />
+          </g>
+          <g>
+            <path className="ab-line ab-sil" d="M 0 0 C -7.8 1.4 -8.6 14.6 -0.2 16.4 C 8 14.8 7.4 1.6 0 0 Z" />
+            <path className="ab-line ab-sil" d="M -0.6 17.4 C -8 17.7 -19.5 24.5 -25.5 37.8 C -31 49.8 -33.6 65 -35.6 80 C -37.4 91.6 -41.6 101.4 -49.6 108.4" />
+            <path className="ab-line ab-sil" d="M 0.6 17.2 C 8.4 17.6 20.2 24.2 26.1 37.6 C 31.6 49.6 34.2 65 36.2 80 C 38 91.6 42.2 101.2 50.2 108" />
+            <path className="ab-line ab-sil" d="M -49.6 108.4 C -31 115.8 30.4 115.4 50.2 108" />
+            <path className="ab-line ab-detail" d="M -49.6 108.4 C -50.9 109.9 -51.7 111.1 -52.3 112.6" />
+            <path className="ab-line ab-detail" d="M 50.2 108 C 51.5 109.5 52.3 110.7 52.9 112.2" />
+            <path className="ab-line ab-detail" d="M -3.6 25.2 C -1.2 22.9 1.4 22.9 3.6 25.4" />
+            <path className="ab-glint" d="M 13.6 114.6 C 26.2 114.3 38.8 112.4 47.4 109" />
+          </g>
+        </g>
+        {ringing && <circle className="ab-ring-out" cx="0.3" cy="99" r="12" />}
+      </svg>
+
+      {/* The site's headline, its exact composition: Geist Sans 400 with the
+          payoff word alone in Instrument Serif italic — the same break, the
+          same rhetoric. The serif ships as a static woff2 (public/fonts), so
+          no dependency and no external origin. A <p>, not a heading: the
+          page's one real heading is the form's title. */}
+      <p className="auth-headline mt-12 text-center">
+        Your product has something
+        <br />
+        to <span className="auth-hl-accent">say.</span>
       </p>
 
-      <div className="my-10">
-        <svg width="140" height="140" viewBox="0 0 32 32" fill="none" aria-hidden focusable="false">
-          <circle
-            className="auth-mark-ring"
-            cx="16"
-            cy="16"
-            r="10.5"
-            stroke="var(--auth-ring)"
-            strokeWidth="1.5"
-            vectorEffect="non-scaling-stroke"
-          />
-          {ringing && (
-            <circle
-              className="auth-mark-pulse"
-              cx="16"
-              cy="16"
-              r="10.5"
-              stroke="var(--auth-ink)"
-              strokeWidth="1.5"
-              vectorEffect="non-scaling-stroke"
-            />
-          )}
-          <circle cx="16" cy="16" r="5" fill="var(--auth-ink)" />
-        </svg>
-      </div>
-
-      {onScreen && <ProofTicker />}
+      <div className="mt-auto self-stretch px-12 pb-10">{onScreen && <ProofTicker />}</div>
     </div>
   );
 }
