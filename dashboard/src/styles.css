@@ -172,10 +172,10 @@ body {
 }
 
 /* Idle: a barely-there sway about the thread pivot — hanging, not swinging.
-   Pivot (0,0) in user units = (70,160) from the viewBox's top-left corner. */
+   Pivot (0,0) in user units = (70,80) from the viewBox's top-left corner. */
 .auth-bell-swing {
   transform-box: view-box;
-  transform-origin: 70px 160px;
+  transform-origin: 70px 80px;
   animation: auth-sway 7s ease-in-out infinite alternate;
 }
 @keyframes auth-sway {
@@ -200,14 +200,14 @@ body {
 }
 
 /* Sign-in accepted: a ripple rings out of the clapper ball, then the page
-   navigates. Origin = the ball's centre, (70.3, 259) from the viewBox corner. */
+   navigates. Origin = the ball's centre, (70.3, 179) from the viewBox corner. */
 .ab-ring-out {
   fill: none;
   stroke: var(--auth-green);
   stroke-width: 1.25;
   vector-effect: non-scaling-stroke;
   transform-box: view-box;
-  transform-origin: 70.3px 259px;
+  transform-origin: 70.3px 179px;
   animation: auth-ring-out 400ms ease-out both;
 }
 @keyframes auth-ring-out {
@@ -219,8 +219,8 @@ body {
    Geist Sans 400 with the payoff word in Instrument Serif italic at 1.08em. */
 .auth-headline {
   font-weight: 400;
-  font-size: 30px;
-  line-height: 1.22;
+  font-size: 38px;
+  line-height: 1.2;
   letter-spacing: -0.01em;
   color: var(--auth-ink);
 }

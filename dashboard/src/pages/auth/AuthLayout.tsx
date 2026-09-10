@@ -154,13 +154,13 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
           sign-in rings a ripple out of the clapper ball. */}
       <svg
         className="auth-bell"
-        width="180"
-        viewBox="-70 -160 140 290"
+        width="240"
+        viewBox="-70 -80 140 210"
         fill="none"
         aria-hidden
         focusable="false"
       >
-        <path className="ab-thread" d="M 0 -160 L 0 0" />
+        <path className="ab-thread" d="M 0 -80 L 0 0" />
         <g className="auth-bell-swing">
           <defs>
             <path id="auth-skirt-l" d="M -48.1 102.7 C -38.8 91.7 -38.6 77 -36.1 63.5" fill="none" />
