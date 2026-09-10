@@ -157,12 +157,12 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
       <svg
         className="auth-bell -translate-x-6"
         width="290"
-        viewBox="-70 -80 140 210"
+        viewBox="-70 -50 140 180"
         fill="none"
         aria-hidden
         focusable="false"
       >
-        <path className="ab-thread" d="M 0 -80 L 0 0" />
+        <path className="ab-thread" d="M 0 -50 L 0 0" />
         <g className="auth-bell-swing">
           <defs>
             <path id="auth-skirt-l" d="M -48.1 102.7 C -38.8 91.7 -38.6 77 -36.1 63.5" fill="none" />
