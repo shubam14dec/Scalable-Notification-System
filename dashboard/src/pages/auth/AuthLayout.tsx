@@ -166,7 +166,7 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
           clapper ball. */}
       <svg
         className="auth-bell -translate-x-20"
-        width="290"
+        width="250"
         viewBox="-70 -50 140 180"
         fill="none"
         aria-hidden
