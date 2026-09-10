@@ -311,7 +311,7 @@ export function AuthLayout({
         <BrandPanel />
         {/* my-auto, not items-center: a centered flex item that outgrows a
             scrolling parent overflows past the top edge, out of reach. */}
-        <div className="mx-auto my-auto w-full max-w-[400px] py-10 min-[900px]:mx-0 min-[900px]:shrink-0">
+        <div className="mx-auto my-auto w-full max-w-[400px] py-10 min-[900px]:mx-0 min-[900px]:shrink-0 min-[900px]:translate-x-8">
           {/* On desktop the brand lives on the bell column; the card carries
               none (his call). On mobile the column is gone, so a small
               wordmark stands above the card instead — in the canvas ink, the
