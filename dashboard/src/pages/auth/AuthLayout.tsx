@@ -93,16 +93,16 @@ const PROOF_LINES = [
   'escalated to human · 4s',
 ];
 
-/** One line every 2.2s; each line lives for three of those. Eight lines makes
- *  a ~17.6s lap, and the start index is random so two tabs never march in step. */
-const TICK_MS = 2200;
+/** One slip every 2.6s; the start index is random so two tabs never sync. */
+const TICK_MS = 2600;
 
 /**
- * The proof ticker. One interval and at most three nodes: every line animates
- * its entire drift itself, absolutely positioned, so no line ever reflows
- * another and there is no rAF loop and no canvas to pay for.
+ * The receipts. The bell is the delivery engine, so the proof falls OUT OF
+ * IT: one slip at a time materializes under the mouth, drops like a printed
+ * slip — slight tilt, fading as it falls — and the next delivery follows.
+ * One interval, one node; reduced motion gets a single slip, standing still.
  */
-function ProofTicker() {
+function FallingReceipts() {
   const [start] = useState(() => Math.floor(Math.random() * PROOF_LINES.length));
   const [reduced] = useState(prefersReducedMotion);
   const [tick, setTick] = useState(0);
@@ -113,21 +113,18 @@ function ProofTicker() {
     return () => window.clearInterval(id);
   }, [reduced]);
 
-  // Reduced motion gets one line, standing still — the content is decorative,
-  // and a feed that drifts is exactly what was asked not to happen.
-  const live = reduced ? [0] : [tick - 2, tick - 1, tick].filter((i) => i >= 0);
-
   return (
-    <div className="relative h-[54px] w-full overflow-hidden" aria-hidden>
-      {live.map((i) => (
-        <div
-          key={i}
-          className="auth-ticker-line absolute inset-x-0 bottom-0 font-mono text-[12px] leading-[18px]"
-          style={{ color: 'var(--auth-muted)' }}
-        >
-          {PROOF_LINES[(start + i) % PROOF_LINES.length]}
-        </div>
-      ))}
+    <div
+      className="pointer-events-none absolute left-1/2 top-full mt-1 -translate-x-1/2"
+      aria-hidden
+    >
+      <div
+        key={tick}
+        className={`${reduced ? 'opacity-60' : 'auth-receipt'} whitespace-nowrap font-mono text-[11px]`}
+        style={{ color: 'var(--auth-muted)' }}
+      >
+        {PROOF_LINES[(start + tick) % PROOF_LINES.length]}
+      </div>
     </div>
   );
 }
@@ -164,8 +161,9 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
           asyncify.org. It hangs STILL (his call); the rim glint surfaces
           every ~7s, and a successful sign-in rings a ripple out of the
           clapper ball. */}
+      <div className="relative -translate-x-20">
       <svg
-        className="auth-bell -translate-x-20"
+        className="auth-bell"
         width="250"
         viewBox="-70 -50 140 180"
         fill="none"
@@ -201,6 +199,8 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
         </g>
         {ringing && <circle className="ab-ring-out" cx="0.3" cy="99" r="12" />}
       </svg>
+      {onScreen && <FallingReceipts />}
+      </div>
 
       {/* The site's headline, its exact composition: Geist Sans 400 with the
           payoff word alone in Instrument Serif italic — the same break, the
@@ -232,7 +232,6 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
         </BrandPoint>
       </div>
 
-      <div className="mt-auto self-stretch px-12 pb-10">{onScreen && <ProofTicker />}</div>
     </div>
   );
 }

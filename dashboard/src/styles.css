@@ -254,12 +254,12 @@ body {
 /* The proof ticker. Each line is absolutely positioned and animates its whole
    journey itself, so lines never reflow each other — the cost is one interval
    and at most three DOM nodes. */
-.auth-ticker-line { animation: auth-ticker 6600ms linear both; }
-@keyframes auth-ticker {
-  0%   { opacity: 0; transform: translateY(10px); }
-  10%  { opacity: 1; transform: translateY(0); }
-  70%  { opacity: 1; transform: translateY(-22px); }
-  100% { opacity: 0; transform: translateY(-34px); }
+.auth-receipt { animation: auth-receipt-fall 2500ms ease-in both; }
+@keyframes auth-receipt-fall {
+  0%   { opacity: 0; transform: translateY(-4px) rotate(0deg); }
+  14%  { opacity: 1; transform: translateY(2px) rotate(-0.5deg); }
+  75%  { opacity: 0.85; transform: translateY(24px) rotate(-2deg); }
+  100% { opacity: 0; transform: translateY(38px) rotate(-3deg); }
 }
 
 /* Receipt lines, arriving in order. The delay is set per line, inline. */
@@ -283,7 +283,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ab-glint,
   .ab-ring-out,
-  .auth-ticker-line,
+  .auth-receipt,
   .auth-line {
     animation: none !important;
   }
