@@ -216,10 +216,26 @@ body {
   letter-spacing: -0.01em;
   color: var(--auth-ink);
 }
+/* The site's .subline, verbatim recipe: 16px, dim grey, 52ch, pretty-wrapped. */
 .auth-subline {
-  font-size: 15px;
-  line-height: 1.55;
+  max-width: 52ch;
+  font-size: 16px;
+  line-height: 1.5;
   color: var(--auth-sub);
+  text-wrap: pretty;
+}
+/* One rung quieter than the subline — an aside, not a second claim. */
+.auth-subnote {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--auth-muted);
+}
+/* The retired artifact, named in its own typeface and struck through. */
+.auth-noreply {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.95em;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
 }
 .auth-hl-accent {
   font-family: 'Instrument Serif', Georgia, serif;

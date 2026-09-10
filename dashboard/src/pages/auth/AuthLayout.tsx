@@ -207,12 +207,12 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
       {/* Two lines under the headline (his call): the site's own subline,
           then the artifact this product retires — noreply@ set in mono, the
           way you'd name a part being decommissioned. */}
-      <div className="mt-6 -translate-x-20 text-center">
+      <div className="mt-4 flex -translate-x-20 flex-col items-center text-center">
         <p className="auth-subline">
           The delivery engine for every channel, and the agents that answer back.
         </p>
-        <p className="auth-subline mt-2">
-          No more <span className="font-mono">noreply@</span>. Every message can take an answer.
+        <p className="auth-subnote mt-4">
+          No more <span className="auth-noreply">noreply@</span> — every message can take an answer.
         </p>
       </div>
 
