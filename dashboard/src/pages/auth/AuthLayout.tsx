@@ -10,9 +10,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
  * form card with matching margin on the right. The card itself stays on the
  * app's theme tokens. The left column is the pitch; the card is the door.
  *
- * Presentation only: nothing in this file submits, fetches a credential, or
- * decides a flow. The one network call is a single /health measurement for the
- * pulse line, which nothing else reads.
+ * Presentation only: nothing in this file submits, fetches a credential,
+ * decides a flow, or touches the network.
  */
 
 /** True when the visitor has asked their OS for less motion. Read on demand
@@ -236,59 +235,6 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
   );
 }
 
-type Pulse = { state: 'checking' } | { state: 'ok'; ms: number } | { state: 'degraded' };
-
-/**
- * The pulse line — the platform answering for itself, measured rather than
- * claimed. One /health round trip per page load, timed with performance.now(),
- * and no polling: a login page that heartbeats is a login page that costs
- * money at 10M users.
- *
- * The dot is the only color on this page, and it is a status readout, which is
- * the one thing the design system spends color on.
- */
-function PulseLine() {
-  const [pulse, setPulse] = useState<Pulse>({ state: 'checking' });
-  // StrictMode runs mount effects twice in dev; one measurement means one.
-  const measured = useRef(false);
-
-  useEffect(() => {
-    if (measured.current) return;
-    measured.current = true;
-    const t0 = performance.now();
-    // No "still mounted?" flag on purpose: StrictMode's simulated unmount would
-    // trip it, the latch above would skip the second run, and the line would
-    // read "checking…" forever in dev. React 18 makes a setState after unmount
-    // a silent no-op, so the latch alone is the whole guard.
-    fetch('/health')
-      .then((r) =>
-        setPulse(
-          r.ok ? { state: 'ok', ms: Math.round(performance.now() - t0) } : { state: 'degraded' },
-        ),
-      )
-      .catch(() => setPulse({ state: 'degraded' }));
-  }, []);
-
-  const color =
-    pulse.state === 'ok' ? 'var(--ok)' : pulse.state === 'degraded' ? 'var(--warn)' : 'var(--t3)';
-  const label =
-    pulse.state === 'ok'
-      ? `operational · ${pulse.ms}ms`
-      : pulse.state === 'degraded'
-        ? 'degraded'
-        : 'checking…';
-
-  return (
-    <p className="mt-8 flex items-center justify-center gap-1.5 font-mono text-[11px] text-t3">
-      <span
-        aria-hidden
-        className="inline-block h-[6px] w-[6px] rounded-full"
-        style={{ background: color }}
-      />
-      platform · {label}
-    </p>
-  );
-}
 
 /**
  * A receipt. Two of them exist: the invite ticket above a signup form, and the
@@ -392,7 +338,6 @@ export function AuthLayout({
             )}
             <div className="mt-6">{children}</div>
           </div>
-          <PulseLine />
         </div>
       </div>
     </div>
