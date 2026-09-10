@@ -15,6 +15,11 @@ import { beforeAll } from 'vitest';
 import { Redis } from 'ioredis';
 
 process.env.REDIS_DB ??= '15';
+// The suite's baseline is OPEN signup (the default) — most files sign a
+// tenant up in a helper, and a dev .env carrying SIGNUP_MODE=invite (as this
+// machine does since B1) would otherwise 403 sixty-plus percent of the suite.
+// Invite-mode tests flip process.env per-test with restore, same as ever.
+process.env.SIGNUP_MODE = 'open';
 
 // Pin PUBLIC_URL: dotenv never overrides pre-set vars, so tests stay
 // hermetic even when .env points at a live tunnel for manual E2E.

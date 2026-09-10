@@ -2,7 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, resetPassword } from '../lib/api';
 import { Button, Field, PasswordInput } from '../ui';
-import { AuthFrame, ForgotPasswordForm } from './Login';
+import { AuthLayout, Receipt, ReceiptLine } from './auth/AuthLayout';
+import { ForgotPasswordForm } from './Login';
 
 /**
  * S1.7a — where a reset link lands.
@@ -52,33 +53,33 @@ export default function ResetPasswordPage() {
 
   if (done) {
     return (
-      <AuthFrame title="Password changed">
-        <p className="text-[13px] leading-relaxed text-t2">
-          Your new password is set. Log in with it to continue.
-        </p>
-        <Link to="/login" className="mt-4 block">
+      <AuthLayout title="Password changed">
+        <Receipt label="Password changed" stagger>
+          <ReceiptLine index={0}>Your new password is set. Log in with it to continue.</ReceiptLine>
+        </Receipt>
+        <Link to="/login" className="mt-5 block">
           <Button variant="primary" className="w-full">
             Go to log in
           </Button>
         </Link>
-      </AuthFrame>
+      </AuthLayout>
     );
   }
 
   if (expired) {
     return (
-      <AuthFrame title="That link has expired">
+      <AuthLayout title="That link has expired">
         <p className="mb-4 text-[13px] leading-relaxed text-t2">
           Reset links last 30 minutes and work once. Enter your email and we'll send a new one.
         </p>
         {/* No "back" destination that isn't /login for a signed-out visitor. */}
         <ForgotPasswordForm onBack={() => window.location.assign('/login')} />
-      </AuthFrame>
+      </AuthLayout>
     );
   }
 
   return (
-    <AuthFrame title="Choose a new password">
+    <AuthLayout title="Choose a new password">
       <form onSubmit={submit} className="space-y-4">
         <Field label="New password" hint="At least 8 characters">
           <PasswordInput
@@ -104,11 +105,11 @@ export default function ResetPasswordPage() {
           {busy ? 'Saving…' : 'Set password'}
         </Button>
       </form>
-      <p className="mt-4 text-center text-[12px] text-t3">
+      <p className="mt-5 text-center text-[12px] text-t3">
         <Link to="/login" className="text-t1 underline underline-offset-2">
           Back to log in
         </Link>
       </p>
-    </AuthFrame>
+    </AuthLayout>
   );
 }

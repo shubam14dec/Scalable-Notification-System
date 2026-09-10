@@ -1,0 +1,322 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+
+/**
+ * U3 — the frame every signed-out page wears: login, request access, invited
+ * signup, forgot password, and /reset-password.
+ *
+ * A split. On the left, a picture of asyncify.org — its near-black canvas, its
+ * headline, its mark, and a ticker of the things this product actually says.
+ * On the right, the form, on the app's own tokens, in whichever theme the
+ * visitor picked. The left half is the pitch; the right half is the door.
+ *
+ * Presentation only: nothing in this file submits, fetches a credential, or
+ * decides a flow. The one network call is a single /health measurement for the
+ * pulse line, which nothing else reads.
+ */
+
+/** True when the visitor has asked their OS for less motion. Read on demand
+ *  (not stored in state): every caller wants it at the moment of a decision. */
+export function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/** The breakpoint the brand panel appears at, in one place: the login success
+ *  ring is a no-op below it, and the JS must agree with the CSS about where. */
+const PANEL_MIN_WIDTH = 900;
+const PANEL_QUERY = `(min-width: ${PANEL_MIN_WIDTH}px)`;
+export function brandPanelVisible(): boolean {
+  return window.matchMedia(PANEL_QUERY).matches;
+}
+
+/** Live answer to a media query. Used so the panel's one interval exists only
+ *  while the panel is actually on screen — CSS already hides it, and a hidden
+ *  element's animations do not tick, but a setInterval does. */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
+    mq.addEventListener('change', onChange);
+    onChange();
+    return () => mq.removeEventListener('change', onChange);
+  }, [query]);
+  return matches;
+}
+
+/**
+ * The mark — the delivered-dot inside the ripple ring, the same glyph as
+ * dashboard/public/favicon.svg, inlined so it can be animated and so nothing
+ * has to load (the SPA ships `script-src 'self'`; an <img> to a file would
+ * work, but a file cannot ring).
+ *
+ * Drawn in currentColor, monochrome, deliberately: the favicon paints its dot
+ * in the delivery-status green, and this design system mints color only for
+ * status — on these pages that budget is spent on the pulse dot. One token
+ * swap in the caller's text color is all it would take to change that back.
+ */
+export function RippleMark({ size = 14, className = '' }: { size?: number; className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 32 32"
+      fill="none"
+      aria-hidden
+      focusable="false"
+      className={className}
+    >
+      <circle
+        cx="16"
+        cy="16"
+        r="10.5"
+        stroke="currentColor"
+        strokeOpacity="0.45"
+        strokeWidth="1.25"
+        vectorEffect="non-scaling-stroke"
+      />
+      <circle cx="16" cy="16" r="5" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** The eight things the platform says, on the marketing site's own terms. The
+ *  ✓ is typography, not a status readout — it stays the same grey as its line. */
+const PROOF_LINES = [
+  'delivered · email · 142ms',
+  'webhook verified ✓',
+  'agent replied · 2.1s',
+  'in-app · read · 0.3s',
+  'delivered · slack · 89ms',
+  'digest window closed · 3 queued',
+  'delivered · sms · 1.2s',
+  'escalated to human · 4s',
+];
+
+/** One line every 2.2s; each line lives for three of those. Eight lines makes
+ *  a ~17.6s lap, and the start index is random so two tabs never march in step. */
+const TICK_MS = 2200;
+
+/**
+ * The proof ticker. One interval and at most three nodes: every line animates
+ * its entire drift itself, absolutely positioned, so no line ever reflows
+ * another and there is no rAF loop and no canvas to pay for.
+ */
+function ProofTicker() {
+  const [start] = useState(() => Math.floor(Math.random() * PROOF_LINES.length));
+  const [reduced] = useState(prefersReducedMotion);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (reduced) return;
+    const id = window.setInterval(() => setTick((t) => t + 1), TICK_MS);
+    return () => window.clearInterval(id);
+  }, [reduced]);
+
+  // Reduced motion gets one line, standing still — the content is decorative,
+  // and a feed that drifts is exactly what was asked not to happen.
+  const live = reduced ? [0] : [tick - 2, tick - 1, tick].filter((i) => i >= 0);
+
+  return (
+    <div className="relative h-[54px] w-full overflow-hidden" aria-hidden>
+      {live.map((i) => (
+        <div
+          key={i}
+          className="auth-ticker-line absolute inset-x-0 bottom-0 font-mono text-[12px] leading-[18px]"
+          style={{ color: 'var(--auth-muted)' }}
+        >
+          {PROOF_LINES[(start + i) % PROOF_LINES.length]}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The brand panel. Hidden below 900px — on a phone the form is the whole page,
+ * and a decorative half-screen above it is just scrolling.
+ *
+ * `ringing` fires the one-shot success ring; the caller navigates 400ms later.
+ */
+function BrandPanel({ ringing }: { ringing: boolean }) {
+  const onScreen = useMediaQuery(PANEL_QUERY);
+  // .auth-canvas pins the panel to the site's palette: it is a picture of the
+  // marketing page, and a picture does not flip to white when the app does.
+  // The CSS hides it below the breakpoint; `onScreen` also stops paying for it.
+  return (
+    <div className="auth-canvas hidden w-[44%] max-w-[560px] shrink-0 flex-col justify-center px-12 min-[900px]:flex">
+      {/* A paragraph, not a heading: this is the site's line, and the page's
+          one real heading is the form's title in the column beside it. */}
+      <p className="max-w-[380px] text-[26px] font-semibold leading-[1.25] tracking-tight">
+        Your product has something to say.
+      </p>
+
+      <div className="my-10">
+        <svg width="140" height="140" viewBox="0 0 32 32" fill="none" aria-hidden focusable="false">
+          <circle
+            className="auth-mark-ring"
+            cx="16"
+            cy="16"
+            r="10.5"
+            stroke="var(--auth-ring)"
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+          {ringing && (
+            <circle
+              className="auth-mark-pulse"
+              cx="16"
+              cy="16"
+              r="10.5"
+              stroke="var(--auth-ink)"
+              strokeWidth="1.5"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+          <circle cx="16" cy="16" r="5" fill="var(--auth-ink)" />
+        </svg>
+      </div>
+
+      {onScreen && <ProofTicker />}
+    </div>
+  );
+}
+
+type Pulse = { state: 'checking' } | { state: 'ok'; ms: number } | { state: 'degraded' };
+
+/**
+ * The pulse line — the platform answering for itself, measured rather than
+ * claimed. One /health round trip per page load, timed with performance.now(),
+ * and no polling: a login page that heartbeats is a login page that costs
+ * money at 10M users.
+ *
+ * The dot is the only color on this page, and it is a status readout, which is
+ * the one thing the design system spends color on.
+ */
+function PulseLine() {
+  const [pulse, setPulse] = useState<Pulse>({ state: 'checking' });
+  // StrictMode runs mount effects twice in dev; one measurement means one.
+  const measured = useRef(false);
+
+  useEffect(() => {
+    if (measured.current) return;
+    measured.current = true;
+    const t0 = performance.now();
+    // No "still mounted?" flag on purpose: StrictMode's simulated unmount would
+    // trip it, the latch above would skip the second run, and the line would
+    // read "checking…" forever in dev. React 18 makes a setState after unmount
+    // a silent no-op, so the latch alone is the whole guard.
+    fetch('/health')
+      .then((r) =>
+        setPulse(
+          r.ok ? { state: 'ok', ms: Math.round(performance.now() - t0) } : { state: 'degraded' },
+        ),
+      )
+      .catch(() => setPulse({ state: 'degraded' }));
+  }, []);
+
+  const color =
+    pulse.state === 'ok' ? 'var(--ok)' : pulse.state === 'degraded' ? 'var(--warn)' : 'var(--t3)';
+  const label =
+    pulse.state === 'ok'
+      ? `operational · ${pulse.ms}ms`
+      : pulse.state === 'degraded'
+        ? 'degraded'
+        : 'checking…';
+
+  return (
+    <p className="mt-8 flex items-center justify-center gap-1.5 font-mono text-[11px] text-t3">
+      <span
+        aria-hidden
+        className="inline-block h-[6px] w-[6px] rounded-full"
+        style={{ background: color }}
+      />
+      platform · {label}
+    </p>
+  );
+}
+
+/**
+ * A receipt. Two of them exist: the invite ticket above a signup form, and the
+ * confirmation a request-access submission turns into. Both are mono, hairline,
+ * and torn along the bottom (.auth-ticket in styles.css).
+ *
+ * `stagger` lets the lines arrive in order rather than all at once — used where
+ * the card IS the answer to something the visitor just did.
+ */
+export function Receipt({
+  label,
+  children,
+  stagger = false,
+  className = '',
+}: {
+  label: string;
+  children: ReactNode;
+  stagger?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={`auth-ticket border border-bd bg-surface px-3.5 pb-3.5 pt-3 ${className}`}>
+      <div
+        className={stagger ? 'auth-line flex items-center justify-between' : 'flex items-center justify-between'}
+      >
+        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-t3">{label}</span>
+        <RippleMark size={12} className="text-t3" />
+      </div>
+      <div className="mt-2 space-y-1">{children}</div>
+    </div>
+  );
+}
+
+/** One receipt line. `index` drives the stagger; unstaggered lines pass none. */
+export function ReceiptLine({
+  children,
+  index,
+  className = '',
+}: {
+  children: ReactNode;
+  index?: number;
+  className?: string;
+}) {
+  return (
+    <p
+      className={`${index === undefined ? '' : 'auth-line '}font-mono text-[12px] leading-relaxed text-t2 ${className}`}
+      style={index === undefined ? undefined : { animationDelay: `${80 * (index + 1)}ms` }}
+    >
+      {children}
+    </p>
+  );
+}
+
+/**
+ * The frame. `ringing` is only ever true on the login page, for the 400ms
+ * between "you're in" and the navigation.
+ */
+export function AuthLayout({
+  children,
+  title,
+  ringing = false,
+}: {
+  children: ReactNode;
+  title: string;
+  ringing?: boolean;
+}) {
+  return (
+    <div className="flex h-full">
+      <BrandPanel ringing={ringing} />
+      {/* my-auto, not items-center: a centered flex item that outgrows a
+          scrolling parent overflows past the top edge, out of reach. */}
+      <div className="flex flex-1 justify-center overflow-y-auto bg-app px-4 py-10">
+        <div className="my-auto w-full max-w-[360px]">
+          <div className="flex items-center gap-2">
+            <RippleMark size={15} className="text-t1" />
+            <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
+          </div>
+          <div className="auth-rule mb-6 mt-3 h-px bg-bd" />
+          <h1 className="mb-5 text-[15px] font-semibold">{title}</h1>
+          {children}
+          <PulseLine />
+        </div>
+      </div>
+    </div>
+  );
+}

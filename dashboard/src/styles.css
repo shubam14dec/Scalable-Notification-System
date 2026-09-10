@@ -129,3 +129,90 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .new-pill-enter { animation: none; }
 }
+
+/* ------------------------------------------------------------------ */
+/* U3 — the signed-out pages (login, request access, signup, reset).    */
+/* Presentation only; every form below still posts what it always did.  */
+/* ------------------------------------------------------------------ */
+
+/* The brand panel mirrors asyncify.org's canvas, so it is deliberately
+   THEME-INVARIANT — the ONE documented exception to "no hardcoded hex in
+   components". The exception lives here, in four local custom properties,
+   rather than scattered across the component: the panel is a picture of the
+   marketing site, and a picture does not flip to white when the app does.
+   The form column beside it stays fully theme-aware, on the app tokens. */
+.auth-canvas {
+  --auth-canvas: #0a0a0a;  /* the site's near-black ground */
+  --auth-ink: #ededed;     /* the site's off-white type */
+  --auth-muted: #6e6e6e;   /* the proof ticker's grey */
+  --auth-ring: #3f3f3f;    /* the ripple ring, at rest (favicon.svg) */
+  background: var(--auth-canvas);
+  color: var(--auth-ink);
+}
+
+/* The mark: the delivered-dot inside the ripple ring, breathing. SVG shapes
+   need fill-box or the transform origin is the whole viewport-ish user space. */
+.auth-mark-ring,
+.auth-mark-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.auth-mark-ring { animation: auth-breathe 4s ease-in-out infinite; }
+@keyframes auth-breathe {
+  0%, 100% { transform: scale(1);    opacity: 0.7; }
+  50%      { transform: scale(1.04); opacity: 1; }
+}
+
+/* Sign-in accepted: the ring rings once, then the page navigates. 1.5 is the
+   ceiling — r=10.5 in a 32-wide viewBox, and an SVG root clips its overflow. */
+.auth-mark-pulse { animation: auth-ring-out 400ms ease-out both; }
+@keyframes auth-ring-out {
+  from { transform: scale(1);   opacity: 0.9; }
+  to   { transform: scale(1.5); opacity: 0; }
+}
+
+/* The proof ticker. Each line is absolutely positioned and animates its whole
+   journey itself, so lines never reflow each other — the cost is one interval
+   and at most three DOM nodes. */
+.auth-ticker-line { animation: auth-ticker 6600ms linear both; }
+@keyframes auth-ticker {
+  0%   { opacity: 0; transform: translateY(10px); }
+  10%  { opacity: 1; transform: translateY(0); }
+  70%  { opacity: 1; transform: translateY(-22px); }
+  100% { opacity: 0; transform: translateY(-34px); }
+}
+
+/* The hairline under the wordmark draws across once, on mount. */
+.auth-rule { transform-origin: left; animation: auth-draw 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes auth-draw {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+/* Receipt lines, arriving in order. The delay is set per line, inline. */
+.auth-line { animation: auth-line-in 260ms ease-out both; }
+@keyframes auth-line-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* The receipt's torn bottom edge. clip-path over a gradient triangle strip:
+   the clip is geometry, so the teeth stay crisp at any zoom, and one property
+   does the whole job (a gradient strip needs two layers and still soft-edges
+   its hard stops). The clip also eats the bottom border — which is the point:
+   a tear has no printed edge. 24 teeth, 5px deep; generated, not hand-typed. */
+.auth-ticket {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 5px), 97.9167% 100%, 95.8333% calc(100% - 5px), 93.75% 100%, 91.6667% calc(100% - 5px), 89.5833% 100%, 87.5% calc(100% - 5px), 85.4167% 100%, 83.3333% calc(100% - 5px), 81.25% 100%, 79.1667% calc(100% - 5px), 77.0833% 100%, 75% calc(100% - 5px), 72.9167% 100%, 70.8333% calc(100% - 5px), 68.75% 100%, 66.6667% calc(100% - 5px), 64.5833% 100%, 62.5% calc(100% - 5px), 60.4167% 100%, 58.3333% calc(100% - 5px), 56.25% 100%, 54.1667% calc(100% - 5px), 52.0833% 100%, 50% calc(100% - 5px), 47.9167% 100%, 45.8333% calc(100% - 5px), 43.75% 100%, 41.6667% calc(100% - 5px), 39.5833% 100%, 37.5% calc(100% - 5px), 35.4167% 100%, 33.3333% calc(100% - 5px), 31.25% 100%, 29.1667% calc(100% - 5px), 27.0833% 100%, 25% calc(100% - 5px), 22.9167% 100%, 20.8333% calc(100% - 5px), 18.75% 100%, 16.6667% calc(100% - 5px), 14.5833% 100%, 12.5% calc(100% - 5px), 10.4167% 100%, 8.3333% calc(100% - 5px), 6.25% 100%, 4.1667% calc(100% - 5px), 2.0833% 100%, 0% calc(100% - 5px));
+}
+
+/* Motion is decoration here, all of it. The global rule above already crushes
+   durations, but an infinite 0.01ms loop is not "off" — these say off. */
+@media (prefers-reduced-motion: reduce) {
+  .auth-mark-ring,
+  .auth-mark-pulse,
+  .auth-ticker-line,
+  .auth-rule,
+  .auth-line {
+    animation: none !important;
+  }
+}
