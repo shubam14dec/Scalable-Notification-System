@@ -121,7 +121,9 @@ When the user says **"start everything"** (all commands from the repo root
 
 4. **Tunnel: PART OF "start everything" — Claude runs it** (his
    2026-09-10 correction; the old his-terminal convention is dead).
-   Launch `npx asyncify dev` DETACHED (Start-Process hidden, env
+   Launch `npx asyncify dev` DETACHED — ONLY AFTER the api health
+   check passes (launched alongside, the CLI probes :3000 before the
+   api is up and exits; raced once 2026-09-11) (Start-Process hidden, env
    `ASYNCIFY_API_KEY=<his tenant key>` — the seed key sees zero
    connections; log to %TEMP%\asyncify-dev-logs\tunnel.log), then read
    the log for readiness + the ●-marked paste table and RELAY any ●
