@@ -335,14 +335,14 @@ export function AuthLayout({
       <div className="flex flex-1 justify-center overflow-y-auto bg-app px-4 py-10">
         <div className="my-auto w-full max-w-[400px]">
           {/* On desktop the brand lives on the bell panel; the card carries
-              none (the the reference structure, his call). On mobile the panel is
+              none (his call). On mobile the panel is
               gone, so a small wordmark stands above the card instead. */}
           <div className="mb-4 flex items-center justify-center gap-2 min-[900px]:hidden">
             <RippleMark size={15} className="text-t1" />
             <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
           </div>
           {/* The CARD — the Overview stat cards' own recipe (surface step in
-              a 1px border, radius-md), structured the reference-fashion: centered
+              a 1px border, radius-md), structured the way polished SaaS front doors are: centered
               title, muted subtitle, the form, and — when a page ends with an
               AuthFooter — an attached band at the base. overflow-hidden lets
               the band reach the clipped corners. The pulse line stays
@@ -362,7 +362,7 @@ export function AuthLayout({
 }
 
 /**
- * The switch-link band at a card's base — the reference's signature structural detail,
+ * The switch-link band at a card's base — the polished-SaaS structural detail,
  * in our inks: one background step DOWN from the card, behind a hairline. It
  * escapes the card's p-8 with negative margins, so pages keep composing it as
  * plain trailing content.

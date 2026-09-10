@@ -15,7 +15,7 @@ button FIRST + or-divider, live platform-operational /health pulse
 under the form); ?invite= renders as a serrated receipt TICKET; login
 success = one 400ms ripple ring; request-access success prints like a
 receipt; forgot/reset in the same frame; consistent footer switch
-links. Reference-inspired arrangement, NOT its gradient/logos/colored
+links. Reference-inspired arrangement, NOT the gradient/logos/colored
 CTA/terms row; reassurance line CUT at his call. CSS-only motion (no
 GSAP - lockfile), reduced-motion stills all, zero functional change.
 Riders queued with it: favicon, click-to-edit workflow name.
