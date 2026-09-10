@@ -6,9 +6,9 @@
  * (steps/:index/editor) as a full cover. Each Outlet child owns its own
  * positioning, so one Outlet serves both.
  */
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Pencil } from 'lucide-react';
 import { Button, Input, Mono, Skeleton } from '../../ui';
 import { SendTestModal } from '../../components/SendTest';
 import { useState } from 'react';
@@ -32,6 +32,9 @@ function EditorShell() {
   } = useWorkflow();
   const navigate = useNavigate();
   const [testOpen, setTestOpen] = useState(false);
+  // For the pencil: ui.tsx's Input doesn't forward refs, so focus goes
+  // through the wrapper.
+  const nameBoxRef = useRef<HTMLDivElement>(null);
 
   // Warn on browser close/reload with unsaved edits. (In-app nav uses the
   // Cancel confirm below; useBlocker needs a data router we don't run.)
@@ -71,13 +74,37 @@ function EditorShell() {
           <ArrowLeft className="h-4 w-4" />
         </button>
         <div className="min-w-0 flex-1">
-          <Input
-            aria-label="Workflow name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Workflow name"
-            className="!h-9 !border-transparent !px-1 !text-[18px] font-semibold hover:!border-bd focus:!border-bd-strong"
-          />
+          {/* The name is an input dressed as a heading, and nothing said so —
+              the border only appeared on hover, so editability was
+              undiscoverable (his catch). Two changes: the input now hugs its
+              text (an invisible mirror span sets the width) so the pencil can
+              sit right beside the words, and the pencil is the always-visible
+              "this is editable" cue — clicking it focuses the field. */}
+          <div className="flex min-w-0 items-center gap-1">
+            <div ref={nameBoxRef} className="relative min-w-[8rem] max-w-full shrink">
+              <span
+                aria-hidden
+                className="invisible block h-9 whitespace-pre px-1 text-[18px] font-semibold"
+              >
+                {name || 'Workflow name'}
+              </span>
+              <Input
+                aria-label="Workflow name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Workflow name"
+                className="absolute inset-0 !h-9 !border-transparent !px-1 !text-[18px] font-semibold hover:!border-bd focus:!border-bd-strong"
+              />
+            </div>
+            <button
+              type="button"
+              aria-label="Edit workflow name"
+              onClick={() => nameBoxRef.current?.querySelector('input')?.focus()}
+              className="grid h-6 w-6 shrink-0 place-items-center rounded text-t3 transition-colors hover:bg-elevated hover:text-t1"
+            >
+              <Pencil className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+            </button>
+          </div>
           <div className="flex items-center gap-2 px-1">
             {isNew ? (
               <input
