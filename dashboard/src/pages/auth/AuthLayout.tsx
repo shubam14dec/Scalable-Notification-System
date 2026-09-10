@@ -227,8 +227,8 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
           No more <span className="auth-noreply">noreply@</span> — every message can take an answer.
         </BrandPoint>
         <BrandPoint>
-          Delays, digest windows, skip-if-already-seen — and there is plenty
-          more of the craft inside. Sign up and put it to work.
+          Delays, digest windows, skip-if-already-seen — and many more
+          besides. Sign up and put it to work.
         </BrandPoint>
       </div>
 
