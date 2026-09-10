@@ -15,6 +15,10 @@ import { buildApp } from '../../src/api/app';
 import { env } from '../../src/config/env';
 import { pool } from '../../src/db/pool';
 import { redis } from '../../src/shared/redis';
+import {
+  setPlatformEmailSender,
+  type PlatformEmail,
+} from '../../src/core/platform-email';
 
 const CLIENT_ID = 'itest-client-id.apps.googleusercontent.com';
 const CLIENT_SECRET = 'itest-client-secret';
@@ -28,6 +32,15 @@ const json = (res: { body: string }) => JSON.parse(res.body);
 
 const originalGoogle = { ...env.google };
 const originalFetch = globalThis.fetch;
+
+/**
+ * U4 — every platform email the app tried to send, in order. The second seam in
+ * this file, and it exists for one question: which branches of
+ * `findOrCreateGoogleUser` are a NEW ACCOUNT and which are somebody
+ * who already had one (silence).
+ */
+const outbox: PlatformEmail[] = [];
+let restoreSender: () => void;
 
 // ---- the stubbed Google token endpoint -------------------------------------
 
@@ -118,6 +131,10 @@ async function orgCountFor(userId: string): Promise<number> {
 
 beforeAll(async () => {
   app = await buildApp();
+  restoreSender = setPlatformEmailSender(async (message) => {
+    outbox.push(message);
+    return true;
+  });
   stubGoogleTokenEndpoint();
   env.google.clientId = CLIENT_ID;
   env.google.clientSecret = CLIENT_SECRET;
@@ -130,9 +147,11 @@ beforeEach(async () => {
   // making the suite's own volume the thing under test.
   const keys = await redis.keys('*-rl:*');
   if (keys.length) await redis.del(...keys);
+  outbox.length = 0;
 });
 
 afterAll(async () => {
+  restoreSender();
   Object.assign(env.google, originalGoogle);
   globalThis.fetch = originalFetch;
 
@@ -336,6 +355,7 @@ describe('GET /auth/google/callback — the happy path', () => {
       [user.id],
     );
     expect(keys[0].n).toBe(2);
+
   });
 
   test('a second sign-in is the SAME user — no duplicate org', async () => {

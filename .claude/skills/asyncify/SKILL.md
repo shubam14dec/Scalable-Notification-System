@@ -119,15 +119,24 @@ When the user says **"start everything"** (all commands from the repo root
    (worker), :3001/health (ws), :5173 (dashboard). Report the four
    statuses; only claim "everything is up" when all four return.
 
-4. **Tunnel (Phase 16+): the USER runs `npx asyncify dev` in his own
-   terminal** (needs `$env:ASYNCIFY_API_KEY = <his tenant key>` — the
-   seed key sees zero connections). It spawns cloudflared, waits for
-   public reachability, publishes the runtime PUBLIC_URL (redis
-   `config:public-url` — zero process restarts), auto-reconnects
-   telegram, prints the ●-marked slack/email paste table, and watchdogs
-   rotations. NEVER hand-edit .env + restart for a tunnel change
-   anymore; that drill is dead. Slack/Postmark URLs need re-pasting
-   only when the URL actually rotated (● marks).
+4. **Tunnel: PART OF "start everything" — Claude runs it** (his
+   2026-09-10 correction; the old his-terminal convention is dead).
+   Launch `npx asyncify dev` DETACHED — ONLY AFTER the api health
+   check passes (launched alongside, the CLI probes :3000 before the
+   api is up and exits; raced once 2026-09-11) (Start-Process hidden, env
+   `ASYNCIFY_API_KEY=<his tenant key>` — the seed key sees zero
+   connections; log to %TEMP%\asyncify-dev-logs\tunnel.log), then read
+   the log for readiness + the ●-marked paste table and RELAY any ●
+   rows to him (his hands paste into Postmark/Slack consoles). It
+   spawns cloudflared, waits for public reachability, publishes the
+   runtime PUBLIC_URL (redis config:public-url — zero process
+   restarts), auto-reconnects telegram, and watchdogs rotations. NEVER
+   hand-edit .env + restart for a tunnel change; that drill is dead.
+   "Stop everything" kills it too: the CLI wrapper + node child (match
+   CommandLine on 'asyncify dev'/tunnel.log) and cloudflared by name,
+   BEFORE the port kills. Email paste goes to the asyncify-DEV
+   Postmark server (2026-09-10: dev/prod email separated — NEVER paste
+   a dev URL into the asyncify-prod server).
 
 **"Stop everything"**: stop the four Node background tasks, then
 `docker compose stop` (never `down -v` — that deletes data volumes).
@@ -274,7 +283,12 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
 - **Provider chains cache 30s per tenant+channel; auth cache 60s** — config
   changes are not instant across processes.
 - **The public repo must not name the reference systems** (the OSS platform
-  or the payments company) — scrubbed once already; keep it that way.
+  or the payments company) — scrubbed TWICE now (2026-09-11: the name leaked
+  into auth-page comments, tasks/todo.md and unpushed commit messages while
+  working from his screenshot of the reference product; filter-branch
+  scrubbed all three layers pre-push). The rule covers CODE COMMENTS, the
+  BOARD and COMMIT MESSAGES, and applies especially when he shares reference
+  screenshots — describe the pattern, never the product.
 - **Publishing is AUTOMATED — never run npm publish manually** (Phase 8,
   2026-07-10): token publishing is disallowed by npm package settings;
   the only path is release.yml via OIDC trusted publishing. The habit:

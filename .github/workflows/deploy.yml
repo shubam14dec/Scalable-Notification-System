@@ -38,11 +38,18 @@ jobs:
     timeout-minutes: 30
 
     env:
-      BOX: 173.212.243.218
-      # ed25519 host key of the box, captured 2026-09-07. If the box is ever
-      # reinstalled this line must be updated or every deploy fails closed —
-      # which is exactly the point.
-      BOX_HOSTKEY: '173.212.243.218 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIgspfMyebrXU1uy6zrr4E12wspP7EZ2waDbwH3HXvO5'
+      # Box address + pinned ed25519 host key live in GitHub repo VARIABLES
+      # (Settings → Secrets and variables → Actions → Variables), not in this
+      # public file — his call (2026-09-10): keeping the IP out of the repo is
+      # obscurity, not security (zero published ports; sshd is key-only), but
+      # there is no reason to hand out a junk-traffic target either. Neither
+      # value is secret-grade, so Variables, not Secrets. If the box is ever
+      # reinstalled, update BOX_HOSTKEY there or every deploy fails closed —
+      # which is exactly the point. The guard below refuses to run without
+      # both, so a fork or fresh clone fails loudly, never against a guessed
+      # host.
+      BOX: ${{ vars.BOX }}
+      BOX_HOSTKEY: ${{ vars.BOX_HOSTKEY }}
 
     steps:
       - name: Load the deploy key
@@ -52,6 +59,10 @@ jobs:
           set -euo pipefail
           if [ -z "$DEPLOY_SSH_KEY" ]; then
             echo "::error::DEPLOY_SSH_KEY secret is not set (Settings → Secrets → Actions)"
+            exit 1
+          fi
+          if [ -z "$BOX" ] || [ -z "$BOX_HOSTKEY" ]; then
+            echo "::error::BOX / BOX_HOSTKEY repo Variables are not set (Settings → Secrets and variables → Actions → Variables)"
             exit 1
           fi
           mkdir -p ~/.ssh

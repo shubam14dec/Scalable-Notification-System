@@ -507,8 +507,11 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 ```
 `-f` matters: the repo also carries the dev `docker-compose.yml`, and
 without it compose would pick that one. The box's `/root/.bashrc` exports
-`COMPOSE_FILE=docker-compose.prod.yml` as a belt-and-suspenders default for
-interactive shells. A dashboard-only change needs just `build web` +
+`COMPOSE_FILE=docker-compose.prod.yml` AND
+`COMPOSE_ENV_FILES=/root/asyncify/.env.prod` as belt-and-suspenders defaults
+for interactive shells — bare `docker compose` there picks the prod file and
+its env with no flags (without the second export, a bare `up -d` would
+interpolate ${POSTGRES_*}/${TUNNEL_ID} as blanks). A dashboard-only change needs just `build web` +
 `up -d web`.
 The schema is additive and `IF NOT EXISTS`, so a bad deploy rolls back with
 `git checkout <last-good>` + build + up — no schema rollback needed.

@@ -361,6 +361,7 @@ export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<
   }
 
   await provisionAccount(created, defaultOrganizationName(created.name, created.email));
+
   return { user: created };
 }
 

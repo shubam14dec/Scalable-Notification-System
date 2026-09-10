@@ -113,6 +113,20 @@ body {
     transform: translateY(0);
   }
 }
+/* Chrome autofill: picking a saved name/email repaints the field with the
+   browser's own colors, and against our transparent inputs that fight was
+   resolving to plain white (his report). Pin the state to Chrome's classic
+   light-blue instead — the inset-shadow trick is the only thing autofill's
+   internal !important styles respect — with dark ink so the value reads on
+   the blue in both themes. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #e8f0fe inset;
+  -webkit-text-fill-color: #171717;
+  caret-color: #171717;
+}
+
 /* Thin scrollbars that match the chrome */
 * {
   scrollbar-width: thin;
@@ -128,4 +142,149 @@ body {
 .new-pill-enter { animation: new-pill-in 180ms cubic-bezier(0.22, 1, 0.36, 1); }
 @media (prefers-reduced-motion: reduce) {
   .new-pill-enter { animation: none; }
+}
+
+/* ------------------------------------------------------------------ */
+/* U3 — the signed-out pages (login, request access, signup, reset).    */
+/* Presentation only; every form below still posts what it always did.  */
+/* ------------------------------------------------------------------ */
+
+/* The brand panel mirrors asyncify.org's canvas, so it is deliberately
+   THEME-INVARIANT — the ONE documented exception to "no hardcoded hex in
+   components". The exception lives here, in four local custom properties,
+   rather than scattered across the component: the panel is a picture of the
+   marketing site, and a picture does not flip to white when the app does.
+   The form column beside it stays fully theme-aware, on the app tokens. */
+.auth-canvas {
+  --auth-canvas: #0a0a0a;  /* the site's near-black ground */
+  --auth-ink: #ededed;     /* the site's off-white type */
+  --auth-muted: #6e6e6e;   /* the proof ticker's grey */
+  --auth-ring: #3f3f3f;    /* the ripple ring, at rest (favicon.svg) */
+  --auth-sub: #a1a1a1;     /* the subline grey, one step up from muted */
+  background: var(--auth-canvas);
+  color: var(--auth-ink);
+}
+
+/* ── THE BELL (v2 — his call, replacing the breathing mark): the site hero's
+   drawing, hanging from its thread. Strokes, weights and inks mirror
+   asyncify-site/src/styles.css (.b-line/.b-silhouette/.b-detail/.c-ball/
+   .foundry/.thread), local to the panel's own palette. The green on the
+   clapper ball and the glint is the site's sanctioned identity green — this
+   panel is a picture of the site, which is where that green lives. */
+.auth-canvas { --auth-detail: #d6d6d6; --auth-green-dim: #2ba36c; --auth-green: #3dd68c; }
+.auth-bell { display: block; overflow: visible; }
+.ab-thread { stroke: var(--auth-ring); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.ab-line { fill: none; stroke: var(--auth-ink); stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.ab-sil { stroke-width: 1.25; }
+.ab-detail { stroke-width: 1; stroke: var(--auth-detail); }
+.ab-ball { fill: var(--auth-green-dim); stroke: var(--auth-green-dim); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.ab-foundry {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 6px;
+  letter-spacing: 0.16em;
+  fill: var(--auth-muted);
+  opacity: 0.4;
+}
+
+/* The bell hangs STILL (his call — no idle sway). The group and its pivot
+   stay in place for the ring-out; motion here is only the glint and the ring. */
+
+/* The rim glint: the site's one green line at rest, surfacing every ~7s. */
+.ab-glint {
+  fill: none;
+  stroke: var(--auth-green);
+  stroke-width: 1;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  opacity: 0;
+  animation: auth-glint 7s ease-in-out infinite;
+}
+@keyframes auth-glint {
+  0%, 78%, 100% { opacity: 0; }
+  86%           { opacity: 0.55; }
+  92%           { opacity: 0.2; }
+}
+
+/* The site headline, its exact recipe (asyncify-site .headline/.hl-accent):
+   Geist Sans 400 with the payoff word in Instrument Serif italic at 1.08em. */
+.auth-headline {
+  font-weight: 400;
+  font-size: 42px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--auth-ink);
+}
+/* The site's .subline, verbatim recipe: 16px, dim grey, 52ch, pretty-wrapped. */
+.auth-subline {
+  max-width: 52ch;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--auth-sub);
+  text-wrap: pretty;
+}
+/* One rung quieter than the subline — an aside, not a second claim. */
+.auth-subnote {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--auth-muted);
+}
+/* The retired artifact, named in its own typeface and struck through. */
+.auth-noreply {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.95em;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.auth-hl-accent {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-style: italic;
+  font-size: 1.08em;
+  line-height: 1;
+}
+@font-face {
+  font-family: 'Instrument Serif';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/instrument-serif-latin-400-italic.woff2') format('woff2');
+}
+
+/* The proof ticker. Each line is absolutely positioned and animates its whole
+   journey itself, so lines never reflow each other — the cost is one interval
+   and at most three DOM nodes. */
+.auth-receipt { animation: auth-receipt-fall 2500ms ease-in both; }
+@keyframes auth-receipt-fall {
+  0%   { opacity: 0; transform: translateY(-4px) rotate(0deg); }
+  14%  { opacity: 1; transform: translateY(2px) rotate(-0.5deg); }
+  75%  { opacity: 0.85; transform: translateY(24px) rotate(-2deg); }
+  100% { opacity: 0; transform: translateY(38px) rotate(-3deg); }
+}
+
+/* Receipt lines, arriving in order. The delay is set per line, inline. */
+.auth-line { animation: auth-line-in 260ms ease-out both; }
+@keyframes auth-line-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* The receipt's torn bottom edge. clip-path over a gradient triangle strip:
+   the clip is geometry, so the teeth stay crisp at any zoom, and one property
+   does the whole job (a gradient strip needs two layers and still soft-edges
+   its hard stops). The clip also eats the bottom border — which is the point:
+   a tear has no printed edge. 24 teeth, 5px deep; generated, not hand-typed. */
+.auth-ticket {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 5px), 97.9167% 100%, 95.8333% calc(100% - 5px), 93.75% 100%, 91.6667% calc(100% - 5px), 89.5833% 100%, 87.5% calc(100% - 5px), 85.4167% 100%, 83.3333% calc(100% - 5px), 81.25% 100%, 79.1667% calc(100% - 5px), 77.0833% 100%, 75% calc(100% - 5px), 72.9167% 100%, 70.8333% calc(100% - 5px), 68.75% 100%, 66.6667% calc(100% - 5px), 64.5833% 100%, 62.5% calc(100% - 5px), 60.4167% 100%, 58.3333% calc(100% - 5px), 56.25% 100%, 54.1667% calc(100% - 5px), 52.0833% 100%, 50% calc(100% - 5px), 47.9167% 100%, 45.8333% calc(100% - 5px), 43.75% 100%, 41.6667% calc(100% - 5px), 39.5833% 100%, 37.5% calc(100% - 5px), 35.4167% 100%, 33.3333% calc(100% - 5px), 31.25% 100%, 29.1667% calc(100% - 5px), 27.0833% 100%, 25% calc(100% - 5px), 22.9167% 100%, 20.8333% calc(100% - 5px), 18.75% 100%, 16.6667% calc(100% - 5px), 14.5833% 100%, 12.5% calc(100% - 5px), 10.4167% 100%, 8.3333% calc(100% - 5px), 6.25% 100%, 4.1667% calc(100% - 5px), 2.0833% 100%, 0% calc(100% - 5px));
+}
+
+/* Motion is decoration here, all of it. The global rule above already crushes
+   durations, but an infinite 0.01ms loop is not "off" — these say off. */
+@media (prefers-reduced-motion: reduce) {
+  .ab-glint,
+  .auth-receipt,
+  .auth-line {
+    animation: none !important;
+  }
+  /* Still bell, but the glint stays faintly visible instead of vanishing —
+     the site does the same (it holds instead of travelling). */
+  .ab-glint { opacity: 0.4; }
 }

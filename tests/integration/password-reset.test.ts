@@ -51,16 +51,19 @@ async function clearBrake(name: string): Promise<void> {
   if (keys.length) await redis.del(...keys);
 }
 
+const rawSignup = (email: string, password: string) =>
+  app.inject({
+    method: 'POST',
+    url: '/auth/signup',
+    payload: { name: 'PW Tester', email, password, organizationName: `PW Org ${email}` },
+  });
+
 async function signup(email: string, password: string) {
   // The suite's own signup volume is not what is under test here, and some of
   // these run inside `beforeAll` hooks that fire ahead of the per-test brake
   // reset. Clear the budget explicitly, the way tests/setup.ts does per file.
   await clearBrake('signup');
-  const res = await app.inject({
-    method: 'POST',
-    url: '/auth/signup',
-    payload: { name: 'PW Tester', email, password, organizationName: `PW Org ${email}` },
-  });
+  const res = await rawSignup(email, password);
   expect(res.statusCode).toBe(201);
   return json(res);
 }

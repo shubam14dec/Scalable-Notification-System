@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The mark, favicon-scale: the delivered-dot inside the ripple-at-rest
+       ring — same glyph as the nav's .brand-mark. Stroke is heavier than the
+       site's hairline because a 1px ring disappears at 16px raster. -->
+  <rect width="32" height="32" rx="7" fill="#0a0a0a" />
+  <circle cx="16" cy="16" r="10.5" fill="none" stroke="#3f3f3f" stroke-width="1.5" />
+  <circle cx="16" cy="16" r="5" fill="#3dd68c" />
+</svg>

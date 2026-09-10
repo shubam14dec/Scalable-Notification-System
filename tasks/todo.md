@@ -6,7 +6,57 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### B1 — Invite-gated beta access (IN FLIGHT, plan approved 2026-09-10)
+### U4 — Platform email templates — DONE 2026-09-11 (his Mailpit + render E2E)
+One branded HTML shell for every platform-sent mail (multipart: html +
+the existing text kept): white canvas, wordmark + green delivered-dot
+(styled span - Gmail strips SVG), hairline card, mono for technical
+values, real CTA buttons with raw-link fallback, per-mail footer
+reason, hidden preheader. Applies to: password reset, access-request
+notification (escaped! stranger-typed name/use-case lands in the
+operator inbox; + Review-in-Requests button), invite approved - and
+NEW: a welcome email on account creation (his add), both doors. His
+review surface = Mailpit.
+OUTCOME: THREE mails (reset / access-request notify / invite) in one
+shell; the welcome mail was BUILT then CUT at his call (both doors,
+tests and all); invite congratulates ('Congratulations - you're in.');
+the invite-nobody joke cut. Dark mode added honestly: light inline
+base + prefers-color-scheme block (dashboard dark palette via ae-*
+classes, !important) - Apple Mail/desktop honour it, Gmail force-
+inverts regardless and the base survives it. Escaping via own esc
+incl. quotes; hostile payloads tested escaped-and-visible; zero remote
+requests + single green occurrence pinned by tests. 93 tests green
+across five suites.
+
+### U3 — Auth pages redesign — DONE 2026-09-11 (his live-dialed E2E)
+Final state after ~25 of his dial-in rounds (all committed singly):
+ONE near-black canvas page-wide (theme-invariant), brand column left /
+card right floating in a centered 1200px frame with real edge margins;
+the site hero's BELL drawn path-for-path hanging still from a short
+thread (250px, glint every ~7s) with PROOF RECEIPTS falling out of its
+mouth one at a time (the bottom ticker died for it); headline in the
+site's exact recipe (Instrument Serif italic say., static woff2), line
+1 sets the left edge, to-say centers under it, three mark-led points
+flush on the same edge (site subline / struck noreply@ / workflows +
+timing craft + signup nudge); form card = Overview recipe with
+centered title+subtitle, Google-first, AuthFooter switch band;
+retired at his call: breathing mark, idle sway, pulse line, success
+ring. Zero functional change throughout; suite + CSP guard green.
+REMINDER: reference-platform naming scrubbed from comments/board/
+commit history mid-phase (ledger sharpened).
+His ask: the front door should say 'the developer really spent time'.
+Concept approved: split frame — brand panel LEFT (near-black site
+canvas, theme-invariant; site headline 'Your product has something to
+say.', breathing ripple mark, mono proof-ticker), form RIGHT (Google
+button FIRST + or-divider, live platform-operational /health pulse
+under the form); ?invite= renders as a serrated receipt TICKET; login
+success = one 400ms ripple ring; request-access success prints like a
+receipt; forgot/reset in the same frame; consistent footer switch
+links. Reference-inspired arrangement, NOT the gradient/logos/colored
+CTA/terms row; reassurance line CUT at his call. CSS-only motion (no
+GSAP - lockfile), reduced-motion stills all, zero functional change.
+Riders queued with it: favicon, click-to-edit workflow name.
+
+### B1 — Invite-gated beta access — SHIPPED 2026-09-10 (review)
 SIGNUP_MODE open|invite (env, prod=invite; open = today, byte-
 identical) + OPERATOR_EMAILS human operator seat (dev
 shubam@xmobility.ai, prod shubamp981@gmail.com). access_requests table
@@ -24,7 +74,16 @@ one env flip. Not in v1: decline emails, CAPTCHA, waitlist metrics.
       google door returns a refused-union (302 gate=request, nothing
       created), budget spent by every valid body (state-leak-proof),
       race test = one 201 one 403 one org. 40 tests; suite 1322 green.
-- [ ] B1.2 his local E2E -> promote -> prod env lines -> his live E2E
+- [x] B1.2 DONE: his local E2E (both roles, Mailpit) then PR #27 ->
+      LIVE. Machine proof: prod signup 403s without invite; his 5-check
+      live run passed with REAL emails (request from shubamp462 ->
+      notify shubamp981 -> approve on Requests -> invite -> gated
+      signup -> reuse refused). Review: the deploy-day accepted risk
+      (open /auth/signup) is RETIRED - prod is a gated beta;
+      launch = SIGNUP_MODE=open + restart. Note: shubamp462@gmail.com
+      now holds a real prod tenant from the test (keep or ignore).
+      Rebase lesson: the changesets release PR merges into MAIN - pull
+      --rebase before pushing after any bot-PR merge.
 
 ### U2 — Settings page — SHIPPED 2026-09-09 (his E2E passed; cards side-by-side rider included)
 New sidebar item below API keys: Organization card (rename, owner/

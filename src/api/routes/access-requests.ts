@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { logger } from '../../shared/logger';
 import { sendPlatformEmail } from '../../core/platform-email';
+import { inviteEmail } from '../../core/platform-email-templates';
 import {
   approveAccessRequest,
   declineAccessRequest,
@@ -55,21 +56,6 @@ function requestView(row: AccessRequest) {
     // place, the applicant's email. An operator who could read it could sign up
     // as them, and a screen that displayed it would put it in every screenshot.
   };
-}
-
-function inviteEmailBody(link: string): string {
-  return [
-    "You asked for access to asyncify — you're in.",
-    '',
-    'Create your account here:',
-    link,
-    '',
-    'The link works for 7 days and can only be used once. Sign up with THIS',
-    'email address; the invite is issued to it and will not accept another.',
-    '',
-    'If the link has expired by the time you get to it, just ask again and',
-    "we'll send a fresh one.",
-  ].join('\n');
 }
 
 export function registerAccessRequestRoutes(app: FastifyInstance) {
@@ -139,11 +125,7 @@ export function registerAccessRequestRoutes(app: FastifyInstance) {
       const link = `${await dashboardOrigin()}/login?invite=${code}`;
       // Unawaited, like every other platform send: a slow relay must not hold
       // the operator's button in its loading state.
-      void sendPlatformEmail({
-        to: updated.email,
-        subject: "You're in — Asyncify access approved",
-        text: inviteEmailBody(link),
-      }).catch((err: Error) => {
+      void sendPlatformEmail({ to: updated.email, ...inviteEmail({ link }) }).catch((err: Error) => {
         logger.warn({ err: err.message }, 'access request: invite email threw');
       });
 

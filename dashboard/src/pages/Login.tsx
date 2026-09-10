@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   fetchAuthMethods,
@@ -10,7 +10,13 @@ import {
   ApiError,
   type AuthMethods,
 } from '../lib/api';
-import { Button, Card, Field, Input, PasswordInput, Skeleton } from '../ui';
+import { Button, Field, Input, PasswordInput, Skeleton } from '../ui';
+import {
+  AuthFooter,
+  AuthLayout,
+  Receipt,
+  ReceiptLine,
+} from './auth/AuthLayout';
 
 /** B1 — the one sentence a bounced Google sign-in lands on. */
 const INVITE_ONLY_NOTICE = 'Asyncify is invite-only right now — request access below.';
@@ -20,23 +26,12 @@ function useQueryParam(name: string): string {
   return useState(() => new URLSearchParams(window.location.search).get(name) ?? '')[0];
 }
 
-/** Shared by every signed-out page, including /reset-password. */
-export function AuthFrame({ children, title }: { children: React.ReactNode; title: string }) {
-  return (
-    <div className="flex h-full items-center justify-center bg-app">
-      <div className="w-full max-w-[360px] px-4">
-        <div className="mb-6 flex items-center justify-center gap-2">
-          <span aria-hidden className="h-2.5 w-2.5 rounded-full" style={{ background: 'var(--accent)' }} />
-          <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
-        </div>
-        <Card className="p-6">
-          <h1 className="mb-5 text-center text-[15px] font-semibold">{title}</h1>
-          {children}
-        </Card>
-      </div>
-    </div>
-  );
+/** The quiet line that sits above a form and explains why it is there. */
+function FormNotice({ children }: { children: React.ReactNode }) {
+  return <p className="mb-4 text-[12px] leading-relaxed text-t3">{children}</p>;
 }
+
+const linkStyle = 'text-t1 underline underline-offset-2';
 
 /**
  * The Google "G", monochrome. The brand mark is normally four colors; the
@@ -53,7 +48,37 @@ function GoogleMark() {
 }
 
 /**
- * "Forgot password?" — the same card, one field.
+ * U3 — the Google door, now ABOVE the email form: it is the faster way in for
+ * the people who have it, and a divider says the two are alternatives rather
+ * than steps. Same gate as before (only when /auth/methods says google), same
+ * plain navigation — the whole point of the redirect flow is that the browser
+ * walks to Google itself, so this is a location assignment, never a fetch.
+ */
+function GoogleSignIn({ disabled }: { disabled: boolean }) {
+  return (
+    <>
+      <Button
+        type="button"
+        className="w-full"
+        disabled={disabled}
+        onClick={() => {
+          window.location.href = '/auth/google';
+        }}
+      >
+        <GoogleMark />
+        Continue with Google
+      </Button>
+      <div className="my-4 flex items-center gap-3">
+        <span className="h-px flex-1 bg-bd" />
+        <span className="text-[11px] uppercase tracking-wide text-t3">or</span>
+        <span className="h-px flex-1 bg-bd" />
+      </div>
+    </>
+  );
+}
+
+/**
+ * "Forgot password?" — the same frame, one field.
  *
  * The confirmation NEVER varies: whether or not that address has an account,
  * the answer is the same sentence, because the server deliberately returns the
@@ -69,10 +94,12 @@ export function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
   if (sent) {
     return (
       <>
-        <p className="text-[13px] leading-relaxed text-t2">
-          If that account exists, a reset link is on its way. The link works for 30 minutes.
-        </p>
-        <Button type="button" className="mt-4 w-full" onClick={onBack}>
+        <Receipt label="Reset link sent" stagger>
+          <ReceiptLine index={0}>
+            If that account exists, a reset link is on its way. The link works for 30 minutes.
+          </ReceiptLine>
+        </Receipt>
+        <Button type="button" className="mt-5 w-full" onClick={onBack}>
           Back to log in
         </Button>
       </>
@@ -81,6 +108,9 @@ export function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
 
   return (
     <>
+      <FormNotice>
+        Enter the email you sign in with and we'll send a link to choose a new password.
+      </FormNotice>
       <form
         className="space-y-4"
         onSubmit={async (e) => {
@@ -100,9 +130,6 @@ export function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
           }
         }}
       >
-        <p className="text-[12px] leading-relaxed text-t3">
-          Enter the email you sign in with and we'll send a link to choose a new password.
-        </p>
         <Field label="Email">
           <Input name="email" type="email" required autoFocus placeholder="you@company.com" />
         </Field>
@@ -111,17 +138,17 @@ export function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
           {busy ? 'Sending…' : 'Send reset link'}
         </Button>
       </form>
-      <p className="mt-4 text-center text-[12px] text-t3">
-        <button type="button" className="text-t1 underline underline-offset-2" onClick={onBack}>
+      <AuthFooter>
+        <button type="button" className={linkStyle} onClick={onBack}>
           Back to log in
         </button>
-      </p>
+      </AuthFooter>
     </>
   );
 }
 
 /**
- * B1 — "let me in", the card that stands where the signup card stands while the
+ * B1 — "let me in", the form that stands where the signup form stands while the
  * deployment runs in invite mode.
  *
  * The confirmation NEVER varies, exactly like ForgotPasswordForm above and for
@@ -135,16 +162,21 @@ export function RequestAccessForm({ notice, onBack }: { notice?: string; onBack?
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
 
+  // U3 — the answer to something they just did, so it arrives as a receipt:
+  // same sentence, printed a line at a time.
   if (sent) {
     return (
-      <p className="text-[13px] leading-relaxed text-t2">
-        Thanks — we'll email you when you're in.
-      </p>
+      <Receipt label="Request received" stagger>
+        <ReceiptLine index={0}>Thanks — we'll email you when you're in.</ReceiptLine>
+      </Receipt>
     );
   }
 
   return (
     <>
+      <FormNotice>
+        {notice ?? "We're onboarding teams a few at a time. Tell us who you are and we'll be in touch."}
+      </FormNotice>
       <form
         className="space-y-4"
         onSubmit={async (e) => {
@@ -172,9 +204,6 @@ export function RequestAccessForm({ notice, onBack }: { notice?: string; onBack?
           }
         }}
       >
-        <p className="text-[12px] leading-relaxed text-t3">
-          {notice ?? "We're onboarding teams a few at a time. Tell us who you are and we'll be in touch."}
-        </p>
         <Field label="Your name">
           <Input name="name" required autoFocus maxLength={120} placeholder="Ada Lovelace" />
         </Field>
@@ -191,7 +220,7 @@ export function RequestAccessForm({ notice, onBack }: { notice?: string; onBack?
           <textarea
             name="useCase"
             required
-            rows={3}
+            rows={7}
             maxLength={500}
             placeholder="Transactional email and in-app notifications for our support product."
             className="w-full rounded-md border border-bd bg-transparent p-2.5 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
@@ -202,18 +231,18 @@ export function RequestAccessForm({ notice, onBack }: { notice?: string; onBack?
           {busy ? 'Sending…' : 'Request access'}
         </Button>
       </form>
-      <p className="mt-4 text-center text-[12px] text-t3">
+      <AuthFooter>
         Already have an account?{' '}
         {onBack ? (
-          <button type="button" className="text-t1 underline underline-offset-2" onClick={onBack}>
+          <button type="button" className={linkStyle} onClick={onBack}>
             Log in
           </button>
         ) : (
-          <Link to="/login" className="text-t1 underline underline-offset-2">
+          <Link to="/login" className={linkStyle}>
             Log in
           </Link>
         )}
-      </p>
+      </AuthFooter>
     </>
   );
 }
@@ -221,7 +250,7 @@ export function RequestAccessForm({ notice, onBack }: { notice?: string; onBack?
 /**
  * The account-creation form itself. Extracted from SignupPage because B1 gave
  * it a second home: an invite link lands on /login?invite=<code>, and that page
- * must be able to render the same card with the code wired in rather than
+ * must be able to render the same form with the code wired in rather than
  * bouncing an invited person through another navigation.
  */
 function SignupForm({ inviteCode }: { inviteCode?: string }) {
@@ -257,9 +286,19 @@ function SignupForm({ inviteCode }: { inviteCode?: string }) {
   return (
     <>
       {inviteCode && (
-        <p className="mb-4 text-[12px] leading-relaxed text-t3">
-          Invited — create your account with the email that received the invite.
-        </p>
+        <>
+          {/* U3 — the invite as a ticket. What it shows is that an invite is in
+              hand, never its value: the code is semi-sensitive, it is already
+              held in state for the submit, and printing it teaches nobody
+              anything. No expiry either — the client is not told one, and a
+              made-up date is worse than no date. */}
+          <Receipt label="Invite" className="mb-4">
+            <ReceiptLine>single use</ReceiptLine>
+          </Receipt>
+          <FormNotice>
+            Invited — create your account with the email that received the invite.
+          </FormNotice>
+        </>
       )}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Your name">
@@ -279,12 +318,12 @@ function SignupForm({ inviteCode }: { inviteCode?: string }) {
           {busy ? 'Creating…' : 'Create account'}
         </Button>
       </form>
-      <p className="mt-4 text-center text-[12px] text-t3">
+      <AuthFooter>
         Already have an account?{' '}
-        <Link to="/login" className="text-t1 underline underline-offset-2">
+        <Link to="/login" className={linkStyle}>
           Log in
         </Link>
-      </p>
+      </AuthFooter>
     </>
   );
 }
@@ -296,10 +335,13 @@ export function LoginPage() {
   const [methods, setMethods] = useState<AuthMethods | null>(null);
   const [forgot, setForgot] = useState(false);
   const [requesting, setRequesting] = useState(false);
+  // U3 — the 400ms between "you're in" and the navigation, during which the
+  // mark on the brand panel rings once. Never true when the panel is hidden or
+  // motion is turned down; those paths navigate on the spot.
 
   /**
    * B1 — the two ways this page is reached with a story attached:
-   *   ?invite=<code>  the link out of an approval email -> show the signup card
+   *   ?invite=<code>  the link out of an approval email -> show the signup form
    *   ?gate=request   a Google sign-in with no invite    -> show the ask form
    * Read once at mount, like `gcode` below.
    */
@@ -315,6 +357,10 @@ export function LoginPage() {
   // 401 — and StrictMode runs every mount effect twice in dev. The ref
   // survives that simulated remount; a state flag would not be set yet.
   const redeeming = useRef(false);
+
+  /** Where every successful sign-in lands — password and Google alike.
+      Instant: the success ring was retired (his call, 2026-09-11). */
+  const enter = useCallback(() => navigate('/'), [navigate]);
 
   useEffect(() => {
     // Feature detection, not a build flag: one bundle serves deployments with
@@ -332,10 +378,10 @@ export function LoginPage() {
     window.history.replaceState(null, '', window.location.pathname);
     setBusy(true);
     redeemGoogleCode(gcode)
-      .then(() => navigate('/'))
+      .then(() => enter())
       .catch(() => setError('Sign-in expired — try again'))
       .finally(() => setBusy(false));
-  }, [gcode, navigate]);
+  }, [gcode, enter]);
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -344,7 +390,7 @@ export function LoginPage() {
     setError('');
     try {
       await login(String(form.get('email')), String(form.get('password')));
-      navigate('/');
+      enter();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not reach the server');
     } finally {
@@ -354,25 +400,25 @@ export function LoginPage() {
 
   if (forgot) {
     return (
-      <AuthFrame title="Reset your password">
+      <AuthLayout title="Reset your password" subtitle="Choose a new password for your account.">
         <ForgotPasswordForm onBack={() => setForgot(false)} />
-      </AuthFrame>
+      </AuthLayout>
     );
   }
 
   // An invite link lands here. The code is the reason this person came, so the
-  // page becomes the signup card rather than making them find it.
+  // page becomes the signup form rather than making them find it.
   if (invite) {
     return (
-      <AuthFrame title="Create your account">
+      <AuthLayout title="Create your account" subtitle="A few details and you are in.">
         <SignupForm inviteCode={invite} />
-      </AuthFrame>
+      </AuthLayout>
     );
   }
 
   if (requesting || gate === 'request') {
     return (
-      <AuthFrame title="Request access">
+      <AuthLayout title="Request access">
         <RequestAccessForm
           notice={gate === 'request' ? INVITE_ONLY_NOTICE : undefined}
           onBack={() => {
@@ -385,12 +431,13 @@ export function LoginPage() {
             }
           }}
         />
-      </AuthFrame>
+      </AuthLayout>
     );
   }
 
   return (
-    <AuthFrame title="Log in">
+    <AuthLayout title="Log in" subtitle="Welcome back — log in to continue.">
+      {methods?.google && <GoogleSignIn disabled={busy} />}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Email">
           <Input name="email" type="email" required autoFocus placeholder="you@company.com" />
@@ -415,61 +462,35 @@ export function LoginPage() {
           Forgot password?
         </button>
       </p>
-      {methods?.google && (
-        <>
-          <div className="my-4 flex items-center gap-3">
-            <span className="h-px flex-1 bg-bd" />
-            <span className="text-[11px] uppercase tracking-wide text-t3">or</span>
-            <span className="h-px flex-1 bg-bd" />
-          </div>
-          {/* A plain navigation, not fetch: the whole point of the redirect
-              flow is that the browser walks to Google itself. */}
-          <Button
-            type="button"
-            className="w-full"
-            disabled={busy}
-            onClick={() => {
-              window.location.href = '/auth/google';
-            }}
-          >
-            <GoogleMark />
-            Continue with Google
-          </Button>
-        </>
-      )}
       {/* Held back until /auth/methods answers: in invite mode this is "request
           access", and offering "create an account" for a beat first would send
           people to a door that is not there. */}
       {methods && (
-        <p className="mt-4 text-center text-[12px] text-t3">
-          New here?{' '}
+        <AuthFooter>
+          No account?{' '}
           {methods.signupMode === 'invite' ? (
-            <button
-              type="button"
-              className="text-t1 underline underline-offset-2"
-              onClick={() => setRequesting(true)}
-            >
+            <button type="button" className={linkStyle} onClick={() => setRequesting(true)}>
               Request access
             </button>
           ) : (
-            <Link to="/signup" className="text-t1 underline underline-offset-2">
-              Create an account
+            <Link to="/signup" className={linkStyle}>
+              Create one
             </Link>
           )}
-        </p>
+        </AuthFooter>
       )}
-    </AuthFrame>
+    </AuthLayout>
   );
 }
 
 /**
- * B1 — the signup card, or the request-access card in its place.
+ * B1 — the signup form, or the request-access form in its place.
  *
  * Which one is decided by the SERVER's answer, never by a build flag, so one
- * bundle serves an open deployment and an invite-only one. The card is held
- * behind a skeleton until that answer lands: rendering "create your account"
- * for a beat and then swapping it for "request access" is the kind of flicker
- * that makes people think they missed something.
+ * bundle serves an open deployment and an invite-only one. It is held behind a
+ * skeleton until that answer lands: rendering "create your account" for a beat
+ * and then swapping it for "request access" is the kind of flicker that makes
+ * people think they missed something.
  */
 export function SignupPage() {
   const [methods, setMethods] = useState<AuthMethods | null>(null);
@@ -483,24 +504,24 @@ export function SignupPage() {
 
   if (!methods) {
     return (
-      <AuthFrame title="Create your account">
+      <AuthLayout title="Create your account" subtitle="A few details and you are in.">
         <Skeleton className="h-56 w-full" />
-      </AuthFrame>
+      </AuthLayout>
     );
   }
 
   // Invite mode with no code in hand: there is nothing to create yet.
   if (methods.signupMode === 'invite' && !invite) {
     return (
-      <AuthFrame title="Request access">
+      <AuthLayout title="Request access">
         <RequestAccessForm notice={INVITE_ONLY_NOTICE} />
-      </AuthFrame>
+      </AuthLayout>
     );
   }
 
   return (
-    <AuthFrame title="Create your account">
+    <AuthLayout title="Create your account" subtitle="A few details and you are in.">
       <SignupForm inviteCode={invite || undefined} />
-    </AuthFrame>
+    </AuthLayout>
   );
 }

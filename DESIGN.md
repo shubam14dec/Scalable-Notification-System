@@ -6,6 +6,11 @@ single source of truth (dashboard/src/styles.css): --bg --surface
 --elevated --bd --bd-strong --t1 --t2 --t3 --invert-* --ok --warn --err
 --info --accent --focus --overlay. Tailwind v4 @theme inline maps them
 (bg-app, bg-surface, bg-elevated, border-bd, text-t1/t2/t3, text-ok etc.).
+ONE documented exception (U3): the brand panel on the signed-out pages is
+theme-INVARIANT — it is a picture of asyncify.org's canvas, so it keeps the
+site's near-black in both themes, via four local custom properties on
+`.auth-canvas` in styles.css. The form column beside it follows the theme
+like everything else. Nowhere else hardcodes hex.
 
 ## Typography
 Geist Sans 400/500/600 for UI text; Geist Mono 400/500 for identifiers,
@@ -37,3 +42,13 @@ information surface.
 Minimal and functional: animate-pulse for live/pending dots, HMR-friendly
 transitions on hover (transition-colors). No entrance animations.
 Reduced-motion respected by keeping motion near-zero by default.
+
+The signed-out pages (U3) are the one place motion is allowed to be
+expressive, because they are the product's front door and carry no data:
+the mark breathes, the proof ticker drifts, the hairline draws once, receipt
+lines arrive in order, and a successful sign-in rings the mark before it
+navigates. All of it is CSS keyframes in styles.css (no library, no rAF, no
+canvas), every animation is switched OFF — not merely shortened — under
+prefers-reduced-motion, and the sign-in ring never delays a navigation for
+anyone who cannot see it (reduced motion or a viewport under 900px goes
+straight through). Nothing inside the app shell changes.

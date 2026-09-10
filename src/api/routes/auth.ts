@@ -6,6 +6,10 @@ import { getPublicUrl } from '../../config/public-url';
 import { logger } from '../../shared/logger';
 import { redis } from '../../shared/redis';
 import { sendPlatformEmail } from '../../core/platform-email';
+import {
+  accessRequestEmail,
+  passwordResetEmail,
+} from '../../core/platform-email-templates';
 import { hashPassword, verifyDummyPassword, verifyPassword } from '../../auth/password';
 import {
   createUser,
@@ -215,20 +219,6 @@ export async function dashboardOrigin(): Promise<string> {
   return process.env.NODE_ENV === 'production' ? await getPublicUrl() : 'http://localhost:5173';
 }
 
-function resetEmailBody(link: string): string {
-  return [
-    'Someone asked to reset the password on your asyncify account.',
-    '',
-    'Open this link to choose a new one:',
-    link,
-    '',
-    'The link works for 30 minutes and can only be used once.',
-    '',
-    'If you did not request this, you can ignore this email — nothing has',
-    'changed, and your current password still works.',
-  ].join('\n');
-}
-
 /**
  * Mint a reset token for a user we KNOW exists, park its digest in Redis, and
  * put the link in the post. Deliberately returns nothing: /auth/forgot's answer
@@ -255,11 +245,7 @@ async function issueResetLink(userId: string, email: string): Promise<void> {
   // NOT awaited. See the note in the route: the send is the one step whose cost
   // is unbounded and variable, and awaiting it here would make "this address is
   // registered" measurable from the response time alone.
-  void sendPlatformEmail({
-    to: email,
-    subject: 'Reset your asyncify password',
-    text: resetEmailBody(link),
-  }).catch((err: Error) => {
+  void sendPlatformEmail({ to: email, ...passwordResetEmail({ link }) }).catch((err: Error) => {
     logger.warn({ err: err.message }, 'password reset: send threw');
   });
 }
@@ -278,25 +264,23 @@ async function issueResetLink(userId: string, email: string): Promise<void> {
  * whoever eventually gets the seat.
  */
 function notifyOperators(name: string, email: string, useCase: string, origin: string): void {
-  const text = [
-    `${name} asked for access to asyncify.`,
-    '',
-    `Email:    ${email}`,
-    `Use case: ${useCase}`,
-    '',
-    `Approve or decline it on the Requests page: ${origin}/requests`,
-  ].join('\n');
+  // Built ONCE, outside the loop: every operator gets the identical message,
+  // and the escaping this applies to a stranger's name and use case (U4) is
+  // work that must not be repeated per recipient either.
+  const content = accessRequestEmail({
+    name,
+    email,
+    useCase,
+    requestsUrl: `${origin}/requests`,
+  });
 
   for (const operator of operatorEmails()) {
-    void sendPlatformEmail({
-      to: operator,
-      subject: `Access request from ${name}`,
-      text,
-    }).catch((err: Error) => {
+    void sendPlatformEmail({ to: operator, ...content }).catch((err: Error) => {
       logger.warn({ err: err.message }, 'access request: operator notification threw');
     });
   }
 }
+
 
 export function registerAuthRoutes(app: FastifyInstance) {
   const tokens = (userId: string) => mintSessionTokens(app, userId);
@@ -351,6 +335,9 @@ export function registerAuthRoutes(app: FastifyInstance) {
     }
 
     const { organization, environments } = await provisionAccount(user, body.organizationName);
+
+    // U4. Unawaited like every other platform send — the account exists, the
+    // keys are in the response, and a slow relay must not hold either.
 
     return reply.code(201).send({
       user: { id: user.id, name: user.name, email: user.email },
