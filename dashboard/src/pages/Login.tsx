@@ -16,8 +16,6 @@ import {
   AuthLayout,
   Receipt,
   ReceiptLine,
-  brandPanelVisible,
-  prefersReducedMotion,
 } from './auth/AuthLayout';
 
 /** B1 — the one sentence a bounced Google sign-in lands on. */
@@ -340,8 +338,6 @@ export function LoginPage() {
   // U3 — the 400ms between "you're in" and the navigation, during which the
   // mark on the brand panel rings once. Never true when the panel is hidden or
   // motion is turned down; those paths navigate on the spot.
-  const [ringing, setRinging] = useState(false);
-  const ringTimer = useRef<number>();
 
   /**
    * B1 — the two ways this page is reached with a story attached:
@@ -362,21 +358,9 @@ export function LoginPage() {
   // survives that simulated remount; a state flag would not be set yet.
   const redeeming = useRef(false);
 
-  useEffect(() => () => window.clearTimeout(ringTimer.current), []);
-
-  /**
-   * Where every successful sign-in lands — password and Google alike. The ring
-   * is decoration, so it never delays anyone who cannot see it: below 900px
-   * the panel is not rendered, and reduced motion means no animation at all.
-   */
-  const enter = useCallback(() => {
-    if (prefersReducedMotion() || !brandPanelVisible()) {
-      navigate('/');
-      return;
-    }
-    setRinging(true);
-    ringTimer.current = window.setTimeout(() => navigate('/'), 400);
-  }, [navigate]);
+  /** Where every successful sign-in lands — password and Google alike.
+      Instant: the success ring was retired (his call, 2026-09-11). */
+  const enter = useCallback(() => navigate('/'), [navigate]);
 
   useEffect(() => {
     // Feature detection, not a build flag: one bundle serves deployments with
@@ -452,7 +436,7 @@ export function LoginPage() {
   }
 
   return (
-    <AuthLayout title="Log in" subtitle="Welcome back — log in to continue." ringing={ringing}>
+    <AuthLayout title="Log in" subtitle="Welcome back — log in to continue.">
       {methods?.google && <GoogleSignIn disabled={busy} />}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Email">

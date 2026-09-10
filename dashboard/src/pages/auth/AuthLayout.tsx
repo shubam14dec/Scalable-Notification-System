@@ -131,8 +131,7 @@ function FallingReceipts() {
 /**
  * The brand panel. Hidden below 900px — on a phone the form is the whole page,
  * and a decorative half-screen above it is just scrolling.
- *
- * `ringing` fires the one-shot success ring; the caller navigates 400ms later.
+
  */
 /** One left-aligned point on the brand column: the mark as the bullet. */
 function BrandPoint({ children }: { children: ReactNode }) {
@@ -144,7 +143,7 @@ function BrandPoint({ children }: { children: ReactNode }) {
   );
 }
 
-function BrandPanel({ ringing }: { ringing: boolean }) {
+function BrandPanel() {
   const onScreen = useMediaQuery(PANEL_QUERY);
   // The page root carries .auth-canvas (the palette lives there); this column
   // only sizes and arranges. CSS hides it below the breakpoint; `onScreen`
@@ -157,9 +156,8 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
           (the identity green, same as the site), the foundry inscriptions
           cast on the skirt, and the rim glint. The thread runs from the
           panel's very top edge to the crown, so it hangs the way it hangs on
-          asyncify.org. It hangs STILL (his call); the rim glint surfaces
-          every ~7s, and a successful sign-in rings a ripple out of the
-          clapper ball. */}
+          asyncify.org. It hangs STILL (his call); the rim glint surfacing
+          every ~7s is its one motion. */}
       <div className="relative -translate-x-20">
       <svg
         className="auth-bell"
@@ -196,7 +194,6 @@ function BrandPanel({ ringing }: { ringing: boolean }) {
             <path className="ab-glint" d="M 13.6 114.6 C 26.2 114.3 38.8 112.4 47.4 109" />
           </g>
         </g>
-        {ringing && <circle className="ab-ring-out" cx="0.3" cy="99" r="12" />}
       </svg>
       {onScreen && <FallingReceipts />}
       </div>
@@ -289,19 +286,16 @@ export function ReceiptLine({
 }
 
 /**
- * The frame. `ringing` is only ever true on the login page, for the 400ms
- * between "you're in" and the navigation.
+ * The frame.
  */
 export function AuthLayout({
   children,
   title,
   subtitle,
-  ringing = false,
 }: {
   children: ReactNode;
   title: string;
   subtitle?: string;
-  ringing?: boolean;
 }) {
   return (
     // ONE canvas, his call from the reference layout: the site's near-black
@@ -310,7 +304,7 @@ export function AuthLayout({
     // card, matching margin on the right. No more edge-to-edge half-panels.
     <div className="auth-canvas h-full overflow-y-auto">
       <div className="mx-auto flex min-h-full w-full max-w-[1200px] items-stretch justify-between gap-12 px-6 min-[900px]:px-14">
-        <BrandPanel ringing={ringing} />
+        <BrandPanel />
         {/* my-auto, not items-center: a centered flex item that outgrows a
             scrolling parent overflows past the top edge, out of reach. */}
         <div className="mx-auto my-auto w-full max-w-[400px] py-10 min-[900px]:mx-0 min-[900px]:shrink-0">

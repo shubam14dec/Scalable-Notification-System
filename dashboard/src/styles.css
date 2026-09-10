@@ -191,22 +191,6 @@ body {
   92%           { opacity: 0.2; }
 }
 
-/* Sign-in accepted: a ripple rings out of the clapper ball, then the page
-   navigates. Origin = the ball's centre, (70.3, 149) from the viewBox corner. */
-.ab-ring-out {
-  fill: none;
-  stroke: var(--auth-green);
-  stroke-width: 1.25;
-  vector-effect: non-scaling-stroke;
-  transform-box: view-box;
-  transform-origin: 70.3px 149px;
-  animation: auth-ring-out 400ms ease-out both;
-}
-@keyframes auth-ring-out {
-  from { transform: scale(1);   opacity: 0.9; }
-  to   { transform: scale(3.4); opacity: 0; }
-}
-
 /* The site headline, its exact recipe (asyncify-site .headline/.hl-accent):
    Geist Sans 400 with the payoff word in Instrument Serif italic at 1.08em. */
 .auth-headline {
@@ -282,7 +266,6 @@ body {
    durations, but an infinite 0.01ms loop is not "off" — these say off. */
 @media (prefers-reduced-motion: reduce) {
   .ab-glint,
-  .ab-ring-out,
   .auth-receipt,
   .auth-line {
     animation: none !important;
