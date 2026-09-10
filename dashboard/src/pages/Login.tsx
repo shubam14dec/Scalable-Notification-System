@@ -222,7 +222,7 @@ export function RequestAccessForm({ notice, onBack }: { notice?: string; onBack?
           <textarea
             name="useCase"
             required
-            rows={3}
+            rows={5}
             maxLength={500}
             placeholder="Transactional email and in-app notifications for our support product."
             className="w-full rounded-md border border-bd bg-transparent p-2.5 text-[13px] text-t1 placeholder:text-t3 transition-colors duration-150 hover:border-bd-strong focus:border-bd-strong"
