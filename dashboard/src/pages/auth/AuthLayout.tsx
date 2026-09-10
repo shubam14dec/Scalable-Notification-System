@@ -206,7 +206,7 @@ function BrandPanel() {
       {/* One left-aligned block (his call): the headline's left edge is the
           ruler, and the three points sit flush under "Your". */}
       <div className="mt-14 flex -translate-x-20 flex-col items-start">
-      <p className="auth-headline text-left">
+      <p className="auth-headline text-center">
         {/* Exactly two lines, his call: the first segment must never wrap. */}
         <span className="whitespace-nowrap">Your product has something</span>
         <br />
