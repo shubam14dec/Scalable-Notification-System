@@ -227,7 +227,7 @@ function BrandPanel() {
         </BrandPoint>
         <BrandPoint>
           Workflows with delays, digest windows, skip-if-already-seen — and
-          many more. Sign up and put it to work.
+          many more features. Sign up and put it to work.
         </BrandPoint>
       </div>
       </div>
