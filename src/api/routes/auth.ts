@@ -9,7 +9,6 @@ import { sendPlatformEmail } from '../../core/platform-email';
 import {
   accessRequestEmail,
   passwordResetEmail,
-  welcomeEmail,
 } from '../../core/platform-email-templates';
 import { hashPassword, verifyDummyPassword, verifyPassword } from '../../auth/password';
 import {
@@ -282,37 +281,6 @@ function notifyOperators(name: string, email: string, useCase: string, origin: s
   }
 }
 
-/**
- * U4 — the one send-site for the welcome email, called from BOTH doors a new
- * account can come through (/auth/signup here, and the create branch of
- * `findOrCreateGoogleUser`).
- *
- * A function rather than two inline sends, and not a step inside
- * `provisionAccount`, for three reasons:
- *
- *  1. `provisionAccount` lives in `src/auth/` and knows nothing about HTTP;
- *     the link this email carries comes from `dashboardOrigin()`, which lives
- *     HERE and imports provisioning — putting the send in provisioning would
- *     be a module cycle.
- *  2. Provisioning is also a fixture: tests (and any future admin tooling)
- *     call it to build an account, and none of those should put mail in a
- *     stranger's inbox as a side effect of creating a row.
- *  3. "A new account was created by a person, at a door" is exactly the fact
- *     that justifies the email, and it is a fact only the route knows —
- *     provisioning can be run for reasons that are not that.
- *
- * `origin` is passed in rather than resolved in here so the send is fired
- * SYNCHRONOUSLY from the handler, the same shape `notifyOperators` has: an
- * awaited hop before the send would put it a microtask away from the request
- * that caused it, for no gain.
- */
-export function sendWelcomeEmail(to: string, origin: string): void {
-  void sendPlatformEmail({ to, ...welcomeEmail({ dashboardUrl: origin }) }).catch((err: Error) => {
-    // Never fatal, never surfaced: a new account is created and usable whether
-    // or not the note about it landed.
-    logger.warn({ err: err.message }, 'welcome email: send threw');
-  });
-}
 
 export function registerAuthRoutes(app: FastifyInstance) {
   const tokens = (userId: string) => mintSessionTokens(app, userId);
@@ -370,7 +338,6 @@ export function registerAuthRoutes(app: FastifyInstance) {
 
     // U4. Unawaited like every other platform send — the account exists, the
     // keys are in the response, and a slow relay must not hold either.
-    sendWelcomeEmail(user.email, await dashboardOrigin());
 
     return reply.code(201).send({
       user: { id: user.id, name: user.name, email: user.email },

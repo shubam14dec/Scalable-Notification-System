@@ -65,12 +65,6 @@ async function signup(email: string, password: string) {
   await clearBrake('signup');
   const res = await rawSignup(email, password);
   expect(res.statusCode).toBe(201);
-  // U4: creating an account now also sends a welcome email, so every signup in
-  // this file drops one into the outbox. This file is about RESET mail — take
-  // it back out here rather than teaching a dozen assertions to look past it.
-  // The welcome send has its own test at the bottom, where it is the subject.
-  const welcome = outbox.findIndex((m) => m.subject === 'Welcome to Asyncify');
-  if (welcome >= 0) outbox.splice(welcome, 1);
   return json(res);
 }
 
@@ -429,37 +423,6 @@ describe('POST /auth/reset — spending the link', () => {
     expect(row.google_sub).toBe(sub); // untouched
     expect(row.password_hash).toBeTruthy(); // and now they have a password too
     expect((await login(linked, 'linked-reset-pw')).statusCode).toBe(200);
-  });
-});
-
-// ---- the welcome email (U4) ------------------------------------------------
-
-describe('a brand-new account is welcomed', () => {
-  test('one signup sends exactly one welcome email, branded, to the new user', async () => {
-    const email = emailFor('welcomed');
-    await clearBrake('signup');
-    // The raw door, not the helper — the helper exists to REMOVE this email.
-    expect((await rawSignup(email, 'original-pw-1')).statusCode).toBe(201);
-
-    expect(outbox).toHaveLength(1);
-    const [mail] = outbox;
-    expect(mail.to).toBe(email);
-    expect(mail.subject).toBe('Welcome to Asyncify');
-    // Both parts, and the dashboard link a dev deployment actually has.
-    expect(mail.text).toContain('http://localhost:5173');
-    expect(mail.html).toContain('href="http://localhost:5173"');
-    expect(mail.html).toContain('Open the dashboard');
-    // Branded, and branded WITHOUT reaching out to anything.
-    expect(mail.html).toContain('#009159');
-    expect(mail.html).not.toMatch(/<img\b/i);
-  });
-
-  test('a failed signup welcomes nobody', async () => {
-    const email = emailFor('welcomed');
-    await clearBrake('signup');
-    // The address above is taken: a 409 is not a new account.
-    expect((await rawSignup(email, 'original-pw-1')).statusCode).toBe(409);
-    expect(outbox).toHaveLength(0);
   });
 });
 

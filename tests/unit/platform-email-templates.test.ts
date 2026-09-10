@@ -18,7 +18,6 @@ import {
   accessRequestEmail,
   inviteEmail,
   passwordResetEmail,
-  welcomeEmail,
   type PlatformEmailContent,
 } from '../../src/core/platform-email-templates';
 
@@ -112,27 +111,6 @@ describe('inviteEmail', () => {
     }
     expect(mail.html).toContain('Create your account');
     expect(mail.html).toContain('your access request was approved');
-  });
-});
-
-describe('welcomeEmail', () => {
-  const mail = welcomeEmail({ dashboardUrl: DASHBOARD });
-
-  test('is well formed and points at the dashboard from both parts', () => {
-    expect(mail.subject).toBe('Welcome to Asyncify');
-    expectsWellFormed(mail, DASHBOARD);
-  });
-
-  test('congratulates, carries the brand line, and lists the two starter moves', () => {
-    expect(mail.html).toContain('Congratulations — your account is live.');
-    expect(mail.html).toContain('your product has');
-    expect(mail.text).toContain('Congratulations — your account is live.');
-    expect(mail.html).toContain('Open the dashboard');
-    for (const part of [mail.text, mail.html]) {
-      expect(part).toMatch(/create a workflow/i);
-      expect(part).toMatch(/connect a channel/i);
-    }
-    expect(mail.html).toContain('you created an Asyncify account');
   });
 });
 

@@ -4,7 +4,7 @@
  * Four messages Asyncify sends AS ITSELF (see the essay at the top of
  * `platform-email.ts` for why they never ride a tenant's provider chain):
  * a password reset, an access request landing in an operator's inbox, an
- * approved invite, and the welcome note a brand-new account gets. Each builder
+ * approved invite. Each builder
  * returns `{subject, text, html}` — the exact shape `sendPlatformEmail` takes.
  *
  * This is NOT the tenant template system. `src/core/email-template.ts` compiles
@@ -100,32 +100,47 @@ function shell({ title, preheader, body, reason }: ShellParts): string {
     `<!doctype html><html lang="en"><head>` +
     `<meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<meta name="color-scheme" content="light">` +
+    `<meta name="color-scheme" content="light dark">` +
+    `<meta name="supported-color-schemes" content="light dark">` +
+    // Dark mode, honestly scoped: clients that honour prefers-color-scheme
+    // (Apple Mail, most desktop clients) get the real dark palette below;
+    // Gmail ignores author dark styles and force-inverts on its own — the
+    // light base is built so that inversion lands sanely. Classes carry the
+    // overrides because inline styles outrank a stylesheet without !important.
+    `<style>@media (prefers-color-scheme: dark){` +
+    `body,.ae-canvas{background-color:#0a0a0a!important;}` +
+    `.ae-card{background-color:#111111!important;border-color:#262626!important;}` +
+    `.ae-ink{color:#ededed!important;}` +
+    `.ae-muted{color:#a1a1a1!important;}` +
+    `.ae-dot{background-color:#3dd68c!important;}` +
+    `.ae-btn{background-color:#ededed!important;}` +
+    `.ae-btn-a{color:#0a0a0a!important;}` +
+    `}</style>` +
     `<title>${esc(title)}</title>` +
     `</head>` +
-    `<body style="margin:0;padding:0;background-color:${CANVAS};color:${INK};">` +
+    `<body class="ae-canvas ae-ink" style="margin:0;padding:0;background-color:${CANVAS};color:${INK};">` +
     `<span style="display:none!important;visibility:hidden;opacity:0;color:transparent;` +
     `height:0;width:0;max-height:0;max-width:0;overflow:hidden;mso-hide:all;">${esc(preheader)}</span>` +
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
-    `style="width:100%;border-collapse:collapse;background-color:${CANVAS};">` +
-    `<tr><td align="center" style="padding:32px 16px;background-color:${CANVAS};">` +
+    `class="ae-canvas" style="width:100%;border-collapse:collapse;background-color:${CANVAS};">` +
+    `<tr><td align="center" class="ae-canvas" style="padding:32px 16px;background-color:${CANVAS};">` +
     `<table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" ` +
     `style="width:100%;max-width:560px;border-collapse:collapse;">` +
     // wordmark
-    `<tr><td style="padding:0 2px 18px 2px;font-family:${SANS};font-size:15px;font-weight:600;` +
+    `<tr><td class="ae-ink" style="padding:0 2px 18px 2px;font-family:${SANS};font-size:15px;font-weight:600;` +
     `line-height:1.2;color:${INK};">Asyncify` +
-    `<span style="display:inline-block;width:6px;height:6px;border-radius:6px;` +
+    `<span class="ae-dot" style="display:inline-block;width:6px;height:6px;border-radius:6px;` +
     `background-color:${GREEN};margin-left:5px;"></span>` +
     `</td></tr>` +
     // the card
-    `<tr><td style="background-color:${CANVAS};border:1px solid ${HAIRLINE};border-radius:12px;` +
+    `<tr><td class="ae-card" style="background-color:${CANVAS};border:1px solid ${HAIRLINE};border-radius:12px;` +
     `padding:32px;">` +
-    `<h1 style="margin:0 0 14px 0;font-family:${SANS};font-size:20px;font-weight:600;` +
+    `<h1 class="ae-ink" style="margin:0 0 14px 0;font-family:${SANS};font-size:20px;font-weight:600;` +
     `line-height:1.3;color:${INK};">${esc(title)}</h1>` +
     body +
     `</td></tr>` +
     // footer
-    `<tr><td style="padding:18px 2px 0 2px;font-family:${SANS};font-size:12px;line-height:1.6;` +
+    `<tr><td class="ae-muted" style="padding:18px 2px 0 2px;font-family:${SANS};font-size:12px;line-height:1.6;` +
     `color:${MUTED};">` +
     `You&#39;re receiving this because ${esc(reason)}.<br>asyncify.org` +
     `</td></tr>` +
@@ -136,7 +151,7 @@ function shell({ title, preheader, body, reason }: ShellParts): string {
 /** A body paragraph. `html` is already-escaped markup, not raw input. */
 function paragraph(html: string): string {
   return (
-    `<p style="margin:0 0 16px 0;font-family:${SANS};font-size:15px;line-height:1.6;` +
+    `<p class="ae-ink" style="margin:0 0 16px 0;font-family:${SANS};font-size:15px;line-height:1.6;` +
     `color:${INK};">${html}</p>`
   );
 }
@@ -144,7 +159,7 @@ function paragraph(html: string): string {
 /** The quieter lines under a call to action — rules, expiries, next steps. */
 function note(lines: string[]): string {
   return (
-    `<p style="margin:0;font-family:${SANS};font-size:13px;line-height:1.6;color:${MUTED};">` +
+    `<p class="ae-muted" style="margin:0;font-family:${SANS};font-size:13px;line-height:1.6;color:${MUTED};">` +
     lines.join('<br>') +
     `</p>`
   );
@@ -166,14 +181,14 @@ function action(url: string, label: string): string {
   return (
     `<table role="presentation" cellpadding="0" cellspacing="0" border="0" ` +
     `style="border-collapse:collapse;margin:22px 0 14px 0;">` +
-    `<tr><td style="background-color:${INK};border-radius:8px;">` +
-    `<a href="${href}" style="display:inline-block;padding:11px 20px;font-family:${SANS};` +
+    `<tr><td class="ae-btn" style="background-color:${INK};border-radius:8px;">` +
+    `<a href="${href}" class="ae-btn-a" style="display:inline-block;padding:11px 20px;font-family:${SANS};` +
     `font-size:14px;font-weight:500;line-height:1.2;color:${CANVAS};text-decoration:none;` +
     `border-radius:8px;">${esc(label)}</a>` +
     `</td></tr></table>` +
-    `<p style="margin:0;font-family:${SANS};font-size:12px;line-height:1.6;color:${MUTED};">` +
+    `<p class="ae-muted" style="margin:0;font-family:${SANS};font-size:12px;line-height:1.6;color:${MUTED};">` +
     `Or paste this into your browser:<br>` +
-    `<span style="font-family:${MONO};font-size:12px;color:${MUTED};word-break:break-all;">` +
+    `<span class="ae-muted" style="font-family:${MONO};font-size:12px;color:${MUTED};word-break:break-all;">` +
     `${esc(url)}</span></p>`
   );
 }
@@ -314,44 +329,3 @@ export function inviteEmail({ link }: { link: string }): PlatformEmailContent {
   };
 }
 
-/**
- * U4's new one: the first thing a brand-new account hears from us.
- *
- * Deliberately short and deliberately not a tour. The person who just signed up
- * is looking at the dashboard right now — this email's job is to exist in their
- * inbox afterwards as the way back in, not to teach them the product from a
- * mail client.
- */
-export function welcomeEmail({ dashboardUrl }: { dashboardUrl: string }): PlatformEmailContent {
-  return {
-    subject: 'Welcome to Asyncify',
-    text: [
-      'Congratulations — your account is live.',
-      '',
-      'Your org, environments and API keys are ready — your product has',
-      'something to say.',
-      '',
-      'Open the dashboard:',
-      dashboardUrl,
-      '',
-      'From here:',
-      '  · create a workflow',
-      '  · connect a channel',
-    ].join('\n'),
-    html: shell({
-      title: 'Congratulations — your account is live.',
-      preheader: 'Your org, environments and API keys are ready.',
-      reason: 'you created an Asyncify account',
-      body:
-        paragraph(
-          'Your org, environments and API keys are ready — your product has ' +
-            'something to say.',
-        ) +
-        action(dashboardUrl, 'Open the dashboard') +
-        note([
-          'Create a workflow',
-          'Connect a channel',
-        ]),
-    }),
-  };
-}
