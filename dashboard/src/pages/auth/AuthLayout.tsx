@@ -331,14 +331,22 @@ export function AuthLayout({
       {/* my-auto, not items-center: a centered flex item that outgrows a
           scrolling parent overflows past the top edge, out of reach. */}
       <div className="flex flex-1 justify-center overflow-y-auto bg-app px-4 py-10">
-        <div className="my-auto w-full max-w-[360px]">
-          <div className="flex items-center gap-2">
-            <RippleMark size={15} className="text-t1" />
-            <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
+        <div className="my-auto w-full max-w-[400px]">
+          {/* The form lives in a CARD (his call, the the reference arrangement read
+              through our idiom): the Overview stat cards' own recipe —
+              surface step inside a 1px border, radius-md — so the form is a
+              clearly bounded object on the page rather than type floating on
+              the canvas. The pulse line stays OUTSIDE beneath it: it speaks
+              for the platform, not for this form. */}
+          <div className="rounded-md border border-bd bg-surface p-8">
+            <div className="flex items-center gap-2">
+              <RippleMark size={15} className="text-t1" />
+              <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
+            </div>
+            <div className="auth-rule mb-6 mt-3 h-px bg-bd" />
+            <h1 className="mb-5 text-[15px] font-semibold">{title}</h1>
+            {children}
           </div>
-          <div className="auth-rule mb-6 mt-3 h-px bg-bd" />
-          <h1 className="mb-5 text-[15px] font-semibold">{title}</h1>
-          {children}
           <PulseLine />
         </div>
       </div>
