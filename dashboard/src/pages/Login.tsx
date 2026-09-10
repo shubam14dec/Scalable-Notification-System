@@ -12,6 +12,7 @@ import {
 } from '../lib/api';
 import { Button, Field, Input, PasswordInput, Skeleton } from '../ui';
 import {
+  AuthFooter,
   AuthLayout,
   Receipt,
   ReceiptLine,
@@ -30,11 +31,6 @@ function useQueryParam(name: string): string {
 /** The quiet line that sits above a form and explains why it is there. */
 function FormNotice({ children }: { children: React.ReactNode }) {
   return <p className="mb-4 text-[12px] leading-relaxed text-t3">{children}</p>;
-}
-
-/** The footer slot every signed-out page ends with, one line, centered. */
-function AuthFooter({ children }: { children: React.ReactNode }) {
-  return <p className="mt-5 text-center text-[12px] text-t3">{children}</p>;
 }
 
 const linkStyle = 'text-t1 underline underline-offset-2';
@@ -420,7 +416,7 @@ export function LoginPage() {
 
   if (forgot) {
     return (
-      <AuthLayout title="Reset your password">
+      <AuthLayout title="Reset your password" subtitle="Choose a new password for your account.">
         <ForgotPasswordForm onBack={() => setForgot(false)} />
       </AuthLayout>
     );
@@ -430,7 +426,7 @@ export function LoginPage() {
   // page becomes the signup form rather than making them find it.
   if (invite) {
     return (
-      <AuthLayout title="Create your account">
+      <AuthLayout title="Create your account" subtitle="A few details and you are in.">
         <SignupForm inviteCode={invite} />
       </AuthLayout>
     );
@@ -456,7 +452,7 @@ export function LoginPage() {
   }
 
   return (
-    <AuthLayout title="Log in" ringing={ringing}>
+    <AuthLayout title="Log in" subtitle="Welcome back — log in to continue." ringing={ringing}>
       {methods?.google && <GoogleSignIn disabled={busy} />}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Email">
@@ -524,7 +520,7 @@ export function SignupPage() {
 
   if (!methods) {
     return (
-      <AuthLayout title="Create your account">
+      <AuthLayout title="Create your account" subtitle="A few details and you are in.">
         <Skeleton className="h-56 w-full" />
       </AuthLayout>
     );
@@ -540,7 +536,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthLayout title="Create your account">
+    <AuthLayout title="Create your account" subtitle="A few details and you are in.">
       <SignupForm inviteCode={invite || undefined} />
     </AuthLayout>
   );

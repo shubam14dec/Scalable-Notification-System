@@ -240,13 +240,6 @@ body {
   100% { opacity: 0; transform: translateY(-34px); }
 }
 
-/* The hairline under the wordmark draws across once, on mount. */
-.auth-rule { transform-origin: left; animation: auth-draw 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-@keyframes auth-draw {
-  from { transform: scaleX(0); }
-  to   { transform: scaleX(1); }
-}
-
 /* Receipt lines, arriving in order. The delay is set per line, inline. */
 .auth-line { animation: auth-line-in 260ms ease-out both; }
 @keyframes auth-line-in {
@@ -269,7 +262,6 @@ body {
   .ab-glint,
   .ab-ring-out,
   .auth-ticker-line,
-  .auth-rule,
   .auth-line {
     animation: none !important;
   }

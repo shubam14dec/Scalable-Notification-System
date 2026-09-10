@@ -319,10 +319,12 @@ export function ReceiptLine({
 export function AuthLayout({
   children,
   title,
+  subtitle,
   ringing = false,
 }: {
   children: ReactNode;
   title: string;
+  subtitle?: string;
   ringing?: boolean;
 }) {
   return (
@@ -332,24 +334,43 @@ export function AuthLayout({
           scrolling parent overflows past the top edge, out of reach. */}
       <div className="flex flex-1 justify-center overflow-y-auto bg-app px-4 py-10">
         <div className="my-auto w-full max-w-[400px]">
-          {/* The form lives in a CARD (his call, the the reference arrangement read
-              through our idiom): the Overview stat cards' own recipe —
-              surface step inside a 1px border, radius-md — so the form is a
-              clearly bounded object on the page rather than type floating on
-              the canvas. The pulse line stays OUTSIDE beneath it: it speaks
-              for the platform, not for this form. */}
-          <div className="rounded-md border border-bd bg-surface p-8">
-            <div className="flex items-center gap-2">
-              <RippleMark size={15} className="text-t1" />
-              <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
-            </div>
-            <div className="auth-rule mb-6 mt-3 h-px bg-bd" />
-            <h1 className="mb-5 text-[15px] font-semibold">{title}</h1>
-            {children}
+          {/* On desktop the brand lives on the bell panel; the card carries
+              none (the the reference structure, his call). On mobile the panel is
+              gone, so a small wordmark stands above the card instead. */}
+          <div className="mb-4 flex items-center justify-center gap-2 min-[900px]:hidden">
+            <RippleMark size={15} className="text-t1" />
+            <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
+          </div>
+          {/* The CARD — the Overview stat cards' own recipe (surface step in
+              a 1px border, radius-md), structured the reference-fashion: centered
+              title, muted subtitle, the form, and — when a page ends with an
+              AuthFooter — an attached band at the base. overflow-hidden lets
+              the band reach the clipped corners. The pulse line stays
+              OUTSIDE beneath: it speaks for the platform, not this form. */}
+          <div className="overflow-hidden rounded-md border border-bd bg-surface p-8">
+            <h1 className="text-center text-[16px] font-semibold">{title}</h1>
+            {subtitle && (
+              <p className="mt-1.5 text-center text-[12.5px] leading-relaxed text-t3">{subtitle}</p>
+            )}
+            <div className="mt-6">{children}</div>
           </div>
           <PulseLine />
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The switch-link band at a card's base — the reference's signature structural detail,
+ * in our inks: one background step DOWN from the card, behind a hairline. It
+ * escapes the card's p-8 with negative margins, so pages keep composing it as
+ * plain trailing content.
+ */
+export function AuthFooter({ children }: { children: ReactNode }) {
+  return (
+    <p className="-mx-8 -mb-8 mt-7 border-t border-bd bg-app px-8 py-4 text-center text-[12px] text-t3">
+      {children}
+    </p>
   );
 }
