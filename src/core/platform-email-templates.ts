@@ -281,14 +281,16 @@ export function accessRequestEmail({
   };
 }
 
-/** B1's approved invite. Wording unchanged. */
+/** B1's approved invite — congratulatory at his call. */
 export function inviteEmail({ link }: { link: string }): PlatformEmailContent {
   return {
     subject: "You're in — Asyncify access approved",
     text: [
-      "You asked for access to asyncify — you're in.",
+      "Congratulations — you're in.",
       '',
-      'Create your account here:',
+      'Your access request was approved. Create your account below and put',
+      'the platform to work.',
+      '',
       link,
       '',
       'The link works for 7 days and can only be used once. Sign up with THIS',
@@ -298,11 +300,11 @@ export function inviteEmail({ link }: { link: string }): PlatformEmailContent {
       "we'll send a fresh one.",
     ].join('\n'),
     html: shell({
-      title: "You're in",
+      title: "Congratulations — you're in.",
       preheader: 'Your access request was approved — create your account.',
       reason: 'your access request was approved',
       body:
-        paragraph('You asked for access to Asyncify. Your seat is ready.') +
+        paragraph('Your access request was approved. Create your account below and put the platform to work.') +
         action(link, 'Create your account') +
         note([
           'The link works for 7 days and can only be used once. Sign up with THIS email address — the invite is issued to it and will not accept another.',
@@ -324,10 +326,10 @@ export function welcomeEmail({ dashboardUrl }: { dashboardUrl: string }): Platfo
   return {
     subject: 'Welcome to Asyncify',
     text: [
-      "Your product has something to say. You're set up to say it.",
+      'Congratulations — your account is live.',
       '',
-      'Your organization is created, your Development and Production',
-      'environments are live, and each one has an API key waiting.',
+      'Your org, environments and API keys are ready — your product has',
+      'something to say.',
       '',
       'Open the dashboard:',
       dashboardUrl,
@@ -335,22 +337,20 @@ export function welcomeEmail({ dashboardUrl }: { dashboardUrl: string }): Platfo
       'From here:',
       '  · create a workflow',
       '  · connect a channel',
-      '  · invite nobody — it is a beta, and that is fine',
     ].join('\n'),
     html: shell({
-      title: 'Your product has something to say.',
+      title: 'Congratulations — your account is live.',
       preheader: 'Your org, environments and API keys are ready.',
       reason: 'you created an Asyncify account',
       body:
         paragraph(
-          "You're set up. Your organization is created, your Development and Production " +
-            'environments are live, and each one has an API key waiting.',
+          'Your org, environments and API keys are ready — your product has ' +
+            'something to say.',
         ) +
         action(dashboardUrl, 'Open the dashboard') +
         note([
           'Create a workflow',
           'Connect a channel',
-          'Invite nobody — it is a beta, and that is fine',
         ]),
     }),
   };

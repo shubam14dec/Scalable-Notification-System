@@ -123,14 +123,14 @@ describe('welcomeEmail', () => {
     expectsWellFormed(mail, DASHBOARD);
   });
 
-  test('leads with the brand line and the three starter moves', () => {
-    expect(mail.html).toContain('Your product has something to say.');
-    expect(mail.text).toContain('Your product has something to say.');
+  test('congratulates, carries the brand line, and lists the two starter moves', () => {
+    expect(mail.html).toContain('Congratulations — your account is live.');
+    expect(mail.html).toContain('your product has');
+    expect(mail.text).toContain('Congratulations — your account is live.');
     expect(mail.html).toContain('Open the dashboard');
     for (const part of [mail.text, mail.html]) {
       expect(part).toMatch(/create a workflow/i);
       expect(part).toMatch(/connect a channel/i);
-      expect(part).toMatch(/invite nobody/i);
     }
     expect(mail.html).toContain('you created an Asyncify account');
   });
