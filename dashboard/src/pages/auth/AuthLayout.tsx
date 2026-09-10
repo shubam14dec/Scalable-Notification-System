@@ -4,10 +4,11 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
  * U3 — the frame every signed-out page wears: login, request access, invited
  * signup, forgot password, and /reset-password.
  *
- * A split. On the left, a picture of asyncify.org — its near-black canvas, its
- * headline, its mark, and a ticker of the things this product actually says.
- * On the right, the form, on the app's own tokens, in whichever theme the
- * visitor picked. The left half is the pitch; the right half is the door.
+ * One canvas — asyncify.org's near-black, page-wide and theme-invariant —
+ * with two columns floating on it inside a centered max-width: the brand
+ * column (bell, headline, ticker) with real margin off the left edge, and the
+ * form card with matching margin on the right. The card itself stays on the
+ * app's theme tokens. The left column is the pitch; the card is the door.
  *
  * Presentation only: nothing in this file submits, fetches a credential, or
  * decides a flow. The one network call is a single /health measurement for the
@@ -139,19 +140,20 @@ function ProofTicker() {
  */
 function BrandPanel({ ringing }: { ringing: boolean }) {
   const onScreen = useMediaQuery(PANEL_QUERY);
-  // .auth-canvas pins the panel to the site's palette: it is a picture of the
-  // marketing page, and a picture does not flip to white when the app does.
-  // The CSS hides it below the breakpoint; `onScreen` also stops paying for it.
+  // The page root carries .auth-canvas (the palette lives there); this column
+  // only sizes and arranges. CSS hides it below the breakpoint; `onScreen`
+  // also stops paying for the ticker interval.
   return (
-    <div className="auth-canvas hidden w-[44%] max-w-[560px] shrink-0 flex-col items-center min-[900px]:flex">
+    <div className="hidden w-full max-w-[480px] shrink flex-col items-center min-[900px]:flex">
       {/* THE BELL — the site hero's own drawing, path for path (index.html
           scene 1): crown, deliberately asymmetric profiles, the sagging
           mouth, lip curls, yoke, the clapper whose ball is the delivered-dot
           (the identity green, same as the site), the foundry inscriptions
           cast on the skirt, and the rim glint. The thread runs from the
           panel's very top edge to the crown, so it hangs the way it hangs on
-          asyncify.org. Idle motion is a barely-there sway; a successful
-          sign-in rings a ripple out of the clapper ball. */}
+          asyncify.org. It hangs STILL (his call); the rim glint surfaces
+          every ~7s, and a successful sign-in rings a ripple out of the
+          clapper ball. */}
       <svg
         className="auth-bell translate-x-8"
         width="240"
@@ -328,17 +330,25 @@ export function AuthLayout({
   ringing?: boolean;
 }) {
   return (
-    <div className="flex h-full">
-      <BrandPanel ringing={ringing} />
-      {/* my-auto, not items-center: a centered flex item that outgrows a
-          scrolling parent overflows past the top edge, out of reach. */}
-      <div className="flex flex-1 justify-center overflow-y-auto bg-app px-4 py-10">
-        <div className="my-auto w-full max-w-[400px]">
-          {/* On desktop the brand lives on the bell panel; the card carries
-              none (his call). On mobile the panel is
-              gone, so a small wordmark stands above the card instead. */}
-          <div className="mb-4 flex items-center justify-center gap-2 min-[900px]:hidden">
-            <RippleMark size={15} className="text-t1" />
+    // ONE canvas, his call from the reference layout: the site's near-black
+    // covers the whole page, and BOTH columns float on it inside a centered
+    // max-width — real margin off the left edge, a real gap between brand and
+    // card, matching margin on the right. No more edge-to-edge half-panels.
+    <div className="auth-canvas h-full overflow-y-auto">
+      <div className="mx-auto flex min-h-full w-full max-w-[1200px] items-stretch justify-between gap-12 px-6 min-[900px]:px-14">
+        <BrandPanel ringing={ringing} />
+        {/* my-auto, not items-center: a centered flex item that outgrows a
+            scrolling parent overflows past the top edge, out of reach. */}
+        <div className="mx-auto my-auto w-full max-w-[400px] py-10 min-[900px]:mx-0 min-[900px]:shrink-0">
+          {/* On desktop the brand lives on the bell column; the card carries
+              none (his call). On mobile the column is gone, so a small
+              wordmark stands above the card instead — in the canvas ink, the
+              page background is the pinned near-black in every theme now. */}
+          <div
+            className="mb-4 flex items-center justify-center gap-2 min-[900px]:hidden"
+            style={{ color: 'var(--auth-ink)' }}
+          >
+            <RippleMark size={15} />
             <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
           </div>
           {/* The CARD — the Overview stat cards' own recipe (surface step in
@@ -360,6 +370,9 @@ export function AuthLayout({
     </div>
   );
 }
+
+/* The brand column no longer carries its own background — the page is the
+   canvas — so its class only sizes and arranges it (see BrandPanel). */
 
 /**
  * The switch-link band at a card's base — the polished-SaaS structural detail,
