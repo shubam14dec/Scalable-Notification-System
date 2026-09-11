@@ -321,7 +321,7 @@ export function AuthLayout({
             style={{ color: 'var(--auth-ink)' }}
           >
             <RippleMark size={15} />
-            <span className="text-[15px] font-semibold tracking-tight">asyncify</span>
+            <span className="text-[15px] font-semibold tracking-tight">Asyncify</span>
           </div>
           {/* The CARD — the Overview stat cards' own recipe (surface step in
               a 1px border, radius-md), structured the way polished SaaS front doors are: centered
