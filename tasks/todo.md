@@ -6,12 +6,21 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### U6 — First-key one-time reveal (IN FLIGHT, approved 2026-09-12)
+### U6 — First-key one-time reveal — DONE 2026-09-12 (his E2E)
 His find: the two provisioned keys are hashed by the time a new user
 lands on /keys - nothing to copy. Real fix approved: plaintext rides
 the signup RESPONSE (password door) and the sealed single-use gcode
 redis hop (Google door), page memory only, keys page greets a fresh
 account with the one-time CopyField reveal; hashed-at-rest unchanged.
+OUTCOME: build found the password door's 201 ALWAYS carried plaintext
+(environments[].apiKey) - the gap was dashboard-side; only the google
+door needed server work (sealed LoginCodePayload, keys on the create
+branch only, raw-redis test proves no ak_ plaintext). Reveal-vs-tour
+collision (his report) fixed: tour waits on an OPEN reveal only (the
+stash-counting version deadlocked Overview - caught writing his E2E
+steps). Landings left asymmetric at his call: password /keys
+reveal-first, google Overview tour-first. Refresh-before-visit loses
+keys by design. His E2E passed.
 
 ### U5 — First-run guided tour, Driver.js — DONE 2026-09-12 (his E2E)
 Seven stops, his sign-off (Settings stop CUT): env switcher ->
