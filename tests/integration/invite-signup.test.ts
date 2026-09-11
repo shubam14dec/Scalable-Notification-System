@@ -304,6 +304,22 @@ describe('POST /auth/signup in invite mode — the happy path', () => {
     expect(body.environments).toHaveLength(2);
     expect(body.accessToken).toBeTruthy();
 
+    // U6 — and revealed exactly like one: an invited account is still a brand
+    // new account, so its keys reach the dashboard through the same field.
+    expect(body.initialApiKeys).toHaveLength(2);
+    expect(
+      body.initialApiKeys.map((k: { environmentName: string }) => k.environmentName).sort(),
+    ).toEqual(['Development', 'Production']);
+    for (const k of body.initialApiKeys) {
+      expect(k.apiKey).toMatch(/^ak_/);
+      const authed = await app.inject({
+        method: 'GET',
+        url: '/v1/workflows',
+        headers: { 'x-api-key': k.apiKey },
+      });
+      expect(authed.statusCode).toBe(200);
+    }
+
     const row = await requestRow(email);
     expect(row.consumed_at).toBeTruthy();
     expect(row.status).toBe('approved'); // consumption is a latch, not a status
@@ -408,6 +424,9 @@ describe('Continue with Google in invite mode', () => {
     });
     expect(redeemed.statusCode).toBe(200);
     expect(json(redeemed).organizations[0].environments).toHaveLength(2);
+    // U6 — an invited Google account is a CREATED account, so its redeem
+    // carries the one-time keys just as an open-mode one does.
+    expect(json(redeemed).initialApiKeys).toHaveLength(2);
   });
 
   test('a RETURNING Google user is never re-gated (their invite is long spent)', async () => {

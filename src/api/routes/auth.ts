@@ -27,7 +27,7 @@ import {
   insertAccessRequest,
   reopenDeclinedRequest,
 } from '../../db/access-requests.repo';
-import { provisionAccount } from '../../auth/provisioning';
+import { initialApiKeysFrom, provisionAccount } from '../../auth/provisioning';
 import { isOperatorEmail, operatorEmails, requireUser } from '../jwt-auth';
 import { ipRateLimit } from '../rate-limit';
 
@@ -360,6 +360,15 @@ export function registerAuthRoutes(app: FastifyInstance) {
       user: { id: user.id, name: user.name, email: user.email },
       organization,
       environments,
+      /**
+       * U6 — the same keys `environments` already carries, in the shape BOTH
+       * sign-up doors emit. The Google door cannot send `environments` (its
+       * response is a session minted a redirect later, and a returning user's
+       * session must carry no keys at all), so this is the field the
+       * dashboard's one-time reveal reads, whichever door was used. It is the
+       * same plaintext already in this body, not a second exposure.
+       */
+      initialApiKeys: initialApiKeysFrom(environments),
       ...tokens(user.id),
     });
   });

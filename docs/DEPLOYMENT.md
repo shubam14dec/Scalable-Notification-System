@@ -255,7 +255,11 @@ exactly why the preflight below exists:
 - **`CREDENTIALS_ENCRYPTION_KEY` loss**: every stored provider credential
   (Resend, Postmark, Telegram, Slack, Twilio, LLM keys) becomes undecryptable
   ciphertext and every channel must be reconnected by hand. **A `pg_dump` taken
-  without this key is worthless for restoring integrations.**
+  without this key is worthless for restoring integrations.** The same box also
+  seals the Google one-time login codes in Redis (U6 — they carry a brand-new
+  account's API keys across the redirect hop); those self-heal in five minutes,
+  so a rotation costs at most a handful of in-flight sign-ins retrying, nothing
+  more. No new variable — this is the key you already set.
 
 ### The generic provider webhook is per-tenant (S1.2)
 

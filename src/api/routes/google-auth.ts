@@ -18,7 +18,13 @@ import {
   consumeAccessRequest,
   findLiveInviteForEmail,
 } from '../../db/access-requests.repo';
-import { defaultOrganizationName, provisionAccount } from '../../auth/provisioning';
+import {
+  defaultOrganizationName,
+  initialApiKeysFrom,
+  provisionAccount,
+  type InitialApiKey,
+} from '../../auth/provisioning';
+import { openSecret, sealSecret } from '../../auth/secret-box';
 import { ipRateLimit } from '../rate-limit';
 import { sessionResponse } from './auth';
 
@@ -84,6 +90,27 @@ const COOKIE_MAX_AGE_S = 600;
 /** How long the SPA has to redeem the one-time login code. */
 const LOGIN_CODE_TTL_S = 300;
 const loginCodeKey = (code: string) => `google-login:${code}`;
+
+/**
+ * U6 — what the one-time login code stands for in Redis.
+ *
+ * It used to be a bare user id. It is now this object, SEALED with the same
+ * AES-256-GCM box that holds provider credentials (`src/auth/secret-box.ts`),
+ * because on the create branch it carries something a user id is not: the
+ * plaintext API keys the account was just provisioned with, which exist nowhere
+ * else (only their SHA-256 hashes are stored) and which the browser has to be
+ * handed exactly once. Sealing means a Redis dump — an RDB in a backup, a
+ * `KEYS *` off a misconfigured instance — yields no readable key material, the
+ * same standard every other secret at rest here is held to.
+ *
+ * `initialApiKeys` is present ONLY on the create branch. The link branch and a
+ * returning user store `{ userId }` alone, so their redeem carries no keys —
+ * there is nothing new to reveal to someone who already has an account.
+ */
+interface LoginCodePayload {
+  userId: string;
+  initialApiKeys?: InitialApiKey[];
+}
 
 const RedeemSchema = z.object({ code: z.string().min(1).max(256) });
 
@@ -285,7 +312,16 @@ async function exchangeCode(code: string, verifier: string, redirectUri: string)
  * in the beta yet" is not an error, it is a redirect to the request form.
  */
 export type GoogleSignIn =
-  | { user: User }
+  | {
+      user: User;
+      /**
+       * U6 — set ONLY when this call created the account (case (c) below). The
+       * plaintext keys provisioning just minted, which nothing else will ever
+       * be able to hand back. Absent for a returning user and for a link: they
+       * already had an account, so there is nothing new to show them.
+       */
+      initialApiKeys?: InitialApiKey[];
+    }
   /** The address belongs to a different Google account — we refuse to re-point it. */
   | { refused: 'conflict' }
   /** B1 invite mode: no live invite for this address, so nothing was created. */
@@ -361,7 +397,10 @@ export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<
     return linked ? { user: linked } : { refused: 'conflict' };
   }
 
-  await provisionAccount(created, defaultOrganizationName(created.name, created.email));
+  const { environments } = await provisionAccount(
+    created,
+    defaultOrganizationName(created.name, created.email),
+  );
 
   /**
    * U5 — the second (and last) sign-up door arms the first-run tour, for the
@@ -378,7 +417,13 @@ export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<
    */
   await setTourPending(created.id, true);
 
-  return { user: created };
+  /**
+   * U6 — the plaintext keys leave this function, and this is the ONLY branch
+   * that returns them. They ride the sealed one-time code to the SPA (see the
+   * callback below); if the tab is closed before the redeem, they are gone for
+   * good and the user creates a replacement on the API keys page.
+   */
+  return { user: created, initialApiKeys: initialApiKeysFrom(environments) };
 }
 
 // --------------------------------------------------------------- the routes --
@@ -507,7 +552,7 @@ export function registerGoogleAuthRoutes(app: FastifyInstance) {
           'An account already exists for this email address. Log in with your password instead.',
         );
       }
-      const { user } = resolved;
+      const { user, initialApiKeys } = resolved;
 
       /**
        * THE ONE-TIME-CODE HOP. Two reasons the tokens are not simply put in
@@ -526,9 +571,22 @@ export function registerGoogleAuthRoutes(app: FastifyInstance) {
        *
        * Single-use (GETDEL) with a 5-minute TTL: it is worthless the instant
        * it is spent and it expires on its own if the tab is closed.
+       *
+       * U6 — what the code stands for is now a SEALED payload rather than a
+       * bare user id, because on the create branch it carries the plaintext API
+       * keys as well (see LoginCodePayload). Note the shape of the write: a
+       * returning user's payload is `{ userId }` and nothing more, so there is
+       * no key material parked in Redis for anyone who did not just create an
+       * account.
        */
       const loginCode = randomBytes(32).toString('hex');
-      await redis.set(loginCodeKey(loginCode), user.id, 'EX', LOGIN_CODE_TTL_S);
+      const payload: LoginCodePayload = { userId: user.id, ...(initialApiKeys && { initialApiKeys }) };
+      await redis.set(
+        loginCodeKey(loginCode),
+        sealSecret(JSON.stringify(payload)),
+        'EX',
+        LOGIN_CODE_TTL_S,
+      );
 
       // Empty origin = same origin (production, one host behind Caddy).
       return reply.redirect(`${env.google.postLoginOrigin}/login?gcode=${loginCode}`, 302);
@@ -547,13 +605,35 @@ export function registerGoogleAuthRoutes(app: FastifyInstance) {
 
       // GETDEL, not GET-then-DEL: the read and the burn are one atomic step,
       // so two tabs racing the same code cannot both get a session out of it.
-      const userId = await redis.getdel(loginCodeKey(parsed.data.code));
-      if (!userId) return reply.code(401).send({ error: 'sign-in expired — try again' });
+      const sealed = await redis.getdel(loginCodeKey(parsed.data.code));
+      if (!sealed) return reply.code(401).send({ error: 'sign-in expired — try again' });
 
-      const user = await getUserById(userId);
+      // A payload that will not open is a payload we did not write — a tampered
+      // value, or one sealed under a rotated CREDENTIALS_ENCRYPTION_KEY. Either
+      // way it names nobody, so it gets the same answer an invented code does.
+      // (The code is already spent by the GETDEL above, which is correct: a
+      // value we refuse to trust must not survive to be tried again.)
+      let payload: LoginCodePayload;
+      try {
+        payload = JSON.parse(openSecret(sealed)) as LoginCodePayload;
+      } catch (err) {
+        logger.warn({ err: (err as Error).message }, 'google redeem: unreadable login code payload');
+        return reply.code(401).send({ error: 'sign-in expired — try again' });
+      }
+
+      const user = await getUserById(payload.userId);
       if (!user) return reply.code(401).send({ error: 'sign-in expired — try again' });
 
-      return sessionResponse(app, user);
+      /**
+       * U6 — the keys ride out here on the create branch and ONLY there. Spread
+       * conditionally so a returning user's response is byte-identical to what
+       * it has always been: the dashboard treats "the field is absent" as "you
+       * already had an account", and an empty array would be a different claim.
+       */
+      return {
+        ...(await sessionResponse(app, user)),
+        ...(payload.initialApiKeys && { initialApiKeys: payload.initialApiKeys }),
+      };
     },
   );
 }

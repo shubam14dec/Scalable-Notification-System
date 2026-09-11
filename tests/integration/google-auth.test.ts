@@ -482,6 +482,10 @@ describe('POST /auth/google/redeem', () => {
     expect(body.refreshToken).toBeTruthy();
     expect(Array.isArray(body.organizations)).toBe(true);
     expect(body.organizations[0].environments).toHaveLength(2);
+    // U6 — this is a RETURNING user (the happy-path describe above created
+    // them), so there is nothing new to reveal and the field is absent. Not an
+    // empty array: absence is the signal the dashboard reads.
+    expect(body.initialApiKeys).toBeUndefined();
 
     const me = await app.inject({
       method: 'GET',
@@ -516,6 +520,122 @@ describe('POST /auth/google/redeem', () => {
       payload: { code: 'a'.repeat(64) },
     });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+// ---- U6: the one-time reveal across the redirect hop ------------------------
+
+/**
+ * The password door can put a new account's API keys straight in its own 201.
+ * The Google door cannot: the account is created in a CALLBACK, and the browser
+ * that needs the keys is two redirects away on another origin. These tests pin
+ * both halves of the answer — the keys survive the hop, and they do not sit in
+ * Redis in the clear while they wait.
+ */
+describe('U6 — a newly created Google account reveals its API keys once', () => {
+  const email = emailFor('greveal');
+  const sub = `sub-greveal-${suffix}`;
+  let code = '';
+
+  test('the login code in Redis is SEALED, not a readable payload', async () => {
+    const callback = await runCallback(claimsFor({ email, sub }));
+    expect(callback.statusCode).toBe(302);
+    code = gcodeFrom(String(callback.headers.location));
+    expect(code).toMatch(/^[0-9a-f]{64}$/);
+
+    // Read what an operator with a Redis console (or an RDB backup) would see.
+    const stored = await redis.get(`google-login:${code}`);
+    expect(stored).toBeTruthy();
+    // The AES-256-GCM envelope from src/auth/secret-box.ts...
+    expect(stored!.startsWith('v1:')).toBe(true);
+    // ...and nothing readable inside it: no key material, no user id, no JSON.
+    expect(stored).not.toContain('ak_');
+    expect(stored).not.toContain('initialApiKeys');
+    expect(stored).not.toContain('userId');
+  });
+
+  test('the redeem hands the keys over, and they authenticate', async () => {
+    const res = await app.inject({ method: 'POST', url: '/auth/google/redeem', payload: { code } });
+    expect(res.statusCode).toBe(200);
+    const body = json(res);
+    expect(body.user.email).toBe(email);
+
+    const keys = body.initialApiKeys as Array<{
+      environmentId: string;
+      environmentName: string;
+      apiKey: string;
+    }>;
+    expect(keys).toHaveLength(2);
+    expect(keys.map((k) => k.environmentName).sort()).toEqual(['Development', 'Production']);
+    for (const k of keys) {
+      expect(k.apiKey).toMatch(/^ak_/);
+      expect(k.environmentId).toBeTruthy();
+      const authed = await app.inject({
+        method: 'GET',
+        url: '/v1/workflows',
+        headers: { 'x-api-key': k.apiKey },
+      });
+      expect(authed.statusCode).toBe(200);
+    }
+  });
+
+  test('the code is still single-use — sealing did not soften the burn', async () => {
+    const second = await app.inject({
+      method: 'POST',
+      url: '/auth/google/redeem',
+      payload: { code },
+    });
+    expect(second.statusCode).toBe(401);
+    expect(json(second).error).toContain('expired');
+  });
+
+  test('signing in AGAIN reveals nothing — the account already exists', async () => {
+    const callback = await runCallback(claimsFor({ email, sub }));
+    const again = gcodeFrom(String(callback.headers.location));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/google/redeem',
+      payload: { code: again },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).initialApiKeys).toBeUndefined();
+  });
+
+  test('LINKING Google onto an existing password account reveals nothing either', async () => {
+    // They already have keys from their password signup; a second set would be
+    // a surprise, and this door created nothing to reveal.
+    const linkEmail = emailFor('glink-reveal');
+    const signup = await app.inject({
+      method: 'POST',
+      url: '/auth/signup',
+      payload: {
+        name: 'Ada Lovelace',
+        email: linkEmail,
+        password: 'integration-pw-1',
+        organizationName: 'Link Reveal Org',
+      },
+    });
+    expect(signup.statusCode).toBe(201);
+
+    const callback = await runCallback(
+      claimsFor({ email: linkEmail, sub: `sub-glink-reveal-${suffix}` }),
+    );
+    expect(callback.statusCode).toBe(302);
+    const linkCode = gcodeFrom(String(callback.headers.location));
+
+    // Sealed all the same — the payload shape is uniform, only its contents differ.
+    const stored = await redis.get(`google-login:${linkCode}`);
+    expect(stored!.startsWith('v1:')).toBe(true);
+    expect(stored).not.toContain('ak_');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/google/redeem',
+      payload: { code: linkCode },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).user.email).toBe(linkEmail);
+    expect(json(res).initialApiKeys).toBeUndefined();
   });
 });
 
