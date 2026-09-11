@@ -94,6 +94,32 @@ export function takeInitialApiKeys(): InitialApiKey[] | null {
   return keys;
 }
 
+/**
+ * U6/U5 sequencing: the first-run tour must not dim the page while the
+ * one-time key reveal is up (his report: both fired at once). The reveal is
+ * the perishable one — shown-once keys outrank orientation — so it goes
+ * first, and the tour waits on this tiny signal. `revealPending` is true
+ * from the moment keys are stashed until the reveal's Done; listeners fire
+ * once when it clears.
+ */
+let revealDoneListeners: Array<() => void> = [];
+export function initialKeyRevealPending(): boolean {
+  return stashedInitialApiKeys !== null || revealOpen;
+}
+let revealOpen = false;
+export function markRevealOpen(): void {
+  revealOpen = true;
+}
+export function markRevealDone(): void {
+  revealOpen = false;
+  const fire = revealDoneListeners;
+  revealDoneListeners = [];
+  for (const fn of fire) fn();
+}
+export function onRevealDone(fn: () => void): void {
+  revealDoneListeners.push(fn);
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

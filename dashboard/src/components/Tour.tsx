@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchMe, type Me } from '../lib/api';
+import { fetchMe, initialKeyRevealPending, onRevealDone, type Me } from '../lib/api';
 import { TOUR_MIN_VIEWPORT_WIDTH, TOUR_START_DELAY_MS, startTour } from '../lib/tour';
 
 /**
@@ -48,7 +48,13 @@ export default function FirstRunTour() {
      * the callback instead: if the shell is gone by the time it fires, its
      * targets are gone with it, and there is nothing to tour.
      */
-    setTimeout(() => {
+    /**
+     * U6 sequencing (his report: tour and key-reveal fired together, the
+     * overlay dimming the modal): the perishable thing goes first — if the
+     * one-time key reveal is pending or open, the tour waits for its Done
+     * and begins then; the settle delay applies either way.
+     */
+    const begin = () => setTimeout(() => {
       if (!document.querySelector('[data-tour="env"]')) return;
       startTour({
         onExit: () => {
@@ -62,6 +68,8 @@ export default function FirstRunTour() {
         },
       });
     }, TOUR_START_DELAY_MS);
+    if (initialKeyRevealPending()) onRevealDone(begin);
+    else begin();
   }, [tourPending, queryClient]);
 
   return null;

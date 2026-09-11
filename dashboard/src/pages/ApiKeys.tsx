@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, session, takeInitialApiKeys, type InitialApiKey } from '../lib/api';
+import { api, markRevealDone, markRevealOpen, session, takeInitialApiKeys, type InitialApiKey } from '../lib/api';
 import {
   Button,
   Card,
@@ -43,6 +43,7 @@ export default function ApiKeysPage() {
   const [initialKeys, setInitialKeys] = useState<InitialApiKey[] | null>(null);
   useEffect(() => {
     const claimed = takeInitialApiKeys();
+    if (claimed) markRevealOpen();
     if (claimed) setInitialKeys(claimed);
   }, []);
 
@@ -168,7 +169,7 @@ export default function ApiKeysPage() {
           anyone can copy them. Dismissing is final (the stash is already
           cleared) and so is a page refresh — by design, since keeping plaintext
           keys anywhere a reload could survive is the thing we refuse to do. */}
-      <Modal open={Boolean(initialKeys)} onClose={() => setInitialKeys(null)} title="Your API keys">
+      <Modal open={Boolean(initialKeys)} onClose={() => { setInitialKeys(null); markRevealDone(); }} title="Your API keys">
         <p className="mb-4 text-t2">
           Created with your account — this is the only time they are shown. Copy them somewhere
           safe.
@@ -184,7 +185,7 @@ export default function ApiKeysPage() {
           ))}
         </div>
         <div className="mt-5 flex justify-end">
-          <Button variant="primary" onClick={() => setInitialKeys(null)}>
+          <Button variant="primary" onClick={() => { setInitialKeys(null); markRevealDone(); }}>
             Done
           </Button>
         </div>
