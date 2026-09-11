@@ -143,7 +143,9 @@ When the user says **"start everything"** (all commands from the repo root
 spawns powershell -> npm -> cmd -> node --watch -> tsx, and killing
 only the port-holding tsx leaves a four-deep idle chain alive every
 cycle; the user spotted the ghost shells). After the port kills, sweep
-Win32_Process for CommandLine matching src/server.ts | 'npm run
+Win32_Process for CommandLine matching the REPO PATH ('novu notification' - the reliable net; the
+first sweep's 'src/server.ts' pattern missed 'src/api/server.ts' and
+left 6 orphans, 2026-09-13) | 'npm run
 (api|worker|ws)' | the repo path | 'asyncify dev' | vite-under-this-
 repo, EXCLUDING anything matching his other projects (hrms etc.) and
 Claude's own host processes. Verify zero 'our node procs remaining'
