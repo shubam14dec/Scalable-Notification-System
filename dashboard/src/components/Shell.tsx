@@ -208,12 +208,12 @@ export default function Shell() {
     <div className="flex h-full">
       <aside className="flex w-[232px] shrink-0 flex-col border-r border-bd bg-surface">
         {/* Brand: the only place the accent lives besides active nav */}
-        <div className="flex items-center gap-2 px-4 pb-2 pt-4 text-t1">
+        <div className="flex items-center gap-2 px-4 pb-5 pt-4 text-t1">
           {/* The ripple mark — the same glyph the auth pages and favicon
               carry (his call; the violet accent dot it replaces was the
               accent's last appearance here). */}
-          <RippleMark size={15} />
-          <span className="text-[14px] font-semibold tracking-tight">Asyncify</span>
+          <RippleMark size={17} />
+          <span className="text-[15px] font-semibold tracking-tight">Asyncify</span>
         </div>
 
         {/* data-tour: the guided tour's first stop highlights the whole
