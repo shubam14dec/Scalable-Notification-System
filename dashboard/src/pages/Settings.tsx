@@ -207,9 +207,9 @@ function PasswordCard() {
 /** U5 — the tour, re-runnable on demand: a card like its two neighbors. */
 function TourCard() {
   return (
-    <Card className="w-full p-5">
-      <h2 className="text-[14px] font-semibold text-t1">Product tour</h2>
-      <p className="mb-3 mt-1 text-[12px] leading-relaxed text-t3">
+    <Card className="w-full p-4">
+      <h2 className="text-[13px] font-semibold text-t1">Product tour</h2>
+      <p className="mb-2.5 mt-0.5 text-[12px] leading-snug text-t3">
         Replay the first-visit walkthrough.
       </p>
       <Button type="button" onClick={() => startTour()}>
@@ -223,15 +223,16 @@ export default function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" />
-      {/* His layout: the two account cards stacked in a centered main
-          column, the tour as a small aside on their right; everything
-          single-column under 900px. */}
-      <div className="mx-auto flex max-w-[760px] flex-col gap-6 min-[900px]:flex-row min-[900px]:items-start">
-        <div className="flex min-w-0 flex-1 flex-col gap-6">
+      {/* His layout, v2: the account stack is TRULY centered on the page —
+          a 1fr / fixed / 1fr grid whose side tracks match, with the tour
+          aside living in the right track so it never shifts the center;
+          single column under 900px. */}
+      <div className="flex flex-col gap-6 min-[900px]:grid min-[900px]:grid-cols-[1fr_420px_1fr] min-[900px]:items-start min-[900px]:gap-x-8">
+        <div className="flex min-w-0 flex-col gap-6 min-[900px]:col-start-2">
           <OrganizationCard />
           <PasswordCard />
         </div>
-        <div className="w-full shrink-0 min-[900px]:w-[280px]">
+        <div className="min-[900px]:col-start-3 min-[900px]:w-[280px] min-[900px]:justify-self-start">
           <TourCard />
         </div>
       </div>
