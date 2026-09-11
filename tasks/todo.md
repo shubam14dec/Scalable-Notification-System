@@ -6,7 +6,42 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### U4 — Platform email templates — DONE 2026-09-11 (his Mailpit + render E2E)
+### U6 — First-key one-time reveal — DONE 2026-09-12 (his E2E)
+His find: the two provisioned keys are hashed by the time a new user
+lands on /keys - nothing to copy. Real fix approved: plaintext rides
+the signup RESPONSE (password door) and the sealed single-use gcode
+redis hop (Google door), page memory only, keys page greets a fresh
+account with the one-time CopyField reveal; hashed-at-rest unchanged.
+OUTCOME: build found the password door's 201 ALWAYS carried plaintext
+(environments[].apiKey) - the gap was dashboard-side; only the google
+door needed server work (sealed LoginCodePayload, keys on the create
+branch only, raw-redis test proves no ak_ plaintext). Reveal-vs-tour
+collision (his report) fixed: tour waits on an OPEN reveal only (the
+stash-counting version deadlocked Overview - caught writing his E2E
+steps). Landings left asymmetric at his call: password /keys
+reveal-first, google Overview tour-first. Refresh-before-visit loses
+keys by design. His E2E passed.
+
+### U5 — First-run guided tour, Driver.js — DONE 2026-09-12 (his E2E)
+Seven stops, his sign-off (Settings stop CUT): env switcher ->
+Workflows -> Connections -> Agents -> API keys -> Inbox Preview (the
+aha: send a test, watch it land) -> Activity. Server-side tour_pending
+flag (new accounts only - existing rows never see it), shows once,
+skip = seen, replayable from Settings; popovers wear the house card
+idiom both themes; driver.js = NEW DEP -> clean-room lockfile drill.
+OUTCOME: his E2E passed (fires for fresh accounts, skip=seen, replay
+works, existing logins never see it). Lockfile drill proved the
+poisoning AGAIN (@emnapi 12->9 on raw install; clean-room restored,
+validator OK both locks, root untouched). Test-pinned subtlety: the
+browser posts tour-done as json content-type with EMPTY body - the
+custom parser reads {}, stock Fastify would 400 and the tour would
+silently return forever. Settings page reorganized in the same phase
+(his dials): account cards stacked in a truly-centered 520px column
+(1fr/520/1fr grid), tour = compact 280px aside right. Rider: his own
+deletion of the Chrome-autofill override confirmed + committed
+separately.
+
+### U4 — Platform email templates — DONE 2026-09-11; U3+U4 batch LIVE on app.asyncify.org via PR #28 (his live verification 2026-09-12)
 One branded HTML shell for every platform-sent mail (multipart: html +
 the existing text kept): white canvas, wordmark + green delivered-dot
 (styled span - Gmail strips SVG), hairline card, mono for technical

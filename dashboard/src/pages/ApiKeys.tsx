@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, session } from '../lib/api';
+import { api, markRevealDone, markRevealOpen, session, takeInitialApiKeys, type InitialApiKey } from '../lib/api';
 import {
   Button,
   Card,
@@ -29,6 +29,23 @@ export default function ApiKeysPage() {
   const envId = session.envId;
   const [createOpen, setCreateOpen] = useState(false);
   const [freshKey, setFreshKey] = useState<string | null>(null);
+
+  /**
+   * U6 — the keys this account was provisioned with at sign-up, shown once.
+   *
+   * Claimed in an EFFECT rather than a `useState` initializer on purpose:
+   * StrictMode double-invokes initializers in dev and keeps only the second
+   * render's value, so a read-and-clear in there would take the keys on the
+   * first pass and render the second pass's `null` — the reveal would work in
+   * production and silently never appear in dev. Here the second run finds
+   * nothing and the `if` leaves the state from the first alone.
+   */
+  const [initialKeys, setInitialKeys] = useState<InitialApiKey[] | null>(null);
+  useEffect(() => {
+    const claimed = takeInitialApiKeys();
+    if (claimed) markRevealOpen();
+    if (claimed) setInitialKeys(claimed);
+  }, []);
 
   const { data, isLoading } = useQuery({
     queryKey: ['api-keys', envId],
@@ -144,6 +161,34 @@ export default function ApiKeysPage() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* U6 — the sign-up keys, revealed once. Same idiom as the fresh-key
+          modal below, for two keys instead of one: they were minted server-side
+          during sign-up, they are stored hashed, and this is the only moment
+          anyone can copy them. Dismissing is final (the stash is already
+          cleared) and so is a page refresh — by design, since keeping plaintext
+          keys anywhere a reload could survive is the thing we refuse to do. */}
+      <Modal open={Boolean(initialKeys)} onClose={() => { setInitialKeys(null); markRevealDone(); }} title="Your API keys">
+        <p className="mb-4 text-t2">
+          Created with your account — this is the only time they are shown. Copy them somewhere
+          safe.
+        </p>
+        <div className="space-y-4">
+          {initialKeys?.map((k) => (
+            <div key={k.environmentId}>
+              <span className="mb-1.5 block text-[12px] font-medium text-t2">
+                {k.environmentName}
+              </span>
+              <CopyField value={k.apiKey} />
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 flex justify-end">
+          <Button variant="primary" onClick={() => { setInitialKeys(null); markRevealDone(); }}>
+            Done
+          </Button>
+        </div>
       </Modal>
 
       <Modal open={Boolean(freshKey)} onClose={() => setFreshKey(null)} title="Copy your new key">

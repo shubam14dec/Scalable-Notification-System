@@ -19,6 +19,8 @@ let accessToken = '';
 let devKey = '';
 let prodKey = '';
 let devEnvId = '';
+/** U6 — the keys the signup response offers for the dashboard's one-time reveal. */
+let initialApiKeys: Array<{ environmentId: string; environmentName: string; apiKey: string }> = [];
 
 const json = (res: { body: string }) => JSON.parse(res.body);
 
@@ -51,6 +53,37 @@ describe('auth + accounts', () => {
     devKey = dev.apiKey;
     prodKey = prod.apiKey;
     devEnvId = dev.id;
+
+    /**
+     * U6 — the one-time reveal's supply line. The dashboard reads exactly this
+     * field, and the Google door (google-auth.test.ts) emits the same shape, so
+     * a new account's keys reach the browser through ONE code path whichever
+     * door it came in by. Each entry names the environment it belongs to,
+     * because the reveal shows two keys and they are not interchangeable.
+     */
+    initialApiKeys = body.initialApiKeys;
+    expect(initialApiKeys).toHaveLength(2);
+    expect(initialApiKeys.map((k) => k.environmentName).sort()).toEqual([
+      'Development',
+      'Production',
+    ]);
+    for (const k of initialApiKeys) {
+      expect(k.apiKey).toMatch(/^ak_/);
+      expect(k.environmentId).toBeTruthy();
+    }
+  });
+
+  test('the revealed signup keys actually authenticate', async () => {
+    // Not decoration: a reveal that shows an unusable string is worse than no
+    // reveal, so every key the modal would print opens the API it names.
+    for (const k of initialApiKeys) {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v1/workflows',
+        headers: { 'x-api-key': k.apiKey },
+      });
+      expect(res.statusCode).toBe(200);
+    }
   });
 
   test('duplicate email is rejected without leaking details', async () => {

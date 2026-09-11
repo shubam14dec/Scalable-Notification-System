@@ -4,6 +4,12 @@
 @import '@fontsource/geist-mono/400.css';
 @import '@fontsource/geist-mono/500.css';
 @import 'tailwindcss';
+/* U5 — driver.js's own popover/overlay CSS, restyled into the house card idiom
+   by the U5 block at the bottom of this file. Imported HERE rather than from
+   the tour module so the cascade order is fixed by one stylesheet — vendor
+   first, our overrides last — instead of by whichever module vite happens to
+   load first. */
+@import 'driver.js/dist/driver.css';
 
 /* ------------------------------------------------------------------ */
 /* Tokens — the single source of truth (see .claude/skills/dashboard-design) */
@@ -113,20 +119,6 @@ body {
     transform: translateY(0);
   }
 }
-/* Chrome autofill: picking a saved name/email repaints the field with the
-   browser's own colors, and against our transparent inputs that fight was
-   resolving to plain white (his report). Pin the state to Chrome's classic
-   light-blue instead — the inset-shadow trick is the only thing autofill's
-   internal !important styles respect — with dark ink so the value reads on
-   the blue in both themes. */
-input:-webkit-autofill,
-input:-webkit-autofill:hover,
-input:-webkit-autofill:focus {
-  -webkit-box-shadow: 0 0 0 1000px #e8f0fe inset;
-  -webkit-text-fill-color: #171717;
-  caret-color: #171717;
-}
-
 /* Thin scrollbars that match the chrome */
 * {
   scrollbar-width: thin;
@@ -287,4 +279,136 @@ input:-webkit-autofill:focus {
   /* Still bell, but the glint stays faintly visible instead of vanishing —
      the site does the same (it holds instead of travelling). */
   .ab-glint { opacity: 0.4; }
+}
+
+/* ------------------------------------------------------------------ */
+/* U5 — THE GUIDED TOUR's popovers (driver.js), wearing the house card. */
+/*                                                                     */
+/* driver.js ships a white, rounded, drop-shadowed bubble with 19px     */
+/* bold titles — a perfectly good popover for somebody else's product.  */
+/* Everything below drags it onto the app's own tokens so the tour      */
+/* looks like part of the dashboard in BOTH themes: surface + one 1px   */
+/* border, no shadow (depth here is a background step and a border,     */
+/* never a shadow), 13px type, monochrome buttons, mono progress text.  */
+/* Scoped to `.asyncify-tour` (the popoverClass in lib/tour.ts) so it   */
+/* is explicit about what it restyles.                                  */
+/* ------------------------------------------------------------------ */
+.driver-popover.asyncify-tour {
+  background-color: var(--surface);
+  color: var(--t1);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  box-shadow: none;
+  padding: 14px;
+  min-width: 240px;
+  max-width: 300px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.asyncify-tour .driver-popover-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--t1);
+}
+
+.asyncify-tour .driver-popover-description {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--t2);
+}
+
+/* The arrow is a CSS triangle made of borders, so it is coloured by
+   re-declaring the one border that shows on each side. No border-stub to
+   match the card's outline — a 5px nub reads as part of the surface. */
+.asyncify-tour .driver-popover-arrow {
+  border: 5px solid var(--surface);
+}
+.asyncify-tour .driver-popover-arrow-side-left {
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+  border-right-color: transparent;
+}
+.asyncify-tour .driver-popover-arrow-side-right {
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+  border-left-color: transparent;
+}
+.asyncify-tour .driver-popover-arrow-side-top {
+  border-bottom-color: transparent;
+  border-left-color: transparent;
+  border-right-color: transparent;
+}
+.asyncify-tour .driver-popover-arrow-side-bottom {
+  border-top-color: transparent;
+  border-left-color: transparent;
+  border-right-color: transparent;
+}
+
+/* The close affordance: the same 7x7 icon-button grey the sidebar's own
+   controls use, brightening on hover rather than changing colour. */
+.asyncify-tour .driver-popover-close-btn {
+  color: var(--t3);
+  font-weight: 400;
+  transition: color 150ms ease;
+}
+.asyncify-tour .driver-popover-close-btn:hover,
+.asyncify-tour .driver-popover-close-btn:focus {
+  color: var(--t1);
+}
+
+.asyncify-tour .driver-popover-footer {
+  margin-top: 14px;
+  gap: 12px;
+}
+
+/* "2 of 7" is a technical value, so it is mono — the same rule every id, key
+   and count in this dashboard follows. */
+.asyncify-tour .driver-popover-progress-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--t3);
+}
+
+/* Buttons on the house's two monochrome recipes (see ui.tsx <Button>):
+   every footer button starts as `ghost`, and the forward one is `primary`
+   (inverted monochrome). No colour anywhere — colour is delivery status. */
+.asyncify-tour .driver-popover-footer-btn {
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background-color: transparent;
+  color: var(--t2);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 28px;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    opacity 150ms ease;
+}
+.asyncify-tour .driver-popover-footer-btn:hover,
+.asyncify-tour .driver-popover-footer-btn:focus {
+  background-color: var(--elevated);
+  color: var(--t1);
+}
+.asyncify-tour .driver-popover-next-btn {
+  background-color: var(--invert-bg);
+  color: var(--invert-t);
+}
+.asyncify-tour .driver-popover-next-btn:hover,
+.asyncify-tour .driver-popover-next-btn:focus {
+  background-color: var(--invert-bg);
+  color: var(--invert-t);
+  opacity: 0.9;
+}
+/* "Back" on the first stop. driver keeps it in the layout and disables it;
+   the house treatment for that is the same 50% the <Button> uses. */
+.asyncify-tour .driver-popover-footer .driver-popover-btn-disabled {
+  opacity: 0.5;
 }

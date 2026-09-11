@@ -1090,3 +1090,25 @@ create index if not exists access_requests_status_idx
 -- Every invite-mode signup does one lookup by code digest.
 create index if not exists access_requests_invite_code_hash_idx
   on access_requests (invite_code_hash);
+
+-- ---- Slice U5: THE FIRST-RUN GUIDED TOUR ----
+-- One bit per account: does this person still OWE a tour?
+--
+-- "pending", deliberately, and not "seen". A seen-flag defaults to false, which
+-- reads as "never seen it" — so the day it shipped, every account that already
+-- exists (the operator, every current customer, every fixture) would have been
+-- ambushed by a product tour of a product they already know. `tour_pending`
+-- defaults to FALSE too, and false means "owes nothing": existing rows are
+-- silently correct forever, and the flag is set to TRUE by exactly the two
+-- doors that CREATE an account (the /auth/signup handler and the Google
+-- create branch). The default is the safe answer for everyone else.
+--
+-- Not set inside provisionAccount() even though that is "what a new account
+-- gets": provisioning is also the fixture tests and scripts call directly to
+-- mint an account out of band, and those accounts are not people arriving at a
+-- dashboard for the first time. Account SHAPE belongs in provisioning;
+-- "somebody just walked through a sign-up door" belongs to the doors.
+--
+-- Cleared by POST /auth/tour-done, which any exit from the tour fires (finish
+-- or skip) — one write, idempotent, and the flag never comes back.
+alter table users add column if not exists tour_pending boolean not null default false;

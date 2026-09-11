@@ -53,6 +53,80 @@ export function subscribeToEnv(onChange: () => void) {
   return () => window.removeEventListener('asyncify:env-changed', onChange);
 }
 
+/* ---------- U6: the keys a brand-new account was provisioned with ---------- */
+
+/**
+ * One API key minted during sign-up, as both doors hand it over. The shape is
+ * the server's (`src/auth/provisioning.ts`).
+ */
+export interface InitialApiKey {
+  environmentId: string;
+  environmentName: string;
+  apiKey: string;
+}
+
+/**
+ * U6 — the one-time reveal's carrier, between "the account was just created"
+ * and "the API keys page is on screen".
+ *
+ * MODULE MEMORY, deliberately, and never localStorage/sessionStorage: these are
+ * plaintext API keys, and the entire premise of showing them once is that they
+ * are not persisted anywhere. A page reload loses them, which is the SAME
+ * outcome as dismissing the modal — the account is fine, and a replacement key
+ * is two clicks away on the page they are standing on. Persisting them to buy a
+ * refresh-proof reveal would trade the property that makes them safe for a
+ * convenience nobody asked for.
+ *
+ * Client-side navigation does NOT lose them (this module outlives every route),
+ * which is what lets a new user land on Overview, wander, and still be shown
+ * their keys when they reach /keys.
+ */
+let stashedInitialApiKeys: InitialApiKey[] | null = null;
+
+export function setInitialApiKeys(keys: InitialApiKey[] | undefined): void {
+  stashedInitialApiKeys = keys && keys.length > 0 ? keys : null;
+}
+
+/** Read AND clear — a reveal happens once, so the second reader gets nothing. */
+export function takeInitialApiKeys(): InitialApiKey[] | null {
+  const keys = stashedInitialApiKeys;
+  stashedInitialApiKeys = null;
+  return keys;
+}
+
+/**
+ * U6/U5 sequencing: the first-run tour must not dim the page while the
+ * one-time key reveal is up (his report: both fired at once). The reveal is
+ * the perishable one — shown-once keys outrank orientation — so it goes
+ * first, and the tour waits on this tiny signal. `revealPending` is true
+ * from the moment keys are stashed until the reveal's Done; listeners fire
+ * once when it clears.
+ */
+let revealDoneListeners: Array<() => void> = [];
+/**
+ * True only while the reveal MODAL IS ON SCREEN — deliberately not while keys
+ * are merely stashed: a fresh account lands on Overview, where nothing claims
+ * the stash, and a tour waiting on a modal that page never opens would wait
+ * forever. On /keys the claim effect (a child, running before the shell's)
+ * opens the modal well inside the tour's settle delay.
+ */
+export function initialKeyRevealPending(): boolean {
+  return revealOpen;
+}
+let revealOpen = false;
+export function markRevealOpen(): void {
+  revealOpen = true;
+}
+export function markRevealDone(): void {
+  revealOpen = false;
+  const fire = revealDoneListeners;
+  revealDoneListeners = [];
+  for (const fn of fire) fn();
+}
+export function onRevealDone(fn: () => void): void {
+  revealDoneListeners.push(fn);
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -172,6 +246,15 @@ export interface Me {
    * Optional for the same reason as `hasPassword`: only /auth/me carries it.
    */
   operator?: boolean;
+  /**
+   * U5 — whether this account still owes its first-run product tour. Set true
+   * by the sign-up doors, cleared by the first exit from the tour (finish or
+   * skip). The server owns it, so the tour survives signing up on one machine
+   * and first opening the dashboard on another.
+   *
+   * Optional for the same reason as the two above: only /auth/me carries it.
+   */
+  tourPending?: boolean;
 }
 
 export const fetchMe = () => api<Me>('/auth/me');
@@ -214,7 +297,15 @@ export const fetchAuthMethods = () => api<AuthMethods>('/auth/methods');
  * write the localStorage the session lives in (src/api/routes/google-auth.ts).
  */
 export async function redeemGoogleCode(code: string) {
-  return adoptSession(await api<SignedIn>('/auth/google/redeem', { method: 'POST', body: { code } }));
+  const res = await api<SignedIn & { initialApiKeys?: InitialApiKey[] }>('/auth/google/redeem', {
+    method: 'POST',
+    body: { code },
+  });
+  // U6 — present only when THIS sign-in created the account. A returning user
+  // (or a password account that just gained the Google door) gets no field at
+  // all, so nothing is stashed and nothing is revealed.
+  setInitialApiKeys(res.initialApiKeys);
+  return adoptSession(res);
 }
 
 export async function signup(input: {
@@ -233,8 +324,11 @@ export async function signup(input: {
     accessToken: string;
     refreshToken: string;
     environments: Array<{ id: string; name: string; apiKey: string }>;
+    initialApiKeys?: InitialApiKey[];
   }>('/auth/signup', { method: 'POST', body: input });
   session.setTokens(res.accessToken, res.refreshToken);
+  // U6 — every signup created an account, so these are always here.
+  setInitialApiKeys(res.initialApiKeys);
   const dev = res.environments.find((e) => e.name === 'Development') ?? res.environments[0];
   if (dev) session.setEnv(dev.id);
   return res;
@@ -276,6 +370,16 @@ export const requestPasswordReset = (email: string) =>
 /** Spend a reset token. Mints no session: the user logs in with the new one. */
 export const resetPassword = (token: string, newPassword: string) =>
   api<{ ok: true }>('/auth/reset', { method: 'POST', body: { token, newPassword } });
+
+/* ---------- U5: the first-run tour ---------- */
+
+/**
+ * "I have seen the tour." One call, no body, fired on ANY exit — finishing the
+ * last stop, closing it, or pressing Escape. Idempotent server-side, which is
+ * what lets the caller fire it without awaiting or retrying: the worst case is
+ * a second identical write.
+ */
+export const markTourDone = () => api<{ ok: true }>('/auth/tour-done', { method: 'POST' });
 
 /* ---------- B1: the beta gate ---------- */
 

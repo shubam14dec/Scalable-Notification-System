@@ -16,6 +16,7 @@ import {
   getUserByEmail,
   getUserById,
   organizationsForUser,
+  setTourPending,
   setUserPassword,
   type User,
 } from '../../db/accounts.repo';
@@ -26,7 +27,7 @@ import {
   insertAccessRequest,
   reopenDeclinedRequest,
 } from '../../db/access-requests.repo';
-import { provisionAccount } from '../../auth/provisioning';
+import { initialApiKeysFrom, provisionAccount } from '../../auth/provisioning';
 import { isOperatorEmail, operatorEmails, requireUser } from '../jwt-auth';
 import { ipRateLimit } from '../rate-limit';
 
@@ -336,6 +337,22 @@ export function registerAuthRoutes(app: FastifyInstance) {
 
     const { organization, environments } = await provisionAccount(user, body.organizationName);
 
+    /**
+     * U5 — THIS DOOR arms the first-run tour, not provisionAccount().
+     *
+     * provisionAccount says what an account IS (an org, two environments, a key
+     * each) and it is called from places that are not a person signing up — the
+     * test fixtures mint accounts with it directly. "Somebody just walked in
+     * through a sign-up door for the first time" is a fact about the DOOR, so
+     * each door states it for the row it just created. There are exactly two,
+     * and the other is google-auth.ts's create branch.
+     *
+     * Awaited: one indexed UPDATE on a row we hold the id of, and a tour that
+     * fails to arm because a fire-and-forget write lost a race is a first
+     * impression nobody gets a second shot at.
+     */
+    await setTourPending(user.id, true);
+
     // U4. Unawaited like every other platform send — the account exists, the
     // keys are in the response, and a slow relay must not hold either.
 
@@ -343,6 +360,15 @@ export function registerAuthRoutes(app: FastifyInstance) {
       user: { id: user.id, name: user.name, email: user.email },
       organization,
       environments,
+      /**
+       * U6 — the same keys `environments` already carries, in the shape BOTH
+       * sign-up doors emit. The Google door cannot send `environments` (its
+       * response is a session minted a redirect later, and a returning user's
+       * session must carry no keys at all), so this is the field the
+       * dashboard's one-time reveal reads, whichever door was used. It is the
+       * same plaintext already in this body, not a second exposure.
+       */
+      initialApiKeys: initialApiKeysFrom(environments),
       ...tokens(user.id),
     });
   });
@@ -409,7 +435,32 @@ export function registerAuthRoutes(app: FastifyInstance) {
        * forged `true` in a browser buys a 403 and nothing else.
        */
       operator: isOperatorEmail(user.email),
+      /**
+       * U5. Does this account still owe its first-run tour? The dashboard
+       * already keeps this query warm on every page, so the tour costs no
+       * request of its own — and because the answer is the SERVER's, a person
+       * who signs up on their laptop and first opens the dashboard on their
+       * desktop still gets the tour (a localStorage flag would have lost it).
+       */
+      tourPending: user.tour_pending,
     };
+  });
+
+  /**
+   * U5 — "I have seen the tour." Fired by EVERY exit from it: finishing the
+   * last stop, pressing the close button, or pressing Escape. There is no
+   * matching "start" call and no progress tracking, deliberately — a tour is
+   * worth one bit, and any exit means the same thing.
+   *
+   * No body, no parameters, and nothing to get wrong: the only account it can
+   * possibly clear is the caller's own. Idempotent (the UPDATE writes the same
+   * false however often it arrives), which matters because the dashboard fires
+   * it unawaited and never retries — a second call from a double-click, or from
+   * a replay off the Settings page, is a 200 and a no-op.
+   */
+  app.post('/auth/tour-done', { preHandler: [requireUser] }, async (req) => {
+    await setTourPending(req.userId, false);
+    return { ok: true };
   });
 
   /* ------------------------------------------------------------------ *

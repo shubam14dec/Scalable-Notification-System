@@ -8,6 +8,7 @@ import {
   session,
   subscribeToEnv,
 } from '../lib/api';
+import { startTour } from '../lib/tour';
 import { Button, Card, Field, Input, PageHeader, PasswordInput, Skeleton } from '../ui';
 
 /**
@@ -63,7 +64,7 @@ function OrganizationCard() {
   };
 
   return (
-    <Card className="w-full max-w-md p-5">
+    <Card className="w-full p-5">
       <h2 className="text-[15px] font-semibold text-t1">Organization</h2>
       <p className="mb-4 mt-1 text-[12px] leading-relaxed text-t3">
         The name shown beside each environment in the sidebar. Renaming it changes nothing else —
@@ -147,7 +148,7 @@ function PasswordCard() {
   };
 
   return (
-    <Card className="w-full max-w-md p-5">
+    <Card className="w-full p-5">
       <h2 className="text-[15px] font-semibold text-t1">
         {hasPassword ? 'Password' : 'Set a password'}
       </h2>
@@ -203,17 +204,39 @@ function PasswordCard() {
   );
 }
 
+/** U5 — the tour, re-runnable on demand: a card like its two neighbors. */
+function TourCard() {
+  return (
+    <Card className="w-full p-4">
+      <h2 className="text-[13px] font-semibold text-t1">Product tour</h2>
+      <p className="mb-2.5 mt-0.5 text-[12px] leading-snug text-t3">
+        Replay the first-visit walkthrough.
+      </p>
+      <Button type="button" onClick={() => startTour()}>
+        Replay the tour
+      </Button>
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" />
-      {/* Side by side where the viewport allows (his call), stacked on
-          narrow windows; items-start keeps the shorter card from being
-          stretched to the taller one's height. */}
-      <div className="flex flex-wrap items-start gap-6">
-        <OrganizationCard />
-        <PasswordCard />
+      {/* His layout, v2: the account stack is TRULY centered on the page —
+          a 1fr / fixed / 1fr grid whose side tracks match, with the tour
+          aside living in the right track so it never shifts the center;
+          single column under 900px. */}
+      <div className="flex flex-col gap-6 min-[900px]:grid min-[900px]:grid-cols-[1fr_520px_1fr] min-[900px]:items-start min-[900px]:gap-x-8">
+        <div className="flex min-w-0 flex-col gap-6 min-[900px]:col-start-2">
+          <OrganizationCard />
+          <PasswordCard />
+        </div>
+        <div className="min-[900px]:col-start-3 min-[900px]:w-[280px] min-[900px]:justify-self-start">
+          <TourCard />
+        </div>
       </div>
+
     </>
   );
 }

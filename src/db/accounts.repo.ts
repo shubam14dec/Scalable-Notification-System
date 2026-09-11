@@ -10,6 +10,13 @@ export interface User {
   password_hash: string | null;
   /** Google's `sub` claim; null for password-only accounts (S1.6). */
   google_sub: string | null;
+  /**
+   * U5 — does this account still owe its first-run product tour? True only for
+   * accounts created through a sign-up door since U5 shipped; false for every
+   * pre-existing row (see the schema note) and false again the moment the tour
+   * is finished OR skipped.
+   */
+  tour_pending: boolean;
 }
 
 export interface Organization {
@@ -64,6 +71,20 @@ export async function getUserById(id: string): Promise<User | null> {
  */
 export async function setUserPassword(userId: string, passwordHash: string): Promise<void> {
   await pool.query('update users set password_hash = $2 where id = $1', [userId, passwordHash]);
+}
+
+/**
+ * U5 — arm or disarm the first-run tour for one account.
+ *
+ * A plain unconditional UPDATE, which makes both calls idempotent by
+ * construction: the two sign-up doors set it true once on a row they just
+ * created, and POST /auth/tour-done sets it false however many times the
+ * browser fires it (a finish and a skip can race; a double-click certainly
+ * can). Nothing reads a "changed rows" count, because nothing needs to — the
+ * second write of the same value is a no-op with the same outcome.
+ */
+export async function setTourPending(userId: string, pending: boolean): Promise<void> {
+  await pool.query('update users set tour_pending = $2 where id = $1', [userId, pending]);
 }
 
 // ---------- S1.6: Google identities ----------

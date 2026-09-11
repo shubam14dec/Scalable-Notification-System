@@ -34,6 +34,33 @@ export interface ProvisionedAccount {
 }
 
 /**
+ * U6 — one minted key, in the shape the SIGN-UP RESPONSES carry it.
+ *
+ * Deliberately its own type rather than reusing `ProvisionedEnvironment`: this
+ * is a WIRE shape, named from the reader's side ("which environment is this key
+ * for?"), and it is the one thing both sign-up doors agree on. The password
+ * door also returns the richer `environments` array; the Google door cannot
+ * (its response is a session, minted a redirect later), so this is what travels
+ * the one-time-code hop and what the dashboard's reveal reads. One shape, so
+ * the dashboard has ONE code path regardless of which door the account came in
+ * through.
+ */
+export interface InitialApiKey {
+  environmentId: string;
+  environmentName: string;
+  apiKey: string;
+}
+
+/** Project a provisioning result onto the wire shape above. */
+export function initialApiKeysFrom(environments: ProvisionedEnvironment[]): InitialApiKey[] {
+  return environments.map((e) => ({
+    environmentId: e.id,
+    environmentName: e.name,
+    apiKey: e.apiKey,
+  }));
+}
+
+/**
  * Give `user` an organization (as its owner), the starter environments, and
  * one API key per environment. The plaintext keys travel back to the caller so
  * the sign-up response can show them once; only their hashes are stored.
