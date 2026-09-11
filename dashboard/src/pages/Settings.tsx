@@ -204,6 +204,22 @@ function PasswordCard() {
   );
 }
 
+/** U5 — the tour, re-runnable on demand: a card like its two neighbors. */
+function TourCard() {
+  return (
+    <Card className="w-full max-w-md p-5">
+      <h2 className="text-[15px] font-semibold text-t1">Product tour</h2>
+      <p className="mb-4 mt-1 text-[12px] leading-relaxed text-t3">
+        The guided walkthrough from your first visit — the sidebar, workflows,
+        channels, agents and where deliveries land. Replay it anytime.
+      </p>
+      <Button type="button" onClick={() => startTour()}>
+        Replay the tour
+      </Button>
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   return (
     <>
@@ -214,6 +230,7 @@ export default function SettingsPage() {
       <div className="flex flex-wrap items-start gap-6">
         <OrganizationCard />
         <PasswordCard />
+        <TourCard />
       </div>
 
       {/*
@@ -224,15 +241,6 @@ export default function SettingsPage() {
         and takes no exit handler of its own: `startTour` still writes
         tour-done, harmlessly, on a flag that is already false.
       */}
-      <div className="mt-8">
-        <button
-          type="button"
-          onClick={() => startTour()}
-          className="text-[12px] text-t3 underline decoration-transparent underline-offset-2 transition-colors duration-150 hover:text-t1 hover:decoration-current"
-        >
-          Replay the product tour
-        </button>
-      </div>
     </>
   );
 }
