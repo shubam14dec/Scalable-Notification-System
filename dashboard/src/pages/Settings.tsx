@@ -210,7 +210,7 @@ function TourCard() {
     <Card className="w-full p-5">
       <h2 className="text-[14px] font-semibold text-t1">Product tour</h2>
       <p className="mb-3 mt-1 text-[12px] leading-relaxed text-t3">
-        The walkthrough from your first visit — replay it anytime.
+        Replay the first-visit walkthrough.
       </p>
       <Button type="button" onClick={() => startTour()}>
         Replay the tour
@@ -231,7 +231,7 @@ export default function SettingsPage() {
           <OrganizationCard />
           <PasswordCard />
         </div>
-        <div className="w-full shrink-0 min-[900px]:w-[240px]">
+        <div className="w-full shrink-0 min-[900px]:w-[280px]">
           <TourCard />
         </div>
       </div>
