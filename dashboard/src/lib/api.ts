@@ -103,8 +103,15 @@ export function takeInitialApiKeys(): InitialApiKey[] | null {
  * once when it clears.
  */
 let revealDoneListeners: Array<() => void> = [];
+/**
+ * True only while the reveal MODAL IS ON SCREEN — deliberately not while keys
+ * are merely stashed: a fresh account lands on Overview, where nothing claims
+ * the stash, and a tour waiting on a modal that page never opens would wait
+ * forever. On /keys the claim effect (a child, running before the shell's)
+ * opens the modal well inside the tour's settle delay.
+ */
 export function initialKeyRevealPending(): boolean {
-  return stashedInitialApiKeys !== null || revealOpen;
+  return revealOpen;
 }
 let revealOpen = false;
 export function markRevealOpen(): void {

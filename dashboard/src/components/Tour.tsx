@@ -54,7 +54,7 @@ export default function FirstRunTour() {
      * one-time key reveal is pending or open, the tour waits for its Done
      * and begins then; the settle delay applies either way.
      */
-    const begin = () => setTimeout(() => {
+    const run = () => {
       if (!document.querySelector('[data-tour="env"]')) return;
       startTour({
         onExit: () => {
@@ -67,9 +67,14 @@ export default function FirstRunTour() {
           );
         },
       });
+    };
+    // The reveal check lives INSIDE the settle delay: by then the /keys claim
+    // effect (if this landing is /keys) has opened the modal, so "open" is
+    // decidable — checked earlier it would race the claim.
+    setTimeout(() => {
+      if (initialKeyRevealPending()) onRevealDone(run);
+      else run();
     }, TOUR_START_DELAY_MS);
-    if (initialKeyRevealPending()) onRevealDone(begin);
-    else begin();
   }, [tourPending, queryClient]);
 
   return null;
