@@ -6,6 +6,13 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### U6 — First-key one-time reveal (IN FLIGHT, approved 2026-09-12)
+His find: the two provisioned keys are hashed by the time a new user
+lands on /keys - nothing to copy. Real fix approved: plaintext rides
+the signup RESPONSE (password door) and the sealed single-use gcode
+redis hop (Google door), page memory only, keys page greets a fresh
+account with the one-time CopyField reveal; hashed-at-rest unchanged.
+
 ### U5 — First-run guided tour, Driver.js — DONE 2026-09-12 (his E2E)
 Seven stops, his sign-off (Settings stop CUT): env switcher ->
 Workflows -> Connections -> Agents -> API keys -> Inbox Preview (the
