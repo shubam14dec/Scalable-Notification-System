@@ -26,6 +26,7 @@ import {
 import { api, fetchMe, logout, session, subscribeToEnv } from '../lib/api';
 import { Select } from '../ui';
 import { useAdminEvents } from '../lib/adminEvents';
+import FirstRunTour from './Tour';
 
 interface NavItem {
   to: string;
@@ -34,23 +35,31 @@ interface NavItem {
   end?: boolean;
   /** B1: rendered only for the human operator seat (me.operator). */
   operatorOnly?: boolean;
+  /**
+   * U5: the stable handle the guided tour points at, rendered as
+   * `data-tour="nav-<this>"`. Only the six items the tour visits carry one —
+   * an attribute nothing targets is just noise. Reordering this list, or
+   * renaming a label, leaves the tour pointing at the same items; a positional
+   * selector would not have.
+   */
+  tour?: string;
 }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
-  { to: '/activity', label: 'Activity', icon: Activity },
-  { to: '/workflows', label: 'Workflows', icon: Workflow },
+  { to: '/activity', label: 'Activity', icon: Activity, tour: 'activity' },
+  { to: '/workflows', label: 'Workflows', icon: Workflow, tour: 'workflows' },
   { to: '/templates', label: 'Templates', icon: LayoutTemplate },
   { to: '/subscribers', label: 'Subscribers', icon: Users },
   { to: '/topics', label: 'Topics', icon: Tag },
-  { to: '/agents', label: 'Agents', icon: Bot },
-  { to: '/connections', label: 'Connections', icon: Cable },
+  { to: '/agents', label: 'Agents', icon: Bot, tour: 'agents' },
+  { to: '/connections', label: 'Connections', icon: Cable, tour: 'connections' },
   { to: '/conversations', label: 'Conversations', icon: MessagesSquare },
   { to: '/approvals', label: 'Approvals', icon: ShieldCheck },
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/integrations', label: 'Integrations', icon: Blocks },
-  { to: '/inbox-preview', label: 'Inbox preview', icon: Bell },
-  { to: '/keys', label: 'API keys', icon: KeyRound },
+  { to: '/inbox-preview', label: 'Inbox preview', icon: Bell, tour: 'inbox-preview' },
+  { to: '/keys', label: 'API keys', icon: KeyRound, tour: 'keys' },
   { to: '/requests', label: 'Requests', icon: UserPlus, operatorOnly: true },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
@@ -207,7 +216,10 @@ export default function Shell() {
           <span className="text-[14px] font-semibold tracking-tight">asyncify</span>
         </div>
 
-        <div className="px-3 pb-3 pt-1">
+        {/* data-tour: the guided tour's first stop highlights the whole
+            switcher block, not the bare <select>, so the spotlight frames the
+            control the way the sidebar does. */}
+        <div className="px-3 pb-3 pt-1" data-tour="env">
           <Select
             ariaLabel="Environment"
             className="w-full text-[12px]"
@@ -224,11 +236,12 @@ export default function Shell() {
         </div>
 
         <nav className="flex-1 space-y-0.5 px-2">
-          {NAV.filter((item) => !item.operatorOnly || me?.operator).map(({ to, label, icon: Icon, end }) => (
+          {NAV.filter((item) => !item.operatorOnly || me?.operator).map(({ to, label, icon: Icon, end, tour }) => (
             <NavLink
               key={to}
               to={to}
               end={end}
+              data-tour={tour ? `nav-${tour}` : undefined}
               className={({ isActive }) =>
                 `relative flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors duration-150 ${
                   isActive ? 'bg-elevated text-t1' : 'text-t2 hover:bg-elevated hover:text-t1'
@@ -279,6 +292,10 @@ export default function Shell() {
           <Outlet />
         </div>
       </main>
+
+      {/* U5. Renders nothing — it decides whether this account is owed the
+          first-run tour and, on a wide enough window, starts it once. */}
+      <FirstRunTour />
     </div>
   );
 }

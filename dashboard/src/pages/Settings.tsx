@@ -8,6 +8,7 @@ import {
   session,
   subscribeToEnv,
 } from '../lib/api';
+import { startTour } from '../lib/tour';
 import { Button, Card, Field, Input, PageHeader, PasswordInput, Skeleton } from '../ui';
 
 /**
@@ -213,6 +214,24 @@ export default function SettingsPage() {
       <div className="flex flex-wrap items-start gap-6">
         <OrganizationCard />
         <PasswordCard />
+      </div>
+
+      {/*
+        U5 — the tour, on demand. Deliberately a quiet line and not a third
+        card: a card is a thing you have to attend to, and this is a footnote
+        for the one person in ten who wants the walkthrough again. It starts the
+        SAME tour a first sign-in shows — the stops live in lib/tour.ts, once —
+        and takes no exit handler of its own: `startTour` still writes
+        tour-done, harmlessly, on a flag that is already false.
+      */}
+      <div className="mt-8">
+        <button
+          type="button"
+          onClick={() => startTour()}
+          className="text-[12px] text-t3 underline decoration-transparent underline-offset-2 transition-colors duration-150 hover:text-t1 hover:decoration-current"
+        >
+          Replay the product tour
+        </button>
       </div>
     </>
   );

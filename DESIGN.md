@@ -32,6 +32,16 @@ menu ignores the tokens). Modals follow KnowledgeModal/MemoryModal patterns in
 Agents.tsx. Sidebar shell in components/Shell.tsx (nav + QueuePulse +
 LiveDot).
 
+THIRD-PARTY UI wears the house idiom or it does not ship. The first of it
+(U5: driver.js, the first-run guided tour) arrives as a white, rounded,
+drop-shadowed bubble with 19px bold titles; it is dragged onto the tokens in
+a marked block at the bottom of styles.css — bg-surface + one 1px border-bd,
+radius-md, NO shadow, 13px text, monochrome ghost/primary buttons, progress
+count in mono t3 — and scoped to its own popoverClass so the override says
+what it is overriding. The rule generalizes: a vendor stylesheet is a
+starting point, never a second design system, and the overrides live in
+styles.css with the tokens rather than in the component.
+
 ## Layout
 Left sidebar shell; content max-width with dense tables in Cards; detail
 views use a two-column split (transcript + right Details panel) as in

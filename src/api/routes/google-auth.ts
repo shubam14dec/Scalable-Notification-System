@@ -11,6 +11,7 @@ import {
   getUserByGoogleSub,
   getUserById,
   linkGoogleSub,
+  setTourPending,
   type User,
 } from '../../db/accounts.repo';
 import {
@@ -361,6 +362,21 @@ export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<
   }
 
   await provisionAccount(created, defaultOrganizationName(created.name, created.email));
+
+  /**
+   * U5 — the second (and last) sign-up door arms the first-run tour, for the
+   * reasons spelled out beside the first one in routes/auth.ts: the fact being
+   * recorded is "a person just created an account here", which only a door
+   * knows. Note WHERE this sits — inside the create branch, after the insert
+   * that actually made a row. Cases (a) and (b) above are people who already
+   * had an account (a returning Google user, or a password account gaining the
+   * Google door) and must never be handed a tour of a product they use daily.
+   *
+   * `created` is the row as inserted, so its in-memory `tour_pending` is stale
+   * from here on. Nothing reads it — the caller only mints a session — and
+   * /auth/me re-reads the row on the next request.
+   */
+  await setTourPending(created.id, true);
 
   return { user: created };
 }

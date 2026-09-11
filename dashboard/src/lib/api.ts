@@ -172,6 +172,15 @@ export interface Me {
    * Optional for the same reason as `hasPassword`: only /auth/me carries it.
    */
   operator?: boolean;
+  /**
+   * U5 — whether this account still owes its first-run product tour. Set true
+   * by the sign-up doors, cleared by the first exit from the tour (finish or
+   * skip). The server owns it, so the tour survives signing up on one machine
+   * and first opening the dashboard on another.
+   *
+   * Optional for the same reason as the two above: only /auth/me carries it.
+   */
+  tourPending?: boolean;
 }
 
 export const fetchMe = () => api<Me>('/auth/me');
@@ -276,6 +285,16 @@ export const requestPasswordReset = (email: string) =>
 /** Spend a reset token. Mints no session: the user logs in with the new one. */
 export const resetPassword = (token: string, newPassword: string) =>
   api<{ ok: true }>('/auth/reset', { method: 'POST', body: { token, newPassword } });
+
+/* ---------- U5: the first-run tour ---------- */
+
+/**
+ * "I have seen the tour." One call, no body, fired on ANY exit — finishing the
+ * last stop, closing it, or pressing Escape. Idempotent server-side, which is
+ * what lets the caller fire it without awaiting or retrying: the worst case is
+ * a second identical write.
+ */
+export const markTourDone = () => api<{ ok: true }>('/auth/tour-done', { method: 'POST' });
 
 /* ---------- B1: the beta gate ---------- */
 
