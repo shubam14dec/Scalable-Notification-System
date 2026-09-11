@@ -64,7 +64,7 @@ function OrganizationCard() {
   };
 
   return (
-    <Card className="w-full max-w-md p-5">
+    <Card className="w-full p-5">
       <h2 className="text-[15px] font-semibold text-t1">Organization</h2>
       <p className="mb-4 mt-1 text-[12px] leading-relaxed text-t3">
         The name shown beside each environment in the sidebar. Renaming it changes nothing else —
@@ -148,7 +148,7 @@ function PasswordCard() {
   };
 
   return (
-    <Card className="w-full max-w-md p-5">
+    <Card className="w-full p-5">
       <h2 className="text-[15px] font-semibold text-t1">
         {hasPassword ? 'Password' : 'Set a password'}
       </h2>
@@ -207,7 +207,7 @@ function PasswordCard() {
 /** U5 — the tour, re-runnable on demand: a card like its two neighbors. */
 function TourCard() {
   return (
-    <Card className="w-full max-w-md p-5">
+    <Card className="w-full p-5">
       <h2 className="text-[15px] font-semibold text-t1">Product tour</h2>
       <p className="mb-4 mt-1 text-[12px] leading-relaxed text-t3">
         The guided walkthrough from your first visit — the sidebar, workflows,
@@ -224,23 +224,15 @@ export default function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" />
-      {/* Side by side where the viewport allows (his call), stacked on
-          narrow windows; items-start keeps the shorter card from being
-          stretched to the taller one's height. */}
-      <div className="flex flex-wrap items-start gap-6">
+      {/* An ordered two-column grid inside one measured frame (his call —
+          the free-wrapping cards read as scattered): equal columns, aligned
+          gutters, cards fill their cells; one column under 900px. */}
+      <div className="grid max-w-[880px] grid-cols-1 items-start gap-6 min-[900px]:grid-cols-2">
         <OrganizationCard />
         <PasswordCard />
         <TourCard />
       </div>
 
-      {/*
-        U5 — the tour, on demand. Deliberately a quiet line and not a third
-        card: a card is a thing you have to attend to, and this is a footnote
-        for the one person in ten who wants the walkthrough again. It starts the
-        SAME tour a first sign-in shows — the stops live in lib/tour.ts, once —
-        and takes no exit handler of its own: `startTour` still writes
-        tour-done, harmlessly, on a flag that is already false.
-      */}
     </>
   );
 }
