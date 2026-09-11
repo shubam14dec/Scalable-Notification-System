@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { api, fetchMe, logout, session, subscribeToEnv } from '../lib/api';
 import { Select } from '../ui';
+import { RippleMark } from '../pages/auth/AuthLayout';
 import { useAdminEvents } from '../lib/adminEvents';
 import FirstRunTour from './Tour';
 
@@ -207,12 +208,11 @@ export default function Shell() {
     <div className="flex h-full">
       <aside className="flex w-[232px] shrink-0 flex-col border-r border-bd bg-surface">
         {/* Brand: the only place the accent lives besides active nav */}
-        <div className="flex items-center gap-2 px-4 pb-2 pt-4">
-          <span
-            aria-hidden
-            className="h-2.5 w-2.5 rounded-full"
-            style={{ background: 'var(--accent)' }}
-          />
+        <div className="flex items-center gap-2 px-4 pb-2 pt-4 text-t1">
+          {/* The ripple mark — the same glyph the auth pages and favicon
+              carry (his call; the violet accent dot it replaces was the
+              accent's last appearance here). */}
+          <RippleMark size={15} />
           <span className="text-[14px] font-semibold tracking-tight">Asyncify</span>
         </div>
 
