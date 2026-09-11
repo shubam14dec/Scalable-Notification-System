@@ -208,10 +208,9 @@ function PasswordCard() {
 function TourCard() {
   return (
     <Card className="w-full p-5">
-      <h2 className="text-[15px] font-semibold text-t1">Product tour</h2>
-      <p className="mb-4 mt-1 text-[12px] leading-relaxed text-t3">
-        The guided walkthrough from your first visit — the sidebar, workflows,
-        channels, agents and where deliveries land. Replay it anytime.
+      <h2 className="text-[14px] font-semibold text-t1">Product tour</h2>
+      <p className="mb-3 mt-1 text-[12px] leading-relaxed text-t3">
+        The walkthrough from your first visit — replay it anytime.
       </p>
       <Button type="button" onClick={() => startTour()}>
         Replay the tour
@@ -224,16 +223,16 @@ export default function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" />
-      {/* Two column STACKS, not grid rows (his call — a row grid held the
-          Tour card a full Password-height below Organization): each column
-          packs its cards tightly; one column under 900px. */}
-      <div className="flex max-w-[880px] flex-col gap-6 min-[900px]:flex-row min-[900px]:items-start">
+      {/* His layout: the two account cards stacked in a centered main
+          column, the tour as a small aside on their right; everything
+          single-column under 900px. */}
+      <div className="mx-auto flex max-w-[760px] flex-col gap-6 min-[900px]:flex-row min-[900px]:items-start">
         <div className="flex min-w-0 flex-1 flex-col gap-6">
           <OrganizationCard />
-          <TourCard />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-6">
           <PasswordCard />
+        </div>
+        <div className="w-full shrink-0 min-[900px]:w-[240px]">
+          <TourCard />
         </div>
       </div>
 
