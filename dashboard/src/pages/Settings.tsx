@@ -224,13 +224,17 @@ export default function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" />
-      {/* An ordered two-column grid inside one measured frame (his call —
-          the free-wrapping cards read as scattered): equal columns, aligned
-          gutters, cards fill their cells; one column under 900px. */}
-      <div className="grid max-w-[880px] grid-cols-1 items-start gap-6 min-[900px]:grid-cols-2">
-        <OrganizationCard />
-        <PasswordCard />
-        <TourCard />
+      {/* Two column STACKS, not grid rows (his call — a row grid held the
+          Tour card a full Password-height below Organization): each column
+          packs its cards tightly; one column under 900px. */}
+      <div className="flex max-w-[880px] flex-col gap-6 min-[900px]:flex-row min-[900px]:items-start">
+        <div className="flex min-w-0 flex-1 flex-col gap-6">
+          <OrganizationCard />
+          <TourCard />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-6">
+          <PasswordCard />
+        </div>
       </div>
 
     </>
