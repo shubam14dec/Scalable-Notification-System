@@ -6,6 +6,14 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### U5 — First-run guided tour, Driver.js (IN FLIGHT, approved 2026-09-12)
+Seven stops, his sign-off (Settings stop CUT): env switcher ->
+Workflows -> Connections -> Agents -> API keys -> Inbox Preview (the
+aha: send a test, watch it land) -> Activity. Server-side tour_pending
+flag (new accounts only - existing rows never see it), shows once,
+skip = seen, replayable from Settings; popovers wear the house card
+idiom both themes; driver.js = NEW DEP -> clean-room lockfile drill.
+
 ### U4 — Platform email templates — DONE 2026-09-11; U3+U4 batch LIVE on app.asyncify.org via PR #28 (his live verification 2026-09-12)
 One branded HTML shell for every platform-sent mail (multipart: html +
 the existing text kept): white canvas, wordmark + green delivered-dot
