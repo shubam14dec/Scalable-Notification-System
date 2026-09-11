@@ -227,7 +227,7 @@ export default function SettingsPage() {
           a 1fr / fixed / 1fr grid whose side tracks match, with the tour
           aside living in the right track so it never shifts the center;
           single column under 900px. */}
-      <div className="flex flex-col gap-6 min-[900px]:grid min-[900px]:grid-cols-[1fr_420px_1fr] min-[900px]:items-start min-[900px]:gap-x-8">
+      <div className="flex flex-col gap-6 min-[900px]:grid min-[900px]:grid-cols-[1fr_520px_1fr] min-[900px]:items-start min-[900px]:gap-x-8">
         <div className="flex min-w-0 flex-col gap-6 min-[900px]:col-start-2">
           <OrganizationCard />
           <PasswordCard />
