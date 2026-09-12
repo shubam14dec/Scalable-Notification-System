@@ -250,7 +250,7 @@ export default function Shell() {
             item, no pulse), which left the list looking cramped against the
             empty space below (his call): they get a slightly airier rhythm;
             the operator keeps the dense one their fuller column fills. */}
-        <nav className={`flex-1 px-2 ${me?.operator ? 'space-y-0.5' : 'space-y-2'}`}>
+        <nav className={`flex-1 px-2 ${me?.operator ? 'space-y-0.5' : 'space-y-1.5'}`}>
           {NAV.filter((item) => !item.operatorOnly || me?.operator).map(({ to, label, icon: Icon, end, tour }) => (
             <NavLink
               key={to}
