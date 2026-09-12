@@ -19,7 +19,7 @@ export default function NotFoundPage() {
       <p className="mt-5 font-mono text-[52px] font-medium leading-none tracking-tight text-t1">
         404
       </p>
-      <p className="mt-3 text-[14px] text-t2">This page doesn&#39;t deliver.</p>
+      <p className="mt-3 text-[14px] text-t2">We rang — nobody answered.</p>
 
       {/* The receipt. Slightly tilted, the way a printed slip lands. */}
       <div
@@ -57,7 +57,7 @@ export default function NotFoundPage() {
 
       <Link to="/" className="mt-7">
         <Button variant="primary" type="button">
-          Back to Overview
+          Return to sender
         </Button>
       </Link>
     </div>
