@@ -6,7 +6,7 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### S1.7 — Refresh rotation + real logout (IN FLIGHT, approved 2026-09-13)
+### S1.7 — Refresh rotation + real logout — DONE 2026-09-13 (his E2E)
 His question exposed it live: logout is localStorage-only; the 7-day
 refresh JWT stays valid with no server-side kill. Design approved
 after the full ledger walkthrough: refresh tokens gain a jti tracked
@@ -16,6 +16,30 @@ jti = theft alarm -> revoke the whole family; POST /auth/logout
 revokes; "log out everywhere" revokes all; access tokens stay
 stateless 15-min (hot path untouched - ledger touched only at
 login/refresh/logout).
+OUTCOME: shipped exactly as walked through, plus the build's own win -
+legacy tokens grandfathered under a jti DERIVED FROM THEIR OWN HASH
+(sha256-as-uuidv8, family=jti, expiry inherited): zero re-logins AND
+single-use immediately (the naive pass-through would have made a
+stolen old token an unlimited minter). Two-tab race: 30s server grace
+(no alarm) + client single-flight + re-read-localStorage adoption.
+Logout keepalive:true so the redirect can't cancel the revocation.
+His E2E: post-logout refresh replay = 401 (the hole, closed live).
+S1.7b instant-epoch upgrade BUILT THEN REVERTED at his call - the
+<=15min access-token lag is accepted; option remains in history.
+Sessions card (Log out everywhere) moved to the right column at his
+call - Settings stays scroll-free.
+
+### BUGFIX — cross-tenant platform gauges (his critical find,
+2026-09-13): every tenant's Overview showed the GLOBAL dead-letter
+count (182). Ledger law minted: authenticating a route is not scoping
+its data. Fix: /v1/ops/tenant-stats (index-only IN-list query; buckets
+anchored on TERMINAL_MESSAGE_STATUSES - inFlight=queued+sending,
+failed=failed+bounced, complaint neither); /ops telemetry + the WS
+queue.depths stream gated to the operator seat AT THE SOURCE
+(requireOperatorSeat credential dispatch keeps dev scripts working);
+tenants see In flight / Failed deliveries, operators keep a labelled
+Platform row + the pulse. Non-operator sidebar got the airier rhythm
+(his dials). 10+ new tests; suite 1384 green.
 
 ### U7 — 404 page + per-page titles + robots — DONE 2026-09-12 (his dials)
 Custom 404 as a failed-delivery receipt (serrated ticket, mono facts,
