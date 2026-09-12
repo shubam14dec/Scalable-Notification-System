@@ -6,6 +6,19 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### U7 — 404 page + per-page titles + robots — DONE 2026-09-12 (his dials)
+Custom 404 as a failed-delivery receipt (serrated ticket, mono facts,
+err dot on undeliverable; his dials: straight not tilted, no mark
+above, 'Page not found' 26px mono under the numerals, Back to
+overview) replacing the silent bounce; useDocumentTitle wired through
+PageHeader + AuthLayout (free for most pages) + explicit on
+AgentDetail/editor(live draft name)/404 - tabs finally name
+themselves; app robots.txt = disallow-all (site got robots+sitemap+
+contact OG same day; Search Console registered by his hands; site
+title unified 'Asyncify - notification infrastructure'). NAV-RIDER
+INCIDENT: the old site riders rode the SEO push and were reverted
+live in minutes - the per-item-approval rule is sharpened in memory.
+
 ### U6 — First-key one-time reveal — DONE 2026-09-12 (his E2E)
 His find: the two provisioned keys are hashed by the time a new user
 lands on /keys - nothing to copy. Real fix approved: plaintext rides
