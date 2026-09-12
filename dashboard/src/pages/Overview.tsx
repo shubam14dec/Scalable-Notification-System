@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { api, fetchMe } from '../lib/api';
 import { Card, PageHeader, Skeleton } from '../ui';
 import { ActivityTable, type ActivityRow } from './Activity';
 
@@ -13,7 +13,20 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   );
 }
 
+/**
+ * Every card above the activity feed answers a question about THIS environment.
+ *
+ * It did not use to: "Queue backlog" and "Dead-lettered" read /ops/queues — the
+ * platform's shared BullMQ gauges — so every tenant saw the same numbers, most
+ * memorably a constant 182 dead-lettered jobs left over from someone else's
+ * traffic (user-found, 2026-09-13). They are replaced by counts of the tenant's
+ * own message rows (GET /v1/ops/tenant-stats), and the platform gauges moved
+ * into an operator-only row below, where they are labelled as what they are.
+ */
 export default function OverviewPage() {
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: fetchMe, retry: false });
+  const isOperator = Boolean(me?.operator);
+
   const { data: activity } = useQuery({
     queryKey: ['activity'],
     queryFn: () => api<{ activity: ActivityRow[] }>('/v1/activity?limit=100'),
@@ -22,13 +35,26 @@ export default function OverviewPage() {
     refetchInterval: 60_000,
   });
 
+  // Tenant truth, and the only stats query every account runs. No live hint
+  // carries these counts, so the 60s poll is the whole refresh story — plus
+  // ['message.changed'] invalidations, which land on ['activity'], not here;
+  // a card that is at most a minute stale is the right trade for not adding
+  // a per-status-change push.
+  const { data: stats } = useQuery({
+    queryKey: ['tenant-stats'],
+    queryFn: () => api<{ inFlight: number; failed: number }>('/v1/ops/tenant-stats'),
+    refetchInterval: 60_000,
+  });
+
+  // PLATFORM gauges — operator seat only, and `enabled` is what keeps a
+  // non-operator from ever issuing the request (it would be a 403, and the
+  // ['queues'] invalidation on a queue.deadletter hint would retry it).
   const { data: queues } = useQuery({
     queryKey: ['queues'],
-    // S1.1: /ops/queues is authenticated now — it must go through api(), which
-    // attaches the bearer token (a raw fetch gets a 401 and a blank stat).
     queryFn: () => api<Record<string, Record<string, number>>>('/ops/queues'),
+    enabled: isOperator,
     // Phase 25 D8: depths are pushed live (queue.depths → setQueryData on this
-    // same key); 60s is the safety poll. Seed-on-mount stays (the first fetch).
+    // same key, operator sockets only); 60s is the safety poll.
     refetchInterval: 60_000,
   });
 
@@ -53,16 +79,37 @@ export default function OverviewPage() {
         />
         <Stat label="Failed" value={activity ? String(failed) : '—'} sub="last 100 messages" />
         <Stat
-          label="Queue backlog"
-          value={backlog === undefined ? '—' : String(backlog)}
-          sub="waiting + active, live"
+          label="In flight"
+          value={stats ? String(stats.inFlight) : '—'}
+          sub="queued or sending right now"
         />
         <Stat
-          label="Dead-lettered"
-          value={dead === undefined ? '—' : String(dead)}
-          sub="needs attention when > 0"
+          label="Failed deliveries"
+          value={stats ? String(stats.failed) : '—'}
+          sub="never reached the recipient, all time"
         />
       </div>
+
+      {isOperator && (
+        <div className="mb-6">
+          <h2 className="mb-1 text-[15px] font-semibold text-t1">Platform (operator view)</h2>
+          <p className="mb-3 text-[12px] text-t3">
+            The whole deployment, every tenant together — not this environment.
+          </p>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <Stat
+              label="Queue backlog"
+              value={backlog === undefined ? '—' : String(backlog)}
+              sub="waiting + active, live"
+            />
+            <Stat
+              label="Dead-lettered"
+              value={dead === undefined ? '—' : String(dead)}
+              sub="needs attention when > 0"
+            />
+          </div>
+        </div>
+      )}
 
       <h2 className="mb-3 text-[15px] font-semibold text-t1">Recent activity</h2>
       {!activity ? (

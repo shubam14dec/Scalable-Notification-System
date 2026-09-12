@@ -161,17 +161,80 @@ async function rawRequest(path: string, options: RequestInit): Promise<Response>
   return fetch(path, { ...options, headers });
 }
 
-async function tryRefresh(): Promise<boolean> {
-  if (!session.refresh) return false;
+/**
+ * S1.7 — ONE rotation at a time, per tab.
+ *
+ * The server spends a refresh token exactly once, so a burst of 401s (an
+ * Overview page firing six queries the moment an access token expires) must not
+ * become a burst of rotations racing each other: the first would win and the
+ * other five would present a token that had just been spent. This promise is
+ * what they share instead. Cleared on settle, so the NEXT expiry rotates again.
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
+/**
+ * Spend the stored refresh token for a whole new pair. The critical line is the
+ * last one: S1.7's /auth/refresh returns a NEW refresh token as well as an
+ * access token, and storing it is not optional — the old one is spent, and a
+ * client that kept it would present a dead token 15 minutes later and be
+ * treated as a replay.
+ */
+async function rotateTokens(): Promise<boolean> {
+  const refresh = session.refresh;
+  if (!refresh) return false;
   const res = await fetch('/auth/refresh', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ refreshToken: session.refresh }),
+    body: JSON.stringify({ refreshToken: refresh }),
   });
   if (!res.ok) return false;
-  const body = (await res.json()) as { accessToken: string };
-  session.setTokens(body.accessToken);
+  const body = (await res.json()) as { accessToken: string; refreshToken?: string };
+  session.setTokens(body.accessToken, body.refreshToken);
   return true;
+}
+
+/**
+ * THE TWO-TAB RACE, and why this function is three lines longer than it looks
+ * like it should be.
+ *
+ * Rotation makes a refresh token one-shot, which turns a situation that used to
+ * be harmless into a real one: two tabs of the dashboard share ONE localStorage
+ * and can both be holding token #481 when it expires. Tab A rotates it into
+ * #482. Tab B, milliseconds behind, presents #481 — which is now spent.
+ *
+ * `refreshInFlight` above solves this WITHIN a tab. Across tabs it cannot:
+ * separate JS contexts share no promises. What they do share is localStorage,
+ * and that is the whole mechanism here — a sibling tab's rotation is already
+ * stored where this tab can see it, so the fix is to look before and after
+ * rather than to coordinate.
+ *
+ *   (a) BEFORE: the access token we sent the failed request with is no longer
+ *       the stored one -> somebody already rotated while we were in flight (a
+ *       sibling tab, or this tab on behalf of an earlier request). Adopt it —
+ *       rawRequest re-reads localStorage on every call, so "adopt" is just
+ *       "retry" — and spend nothing.
+ *   (b) DURING: one rotation per tab, shared by every 401 that arrives.
+ *   (c) AFTER: our own rotation was refused. If the stored access token changed
+ *       while we were asking, a sibling won the race and we are still signed
+ *       in — the refusal was the server's grace window doing its job (a reuse
+ *       inside 30s is a dead token, NOT a theft alarm; see REUSE_GRACE_MS in
+ *       src/api/routes/auth.ts), and the session is intact.
+ *
+ * The residual window is the few milliseconds where a sibling has spent the
+ * token but not yet stored the successor. Losing it costs one sign-in, which is
+ * why it is not worth a lock: the alternative (a broadcast channel, or a server
+ * that remembers each token's successor) is a great deal of machinery for a
+ * millisecond.
+ */
+async function tryRefresh(accessAtSend: string | null): Promise<boolean> {
+  if (session.access !== accessAtSend) return true; // (a)
+
+  refreshInFlight ??= rotateTokens().finally(() => {
+    refreshInFlight = null;
+  }); // (b)
+  const rotated = await refreshInFlight;
+
+  return rotated || session.access !== accessAtSend; // (c)
 }
 
 export async function api<T = unknown>(
@@ -193,9 +256,14 @@ export async function api<T = unknown>(
     ...(options.envId ? { headers: { 'x-environment-id': options.envId } } : {}),
   };
 
+  // Captured BEFORE the request so a 401 can tell "my access token expired"
+  // from "another tab already replaced it while I was in flight" — see the
+  // two-tab race note on `tryRefresh`.
+  const accessAtSend = session.access;
+
   let res = await rawRequest(path, init);
   if (res.status === 401 && session.refresh && !path.startsWith('/auth/')) {
-    if (await tryRefresh()) {
+    if (await tryRefresh(accessAtSend)) {
       res = await rawRequest(path, init);
     } else {
       session.clear();
@@ -416,7 +484,45 @@ export const approveAccessRequest = (id: string) =>
 export const declineAccessRequest = (id: string) =>
   api<{ request: AccessRequestRow }>(`/v1/ops/access-requests/${id}/decline`, { method: 'POST' });
 
+/* ---------- S1.7: real logout ---------- */
+
+/**
+ * End every session on this account, on every device — including this browser,
+ * which the caller follows with an ordinary `logout()`.
+ *
+ * Goes through `api()` (so it carries the access token `requireUser` wants) and
+ * therefore throws on failure, which is correct: unlike `logout` below, this one
+ * has a claim to make about OTHER devices, and silently failing to make it
+ * would be the worst possible outcome for the person who clicked it.
+ */
+export const logoutEverywhere = () =>
+  api<{ revoked: number }>('/auth/logout-all', { method: 'POST' });
+
+/**
+ * Sign out. S1.7 makes this mean something server-side: the refresh token is
+ * handed back so the whole session family is revoked, rather than merely
+ * forgotten by this browser while staying valid for another seven days.
+ *
+ * NOT AWAITED, and every failure swallowed. Clearing the session and leaving
+ * the page are the parts the user asked for; they must not wait on a network
+ * call, and they must not be cancelled by one that fails. `keepalive` is what
+ * makes that safe — without it the browser abandons an in-flight request when
+ * the navigation below starts, and the revocation would land only when the
+ * network happened to be quick.
+ *
+ * Worst case the POST never arrives and the old refresh token lives out its
+ * remaining days unused, which is exactly where this feature started.
+ */
 export function logout() {
+  const refresh = session.refresh;
+  if (refresh) {
+    void fetch('/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: refresh }),
+      keepalive: true,
+    }).catch(() => {});
+  }
   session.clear();
   window.location.href = '/login';
 }

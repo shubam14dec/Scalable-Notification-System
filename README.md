@@ -375,13 +375,22 @@ npm run reconcile                             # DR drill: settle finished events
 | WS | `ws://:3001/?apiKey=...&subscriberId=...` | Live in-app push |
 | POST | `/webhooks/providers/:provider/:tenantId` | Provider delivery-status callbacks (per-tenant signed) |
 | GET | `/health` | Liveness (Postgres + Redis) |
-| GET | `/ops/queues` | Waiting/active/delayed/failed per queue |
-| GET | `/ops/breakers` | Circuit-breaker states |
+| GET | `/v1/ops/tenant-stats` | Your own pipeline: messages in flight + failed |
+| GET | `/ops/queues` | Waiting/active/delayed/failed per queue — **operator-only** |
+| GET | `/ops/breakers` | Circuit-breaker states — **operator-only** |
 
-Auth: `x-api-key` header on all `/v1/*` and `/ops/*` routes (`/health` and
-`/metrics` stay open for probes and Prometheus). `PUT /v1/ops/public-url` writes
-a PLATFORM-wide value, so in production it takes an operator secret instead:
-`x-operator-token: $OPS_ADMIN_TOKEN`.
+Auth: `x-api-key` header on all `/v1/*` routes (`/health` and `/metrics` stay
+open for probes and Prometheus).
+
+Two `/ops` routes sit above tenant auth because what they touch is PLATFORM-wide
+rather than per-tenant. `PUT /v1/ops/public-url` writes one globally shared
+value, so in production it takes an operator secret instead of an api key:
+`x-operator-token: $OPS_ADMIN_TOKEN`. `GET /ops/queues`, `/ops/breakers` and
+`/ops/logs/stats` REPORT the whole deployment — shared queue depths, the shared
+dead-letter queue, every provider's breakers — so they take either that same
+operator token or a dashboard session listed in `OPERATOR_EMAILS`; outside
+production an api key still passes, which is why the dev commands above work.
+A tenant asking about its OWN pipeline reads `/v1/ops/tenant-stats`.
 
 Dashboard sign-in is separate: `/auth/signup` and `/auth/login` mint a JWT
 access + refresh pair. **"Continue with Google"** is an optional second door —
@@ -431,7 +440,8 @@ segment limits, delivery receipts): **[docs/PUSH-SMS.md](docs/PUSH-SMS.md)**.
   worker fleet 1→20 replicas on BullMQ waiting-list length (`bull:<q>:wait`),
   checked every 5s across all 16 queues. Requires [KEDA](https://keda.sh) in
   the cluster; set `keda.enabled=false` for plain replicas.
-- **Autoscaling signal:** `/ops/queues` (JSON) or the `notif_queue_jobs`
+- **Autoscaling signal:** `/ops/queues` (JSON — operator-only in production, so
+  send `x-operator-token: $OPS_ADMIN_TOKEN`) or the `notif_queue_jobs`
   Prometheus gauge — every process exports `/metrics` (api :3000,
   worker :3002 by default).
 - **Selective scaling:** worker tiers are just env config — run dedicated

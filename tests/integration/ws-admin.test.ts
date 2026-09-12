@@ -13,10 +13,11 @@
  * Requires: `docker compose up -d postgres redis` and `npm run migrate`.
  */
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { WebSocket } from 'ws';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/api/app';
+import { env } from '../../src/config/env';
 import { startGateway } from '../../src/ws/gateway';
 import { emitTenantEvent, tenantEventsChannel } from '../../src/core/tenant-events';
 import { closeQueues } from '../../src/shared/queues';
@@ -29,6 +30,7 @@ let port = 0;
 
 // tenant A (the connecting user) and tenant B (a stranger's env)
 let tokenA = '';
+let emailA = '';
 let envA = '';
 let apiKeyA = '';
 let envB = '';
@@ -111,7 +113,12 @@ async function signup(tag: string) {
   });
   const body = json(res);
   const dev = body.environments.find((e: { name: string }) => e.name === 'Development');
-  return { accessToken: body.accessToken as string, envId: dev.id as string, apiKey: dev.apiKey as string };
+  return {
+    email,
+    accessToken: body.accessToken as string,
+    envId: dev.id as string,
+    apiKey: dev.apiKey as string,
+  };
 }
 
 beforeAll(async () => {
@@ -119,6 +126,7 @@ beforeAll(async () => {
   const a = await signup('wsA');
   const b = await signup('wsB');
   tokenA = a.accessToken;
+  emailA = a.email;
   envA = a.envId;
   apiKeyA = a.apiKey;
   envB = b.envId;
@@ -190,6 +198,63 @@ describe('admin plane', () => {
     const got = nextFrame(ws, (f) => f.type === 'approval.changed');
     await emitTenantEvent(envA, 'approval.changed', 'ws-after-inbound');
     expect((await got).id).toBe('ws-after-inbound');
+
+    ws.close();
+  });
+});
+
+/**
+ * queue.depths is the ONE data-carrying frame on the admin plane, and the data
+ * is PLATFORM-wide: the shared BullMQ queues, identical for every tenant. Until
+ * 2026-09-13 it went down every admin socket, which is how the dashboard came
+ * to show each tenant the platform's backlog as their own. It is now sent only
+ * to sockets whose account holds the human operator seat — the same gate
+ * /ops/queues carries (requireOperatorSeat), so the sparkline's live stream and
+ * its REST seed can never disagree about who may see it.
+ */
+describe('queue.depths is operator-only', () => {
+  const originalOperators = [...env.operatorEmails];
+  afterEach(() => {
+    env.operatorEmails = [...originalOperators];
+  });
+
+  test('an operator socket receives the platform gauge', async () => {
+    env.operatorEmails = [emailA];
+    const ws = connect(`admin=1&token=${encodeURIComponent(tokenA)}&env=${encodeURIComponent(envA)}`);
+    await nextFrame(ws, (f) => f.type === 'connected');
+
+    // The sampler pushes immediately when the first operator attaches (0 -> 1).
+    const depths = await nextFrame(ws, (f) => f.type === 'queue.depths');
+    expect(depths.counts).toBeTruthy();
+    expect(Object.keys(depths.counts as object)).toContain('dead-letter');
+
+    ws.close();
+    await sleep(100); // let detach run before the next test flips the seat
+  });
+
+  test('a non-operator socket gets hints but never the gauge', async () => {
+    env.operatorEmails = ['nobody-here@itest.local'];
+    const ws = connect(`admin=1&token=${encodeURIComponent(tokenA)}&env=${encodeURIComponent(envA)}`);
+    await nextFrame(ws, (f) => f.type === 'connected');
+
+    const seen: string[] = [];
+    ws.on('message', (data: unknown) => {
+      try {
+        seen.push(String(JSON.parse(String(data)).type));
+      } catch {
+        /* ignore */
+      }
+    });
+
+    // Well past the 5s-grid's immediate 0->1 push, which does not happen here:
+    // no operator is watching, so the sampler never starts at all.
+    await sleep(1200);
+    expect(seen).not.toContain('queue.depths');
+
+    // ...and the tenant plane is untouched — hints still arrive.
+    const got = nextFrame(ws, (f) => f.type === 'approval.changed');
+    await emitTenantEvent(envA, 'approval.changed', 'ws-non-operator');
+    expect((await got).id).toBe('ws-non-operator');
 
     ws.close();
   });

@@ -171,7 +171,7 @@ describe('3. the Google doors', () => {
     expect(await tourPendingInTheRow(email)).toBe(true);
 
     // And the session that sign-in mints sees it, same as a password signup.
-    const token = mintSessionTokens(app, (resolved as { user: { id: string } }).user.id)
+    const token = (await mintSessionTokens(app, (resolved as { user: { id: string } }).user.id))
       .accessToken;
     expect(await tourPendingOverTheWire(token)).toBe(true);
   });
@@ -209,7 +209,7 @@ describe('4. accounts that were never a person walking through a door', () => {
     await provisionAccount(user!, 'Tour Fixture Org');
 
     expect(await tourPendingInTheRow(email)).toBe(false);
-    const token = mintSessionTokens(app, user!.id).accessToken;
+    const token = (await mintSessionTokens(app, user!.id)).accessToken;
     expect(await tourPendingOverTheWire(token)).toBe(false);
   });
 });

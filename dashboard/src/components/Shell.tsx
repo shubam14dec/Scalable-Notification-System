@@ -68,6 +68,14 @@ const NAV: NavItem[] = [
 /**
  * Signature element: live queue backlog, 24 ticks. Quiet, mono.
  *
+ * OPERATOR SEAT ONLY (2026-09-13, user-found). These are the PLATFORM's shared
+ * BullMQ depths — the same numbers for every tenant on the deployment — so for
+ * everyone else the sparkline was animating someone else's traffic and calling
+ * it theirs. The gate is the Shell's render (`me.operator`), matching the REST
+ * gate on /ops/queues and the gateway's queue.depths audience; non-operators
+ * lose a decoration that was lying to them. Its label says "platform" for the
+ * same reason: an operator's own tenant is a slice of this, not the whole.
+ *
  * Phase 25 D8: NO network poll. Reads the ['queues'] react-query cache, which
  * useAdminEvents feeds via `queue.depths` setQueryData (plus Overview's REST
  * seed when that page is open). A one-shot fetch runs ONLY if the cache is
@@ -117,9 +125,12 @@ function QueuePulse() {
   const max = Math.max(...ticks, 1);
   const current = ticks[ticks.length - 1];
   return (
-    <div className="px-3 py-2" title="Live queue backlog (waiting + active jobs)">
+    <div
+      className="px-3 py-2"
+      title="Live platform queue backlog — waiting + active jobs across every tenant"
+    >
       <div className="mb-1 flex items-baseline justify-between">
-        <span className="text-[11px] text-t3">queue backlog</span>
+        <span className="text-[11px] text-t3">platform queue</span>
         <span className="font-mono text-[11px] text-t2">{current}</span>
       </div>
       <div className="flex h-6 items-end gap-[2px]" aria-hidden>
@@ -235,7 +246,11 @@ export default function Shell() {
           />
         </div>
 
-        <nav className="flex-1 space-y-0.5 px-2">
+        {/* Non-operators have two fewer things in this column (no Requests
+            item, no pulse), which left the list looking cramped against the
+            empty space below (his call): they get a slightly airier rhythm;
+            the operator keeps the dense one their fuller column fills. */}
+        <nav className={`flex-1 px-2 ${me?.operator ? 'space-y-0.5' : 'space-y-1.5'}`}>
           {NAV.filter((item) => !item.operatorOnly || me?.operator).map(({ to, label, icon: Icon, end, tour }) => (
             <NavLink
               key={to}
@@ -266,8 +281,15 @@ export default function Shell() {
         </nav>
 
         <div className="border-t border-bd">
-          <QueuePulse />
-          <div className="flex items-center justify-between border-t border-bd px-3 py-2.5">
+          {me?.operator && <QueuePulse />}
+          {/* The divider belongs to the pulse: without it the account row's own
+              border-t would double up with the block's, a 2px line in a 1px
+              design system. */}
+          <div
+            className={`flex items-center justify-between px-3 py-2.5 ${
+              me?.operator ? 'border-t border-bd' : ''
+            }`}
+          >
             <div className="min-w-0">
               <p className="truncate text-[12px] font-medium text-t1">{me?.user.name ?? '—'}</p>
               <p className="truncate text-[11px] text-t3">{me?.user.email}</p>

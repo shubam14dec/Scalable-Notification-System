@@ -8,7 +8,12 @@ import { logger } from '../shared/logger';
 import { createRedis, redis } from '../shared/redis';
 import { pool } from '../db/pool';
 import { getTenantByApiKey, unreadCount, type Tenant } from '../db/repositories';
-import { isOrgMemberForEnvironment } from '../db/accounts.repo';
+import { getUserById, isOrgMemberForEnvironment } from '../db/accounts.repo';
+// Type-only fastify imports make this module runtime-safe to pull into the
+// gateway (which must not depend on fastify); isOperatorEmail is imported
+// rather than reimplemented because that module is deliberately the ONLY
+// reader of env.operatorEmails — normalization is a property of the seat.
+import { isOperatorEmail } from '../api/jwt-auth';
 import { verifySubscriberToken } from '../auth/subscriber-token';
 import { inAppPubSubChannel } from '../providers/inapp';
 import { tenantEventsChannel } from '../core/tenant-events';
@@ -43,9 +48,17 @@ interface AuthedSocket extends WebSocket {
 // channel -> sockets on THIS node subscribed to it
 const sockets = new Map<string, Set<AuthedSocket>>();
 
-// Admin sockets on THIS node (across all tenant channels) — tracked separately
-// so the queue.depths sampler runs once per node while >=1 admin is watching.
+// Admin sockets on THIS node (across all tenant channels).
 const adminSockets = new Set<AuthedSocket>();
+
+// The subset of those sockets belonging to the deployment's human OPERATOR
+// seat, which is the only audience for queue.depths: those counts are the
+// PLATFORM's shared BullMQ gauges, identical for every tenant, so pushing them
+// down every admin socket was a cross-tenant disclosure the dashboard then
+// rendered as if it were the tenant's own backlog (user-found, 2026-09-13).
+// The sampler runs once per node while >=1 OPERATOR is watching; a non-operator
+// admin socket still gets every tenant-scoped hint, just no infra gauge.
+const depthWatchers = new Set<AuthedSocket>();
 
 // Dedicated connection: a Redis connection in subscriber mode can't run
 // regular commands, so pub/sub gets its own client.
@@ -148,7 +161,7 @@ async function sampleDepths(): Promise<void> {
   if (serialized === lastDepths) return; // unchanged -> stay silent
   lastDepths = serialized;
   const payload = JSON.stringify({ type: 'queue.depths', counts, at: new Date().toISOString() });
-  for (const ws of adminSockets) {
+  for (const ws of depthWatchers) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
   }
 }
@@ -168,16 +181,18 @@ function stopDepthsTimer(): void {
   lastDepths = null;
 }
 
-async function attachAdmin(ws: AuthedSocket, channel: string): Promise<void> {
+async function attachAdmin(ws: AuthedSocket, channel: string, operator: boolean): Promise<void> {
   await attach(ws, channel); // refcounted redis subscribe (shared with subscriber plane)
   adminSockets.add(ws);
-  if (adminSockets.size === 1) startDepthsTimer(); // 0 -> 1
+  if (!operator) return;
+  depthWatchers.add(ws);
+  if (depthWatchers.size === 1) startDepthsTimer(); // 0 -> 1
 }
 
 async function detachAdmin(ws: AuthedSocket): Promise<void> {
   if (!adminSockets.delete(ws)) return;
   await detach(ws);
-  if (adminSockets.size === 0) stopDepthsTimer(); // 1 -> 0
+  if (depthWatchers.delete(ws) && depthWatchers.size === 0) stopDepthsTimer(); // 1 -> 0
 }
 
 /**
@@ -187,6 +202,14 @@ async function detachAdmin(ws: AuthedSocket): Promise<void> {
  * the socket to `tenant-events:<envId>` (relayed verbatim). Any failure -> 4401.
  * Inbound frames are ignored (server->client only). Returns true if it handled
  * the connection as an admin attempt (success OR rejection).
+ *
+ * One extra lookup on connect (not per frame): whether this account holds the
+ * human operator seat, which decides whether the socket joins `depthWatchers`
+ * and therefore receives the PLATFORM-wide queue.depths gauge. Mirrors the REST
+ * gate on /ops/queues (requireOperatorSeat) — the two must agree, or the
+ * dashboard's sparkline would live-update from a stream its own REST seed is
+ * forbidden to read. A missing user row is treated as "not an operator": the
+ * membership check above already proved authorization for the tenant plane.
  */
 async function handleAdmin(ws: AuthedSocket, url: URL): Promise<boolean> {
   if (url.searchParams.get('admin') !== '1') return false;
@@ -207,7 +230,10 @@ async function handleAdmin(ws: AuthedSocket, url: URL): Promise<boolean> {
     return true;
   }
 
-  await attachAdmin(ws, tenantEventsChannel(envId));
+  const user = await getUserById(claims.sub).catch(() => null);
+  const operator = Boolean(user && isOperatorEmail(user.email));
+
+  await attachAdmin(ws, tenantEventsChannel(envId), operator);
   ws.isAlive = true;
   ws.on('pong', () => {
     ws.isAlive = true;

@@ -107,7 +107,7 @@ async function createGoogleOnlyUser(email: string) {
   const user = await createGoogleUser(email, 'Google Only', `pw-sub-${suffix}-${email}`);
   expect(user).toBeTruthy();
   await provisionAccount(user!, `Google Org ${email}`);
-  return { user: user!, ...mintSessionTokens(app, user!.id) };
+  return { user: user!, ...(await mintSessionTokens(app, user!.id)) };
 }
 
 // ---- lifecycle -------------------------------------------------------------

@@ -98,7 +98,7 @@ beforeAll(async () => {
   const member = await createUser(emailFor('member'), 'Org Rename Member', 'not-a-real-hash');
   expect(member).toBeTruthy();
   await addMember(orgId, member!.id, 'member');
-  memberToken = mintSessionTokens(app, member!.id).accessToken;
+  memberToken = (await mintSessionTokens(app, member!.id)).accessToken;
 });
 
 beforeEach(async () => {

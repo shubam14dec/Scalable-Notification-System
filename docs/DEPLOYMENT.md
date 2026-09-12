@@ -50,7 +50,7 @@ routing table in [`deploy/compose/Caddyfile`](../deploy/compose/Caddyfile):
 |---|---|---|
 | `/v1/*` | `api:3000` | REST API (tenant API-key auth) |
 | `/auth/*` | `api:3000` | dashboard signup / login / refresh |
-| `/ops/*` | `api:3000` | dashboard operational reads |
+| `/ops/*` | `api:3000` | operational reads — **operator-only** (see below) |
 | `/webhooks/*` | `api:3000` | provider inbound: Telegram, Slack, Postmark, Twilio |
 | `/handoff/*` | `api:3000` | human-handoff operator links |
 | `/o/*` | `api:3000` | email open-tracking pixel |
@@ -61,6 +61,39 @@ routing table in [`deploy/compose/Caddyfile`](../deploy/compose/Caddyfile):
 
 `tools.asyncify.org` is a separate ingress rule straight to `acme-tools:4400`;
 it never touches Caddy.
+
+### `/ops/*` is the operator plane (behaviour change, 2026-09-13)
+
+Everything under `/ops/` reports or writes something that belongs to the WHOLE
+deployment, so it is gated above tenant auth. Two credentials open it, and which
+one a route takes depends on whether a human or a machine is meant to use it —
+see `requireOperatorSeat` / `requireOperator` in `src/api/auth.ts`:
+
+| Route | Reports | Accepts |
+|---|---|---|
+| `GET /ops/queues`, `/ops/breakers`, `/ops/logs/stats` | the platform: shared queue depths, the shared dead-letter queue, provider breakers, log volume | a dashboard session whose address is in `OPERATOR_EMAILS`, **or** `x-operator-token: $OPS_ADMIN_TOKEN` (outside production an `x-api-key` also passes, so dev scripts keep working) |
+| `PUT /v1/ops/public-url` | writes one globally shared value | `x-operator-token` only (in production) |
+| `GET /v1/ops/public-url`, `GET /v1/ops/tenant-stats` | the base URL; the CALLER's own message counts | any tenant credential (`authenticate`) |
+
+**What changed for tenants:** the dashboard Overview used to show every tenant
+"Queue backlog" and "Dead-lettered" read from the shared BullMQ queues — the
+same platform numbers for everybody, which read as if they were the tenant's
+own. Those two cards are now the tenant's own rows (`GET /v1/ops/tenant-stats`:
+in-flight and failed message counts, one index-only query), and the platform
+gauges moved into a "Platform (operator view)" row that renders only for the
+operator seat. The sidebar queue-pulse sparkline is operator-only for the same
+reason, and the WS gateway sends its `queue.depths` frames only to operator
+sockets.
+
+**Operational consequences on deploy day:**
+
+1. `OPERATOR_EMAILS` must list whoever is expected to see platform telemetry —
+   without it, nobody can read `/ops/queues` from the dashboard (the page still
+   works; the operator row simply does not render).
+2. Any autoscaler or monitor scraping `/ops/queues` in production must now send
+   `x-operator-token: $OPS_ADMIN_TOKEN`; a tenant api key gets `401 operator
+   token required`. The alternative is `/metrics` (same gauges, Prometheus
+   format, deliberately unrouted publicly — scrape it on the compose network).
 
 The WS gateway **ignores the request path entirely** — it reads only
 `searchParams` (`src/ws/gateway.ts`). So `/ws/?admin=1&token=…` reaches it
@@ -188,7 +221,7 @@ that signs dashboard tokens and the process that verifies them.
 | `JWT_SECRET` | `openssl rand -base64 48` | **Must be byte-identical on api and ws.** |
 | `CREDENTIALS_ENCRYPTION_KEY` | `openssl rand -base64 48` | **Unrecoverable. Back it up off-box before first use.** |
 | `WEBHOOK_SIGNING_SECRET` | `openssl rand -hex 32` | ROOT secret only — never handed to a provider. Each tenant's webhook key is derived from it (see below). Empty **disables** provider-webhook signature verification. |
-| `OPS_ADMIN_TOKEN` | `openssl rand -hex 32` | Operator-only secret gating global ops writes (`PUT /v1/ops/public-url`), sent as `x-operator-token`. **Not a tenant key** — no tenant api key or dashboard JWT is accepted for that route in production. |
+| `OPS_ADMIN_TOKEN` | `openssl rand -hex 32` | Operator-only secret gating global ops writes (`PUT /v1/ops/public-url`) and, since 2026-09-13, machine reads of platform telemetry (`GET /ops/queues`, `/ops/breakers`, `/ops/logs/stats`), sent as `x-operator-token`. **Not a tenant key** — no tenant api key is accepted for those routes in production. |
 | `POSTGRES_PASSWORD` | `openssl rand -base64 48` | Must match the password inside `DATABASE_URL`. |
 | `CLICKHOUSE_PASSWORD` | `openssl rand -hex 32` | Analytics only; soft-fails if wrong. |
 | `OUTBOUND_URL_ALLOW` | — | **Must stay empty.** It is the SSRF guard's dev escape hatch. |
@@ -201,7 +234,7 @@ that signs dashboard tokens and the process that verifies them.
 | `SMTP_FROM` | — | `notifications@asyncify.org` — must be on a domain verified in Resend, or every reset email is rejected at the relay. |
 | `SMTP_TENANT_FALLBACK` | — | **Must be `false` in production.** The SMTP block above is the PLATFORM's sending identity; without this flag, integration-less tenants fall back to it — with open signup, that is any stranger sending mail through our domain. Platform emails (resets) ignore the flag. |
 | `SIGNUP_MODE` | — | `invite` at launch (the beta gate, B1) or `open` for self-serve signup. Anything unrecognized reads as `open` with a warn at boot. **Flipping it to `open` is the launch switch** — see below. |
-| `OPERATOR_EMAILS` | — | Comma-separated list of the HUMAN operator seat: who may open the dashboard's **Requests** page, approve/decline access requests, and who is emailed when somebody asks. Matched case-insensitively against the signed-in account's address. Empty = nobody. **Not `OPS_ADMIN_TOKEN`** — that is a machine header for global ops writes; this names people with their own accounts. |
+| `OPERATOR_EMAILS` | — | Comma-separated list of the HUMAN operator seat: who may open the dashboard's **Requests** page, approve/decline access requests, who is emailed when somebody asks, and (since 2026-09-13) who sees the Overview's "Platform (operator view)" cards, the sidebar queue-pulse, and the `/ops/*` telemetry behind them. Matched case-insensitively against the signed-in account's address. Empty = nobody. **Not `OPS_ADMIN_TOKEN`** — that is a machine header; this names people with their own accounts. |
 
 ### Beta gate / launch switch (B1)
 
@@ -368,6 +401,40 @@ values published in this repo. Preflight is never called inside `buildApp()` /
 >    health endpoints answer as in step 6 below. The data tier (postgres,
 >    redis, clickhouse) is deliberately untouched — see the comment block at the
 >    top of `docker-compose.prod.yml`.
+
+> **Deploying the S1.7 session slice (refresh-token rotation):** nothing to
+> configure — **no new env vars, no host step, and nobody gets logged out.** The
+> whole deploy is the ordinary `migrate` in step 5 / Day-2, which adds one
+> additive table (`refresh_tokens`, plus three indexes). What changes at runtime:
+>
+> - `POST /auth/refresh` now **spends** the refresh token it is given and returns
+>   a **new** `refreshToken` alongside the `accessToken`. The old response field
+>   is unchanged, so the addition is backwards compatible — but a client that
+>   keeps presenting its original token will be refused on the second call. The
+>   only client is our own dashboard, and it ships in the same commit.
+> - `POST /auth/logout` (unauthenticated, takes the refresh token) revokes the
+>   whole session family; `POST /auth/logout-all` (needs an access token) revokes
+>   every live session of the account and returns `{revoked: n}`.
+> - Reusing an already-spent token more than **30 seconds** after it was spent
+>   revokes its entire family and logs `refresh token reuse detected` at warn
+>   with the `userId` — that line is the theft alarm, and it is the one thing
+>   here worth an alert rule. Inside 30 seconds it is a two-tab race and is
+>   refused silently.
+> - **Live sessions survive the deploy.** Refresh tokens minted before this slice
+>   carry no `jti`, so they have no ledger row; rather than rejecting them (which
+>   would sign every open dashboard out once), `/auth/refresh` adopts such a
+>   token into the ledger under a handle derived from the token itself, then
+>   rotates it normally. The adoption is single-use (`on conflict do nothing`),
+>   so a pre-deploy token is spent exactly once and is subject to the same theft
+>   detection as any other — it is not a grace period, it is a migration.
+> - The inactivity sweep (worker, 60s tick) now also deletes ledger rows 30 days
+>   past expiry. No new timer, no new process.
+>
+> Gate: log in, then in the browser console `localStorage.getItem('nk_refresh')`
+> twice about 15 minutes apart (or force it by deleting `nk_access` and
+> reloading) — the value must have **changed**. Then Settings → "Log out
+> everywhere" signs the tab out, and `docker compose logs api | grep 'logout
+> everywhere'` shows the revoked count.
 
 Per-tenant provider credentials (a Resend API key, a Telegram bot token) are
 **not** environment config — they are encrypted rows added from the dashboard's

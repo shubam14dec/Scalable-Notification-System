@@ -129,6 +129,13 @@ create index if not exists messages_status_created_idx
   on messages (status, created_at);
 create index if not exists messages_provider_msg_idx
   on messages (provider_message_id) where provider_message_id is not null;
+-- Per-tenant pipeline health (GET /v1/ops/tenant-stats): in-flight and failed
+-- counts for ONE tenant. Both columns live in the index, so the count is an
+-- index-only scan over a narrow status range instead of a walk through every
+-- message the tenant ever sent. messages_status_created_idx cannot serve it —
+-- it leads with status, so it has no per-tenant range to scan.
+create index if not exists messages_tenant_status_idx
+  on messages (tenant_id, status);
 
 -- In-app inbox additions (idempotent for databases created before them).
 alter table messages add column if not exists read_at timestamptz;
@@ -1112,3 +1119,52 @@ create index if not exists access_requests_invite_code_hash_idx
 -- Cleared by POST /auth/tour-done, which any exit from the tour fires (finish
 -- or skip) — one write, idempotent, and the flag never comes back.
 alter table users add column if not exists tour_pending boolean not null default false;
+
+-- ---- Slice S1.7: THE REFRESH-TOKEN LEDGER ----
+-- One row per refresh token ever issued to a dashboard session. This is what
+-- turns the refresh token from a 7-day bearer nobody can take back into a
+-- one-shot ticket that rotates, detects theft, and can be revoked.
+--
+-- THE LIFECYCLE, which every query in src/db/refresh-tokens.repo.ts is written
+-- against:
+--
+--   live    spent_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+--           -> exactly one token per session chain is live at a time.
+--   spent   it was exchanged for a successor. The successor inherits `family`,
+--           so the chain stays ONE identity across however many rotations.
+--   revoked logout (the whole family), logout-everywhere (every family of one
+--           user), or the theft alarm (the family of a reused token).
+--   expired it simply aged out; nothing had to happen for that to be true.
+--
+-- `family` is what makes revocation mean something a person would recognise: a
+-- FAMILY is one sign-in. Revoking a single jti would kill one hop of a chain
+-- the browser has already moved past; revoking the family kills the session,
+-- which is what somebody means when they say "log me out". The first token of a
+-- chain uses its OWN jti as the family id — a fresh uuid either way, and one
+-- fewer value to keep in step.
+--
+-- SCALE (the 10-20M rule): one indexed row per ACTIVE session — not per user,
+-- not per request. A session touches this table twice per access-token lifetime
+-- (~15 min): one conditional UPDATE by primary key to rotate, one INSERT for
+-- the successor. Every other operation here (revoke a family, revoke a user,
+-- purge the dead) is a single set-based statement over an index below.
+create table if not exists refresh_tokens (
+  -- The token's own `jti` claim. The token itself is NEVER stored — the claim
+  -- is a random uuid, so this is a ledger of handles, not of secrets.
+  jti        uuid primary key,
+  user_id    uuid not null references users(id) on delete cascade,
+  family     uuid not null,
+  issued_at  timestamptz not null default now(),
+  expires_at timestamptz not null,
+  spent_at   timestamptz,
+  revoked_at timestamptz
+);
+-- "Log out everywhere": one indexed sweep per user.
+create index if not exists refresh_tokens_user_idx on refresh_tokens (user_id);
+-- Logout and the theft alarm both revoke by family.
+create index if not exists refresh_tokens_family_idx on refresh_tokens (family);
+-- The 30-day purge, piggybacked on the inactivity sweep (which ticks every
+-- 60s). WITHOUT this index that DELETE is a sequential scan of every live
+-- session once a minute — at 20M sessions the hygiene would cost more than the
+-- feature it cleans up after. With it, an idle tick is an empty range scan.
+create index if not exists refresh_tokens_expiry_idx on refresh_tokens (expires_at);

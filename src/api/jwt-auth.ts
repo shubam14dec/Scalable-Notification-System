@@ -3,8 +3,17 @@ import { env } from '../config/env';
 import { getEnvironment, getUserById, membershipRole } from '../db/accounts.repo';
 
 declare module '@fastify/jwt' {
+  /**
+   * S1.7 added `jti` and `family` — both OPTIONAL, and both present only on
+   * REFRESH tokens. Access tokens stay exactly what they were, `{ sub, type }`
+   * and nothing else: they are checked by signature alone on every request, so
+   * giving them a handle would mean a database lookup per request, which is the
+   * one thing a stateless access token exists to avoid. Optional (rather than a
+   * union of two payload shapes) because pre-S1.7 refresh tokens carry neither
+   * and are still honoured — see the grandfathering note in routes/auth.ts.
+   */
   interface FastifyJWT {
-    payload: { sub: string; type: 'access' | 'refresh' };
+    payload: { sub: string; type: 'access' | 'refresh'; jti?: string; family?: string };
     user: { sub: string; type: 'access' | 'refresh' };
   }
 }
@@ -70,6 +79,13 @@ export function isOperatorEmail(email: string): boolean {
  * token must not open a human screen (it is a shared secret that lives in a
  * deploy file), and a dashboard session must not perform global ops writes (any
  * stranger can create one while signup is open). A route takes exactly one.
+ *
+ *   requireOperatorSeat  EITHER, added 2026-09-13 for platform telemetry READS
+ *   (src/api/auth.ts)    (/ops/queues, /ops/breakers, /ops/logs/stats), which a
+ *                        dashboard operator and an ops script both legitimately
+ *                        want. It dispatches to one of the two above by the
+ *                        credential the request presents — it does not blur
+ *                        them, and it is only ever used for reads.
  *
  * Runs `requireUser` first and returns whatever it returned — on failure that
  * is the already-sent 401, which is the signal to stop; on success it is

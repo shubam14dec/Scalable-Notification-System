@@ -367,6 +367,26 @@ keys. Future CI tokens go directly into GitHub Secrets, never through chat.
   adopt BOTH layers; local dev exemptions go in `OUTBOUND_URL_ALLOW`
   (.env), never code branches. Config-shaped dispatch failures throw
   PermanentError → transcript note, no retry burn (both runtime branches).
+- **Authenticating a route is not scoping its data** (user-found 2026-09-13,
+  the leftover half of S1.1): `/ops/queues` was closed to the internet but
+  left on plain `authenticate`, so the dashboard Overview showed EVERY tenant
+  the platform's shared BullMQ gauges — a constant 182 dead-lettered jobs from
+  ancient dev traffic, rendered as if it were their backlog (plus the sidebar
+  pulse animating other tenants' traffic, and the gateway pushing
+  `queue.depths` down every admin socket). Three rules fell out: (1) before
+  putting a number on a tenant page, ask WHOSE rows it counts — a global gauge
+  on a tenant screen is a lie first and a disclosure second; (2) when a global
+  read has two legitimate audiences (a dashboard human and an ops script),
+  COMPOSE the existing guards by credential rather than weakening either —
+  `requireOperatorSeat` dispatches `x-operator-token` → machine seat, `Bearer`
+  → `requireOperatorUser` in every environment, everything else → machine seat
+  (which delegates to tenant auth outside production, keeping dev scripts
+  alive); (3) gate the REST read, the WS stream, and the UI in the SAME slice —
+  a sparkline fed by a socket outlives the endpoint you just locked.
+  Tenant-truth replacement: `GET /v1/ops/tenant-stats` with EXPLICIT status
+  lists (`IN_FLIGHT_MESSAGE_STATUSES`/`FAILED_MESSAGE_STATUSES`), never
+  `status <> all(terminal)` — a negation can't use an index, so the "cheap"
+  form scans every message the tenant ever sent.
 - **Lockfile poisoning on this Windows machine** (proven twice 2026-07-10):
   any real `npm install` here writes a package-lock that DROPS the
   cross-platform wasm-fallback entries (`@emnapi/core`/`runtime` under

@@ -4,6 +4,8 @@ import {
   ApiError,
   changePassword,
   fetchMe,
+  logout,
+  logoutEverywhere,
   renameOrganization,
   session,
   subscribeToEnv,
@@ -204,6 +206,68 @@ function PasswordCard() {
   );
 }
 
+/**
+ * S1.7 — "Log out everywhere", the quiet third action at the foot of the
+ * Password card.
+ *
+ * PLACEMENT (v2, his call — the Password card grew past the fold): its own
+ * compact card in the right column under Product tour, keeping the page
+ * scroll-free; the card's own title keeps the tone separate from the tour.
+ *
+ * `confirm()` first, because the cost is asymmetric: the click is one tap away
+ * from the password field, and the consequence lands on a laptop the person is
+ * not looking at. The browser's own dialog, not a modal of ours — this is the
+ * one blocking question on the page, and a custom modal would be more code for
+ * a worse-trusted prompt.
+ *
+ * On success it hands over to `logout()`, which revokes THIS session too and
+ * leaves for /login. So there is no success state to render, and no "done"
+ * message that could ever be read — only the failure path stays on screen.
+ */
+/** The compact shell the right column renders; the button logic lives below. */
+function SessionsCard() {
+  return (
+    <Card className="w-full p-4">
+      <h2 className="text-[13px] font-semibold text-t1">Sessions</h2>
+      <p className="mb-2.5 mt-0.5 text-[12px] leading-snug text-t3">
+        Ends every session on this account — other browsers, phones, and this
+        one.
+      </p>
+      <SignOutEverywhere />
+    </Card>
+  );
+}
+
+function SignOutEverywhere() {
+  const [error, setError] = useState('');
+
+  const revoke = useMutation({
+    mutationFn: logoutEverywhere,
+    // Every session is gone server-side, this one included: staying on a page
+    // whose next request is a 401 would be theatre. Leave properly.
+    onSuccess: () => logout(),
+    onError: (err) =>
+      setError(err instanceof ApiError ? err.message : 'Could not reach the server'),
+  });
+
+  return (
+    <div>
+      {error && <p className="mb-2 text-[12px] text-err">{error}</p>}
+      <Button
+        type="button"
+        disabled={revoke.isPending}
+        onClick={() => {
+          setError('');
+          if (!confirm('Log out on every device? You will need to sign in again.')) return;
+          revoke.mutate();
+        }}
+      >
+        {revoke.isPending ? 'Logging out…' : 'Log out everywhere'}
+      </Button>
+    </div>
+  );
+}
+
 /** U5 — the tour, re-runnable on demand: a card like its two neighbors. */
 function TourCard() {
   return (
@@ -232,8 +296,9 @@ export default function SettingsPage() {
           <OrganizationCard />
           <PasswordCard />
         </div>
-        <div className="min-[900px]:col-start-3 min-[900px]:w-[280px] min-[900px]:justify-self-start">
+        <div className="flex flex-col gap-6 min-[900px]:col-start-3 min-[900px]:w-[280px] min-[900px]:justify-self-start">
           <TourCard />
+          <SessionsCard />
         </div>
       </div>
 

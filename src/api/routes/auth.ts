@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { env } from '../../config/env';
@@ -27,6 +27,14 @@ import {
   insertAccessRequest,
   reopenDeclinedRequest,
 } from '../../db/access-requests.repo';
+import {
+  adoptLegacyRefreshToken,
+  getRefreshToken,
+  insertRefreshToken,
+  revokeAllForUser,
+  revokeFamily,
+  spendRefreshToken,
+} from '../../db/refresh-tokens.repo';
 import { initialApiKeysFrom, provisionAccount } from '../../auth/provisioning';
 import { isOperatorEmail, operatorEmails, requireUser } from '../jwt-auth';
 import { ipRateLimit } from '../rate-limit';
@@ -62,6 +70,15 @@ const REFRESH_PER_MIN = 30;
 const PASSWORD_CHANGE_PER_MIN = 10;
 const FORGOT_PER_MIN = 3;
 const RESET_PER_MIN = 10;
+
+/**
+ * S1.7 adds one: /auth/logout is unauthenticated by design (possession of the
+ * refresh token IS the credential — a dying session's access token may already
+ * be expired), so it gets a brake like every other door a stranger can knock
+ * on. Loose, because the cost of a call is one HMAC and at most one indexed
+ * UPDATE, and because a person with six tabs open legitimately fires six.
+ */
+const LOGOUT_PER_MIN = 60;
 
 /**
  * B1 adds one more, the same shape as `forgot` and for the same reason: one
@@ -172,19 +189,113 @@ const LoginSchema = z.object({
 const RefreshSchema = z.object({ refreshToken: z.string().min(1) });
 
 /**
+ * Logout's body. Bounded at 4096 so a stranger cannot make us HMAC a megabyte;
+ * a real refresh token is a couple of hundred bytes.
+ */
+const LogoutSchema = z.object({ refreshToken: z.string().min(1).max(4096) });
+
+/**
+ * S1.7 — HOW LONG A JUST-SPENT TOKEN IS MERELY DEAD RATHER THAN STOLEN.
+ *
+ * Two dashboard tabs share one localStorage and can both hold token #481 when
+ * their access tokens expire. Tab A rotates it into #482; tab B, a few
+ * milliseconds behind, presents #481 too. That is not theft — it is the same
+ * browser racing itself — and treating it as theft would log the user out of
+ * their own laptop and blame them for it.
+ *
+ * So a reuse inside this window is refused (401, plain) but rings no alarm, and
+ * the client recovers by reading the token the winning tab already stored (see
+ * `tryRefresh` in dashboard/src/lib/api.ts). Outside it, a reuse is what it
+ * looks like: somebody is replaying a token whose successor has been in use for
+ * half a minute, and the whole family dies.
+ *
+ * 30 seconds is chosen against the two failure modes: too short and a slow
+ * network turns a tab race into a false alarm; too long and a genuine thief
+ * gets a usable head start. A real race resolves in tens of milliseconds.
+ */
+const REUSE_GRACE_MS = 30_000;
+
+/**
+ * The ONLY answer /auth/refresh gives a token it will not honour — unknown,
+ * expired, revoked, already spent, or the wrong type. One body for all of them,
+ * deliberately: "this token was spent" and "this token never existed" are
+ * different facts about somebody's session, and a caller holding a stolen token
+ * must not be able to tell which one they are holding.
+ */
+const REFRESH_REJECTED = { error: 'invalid refresh token' };
+
+/**
  * The access+refresh pair every sign-in door hands out. Exported because
  * S1.6's Google redeem endpoint must mint the EXACT same pair — a second
  * signer with its own TTLs would be a second session policy nobody would
  * remember to keep in step.
+ *
+ * S1.7 makes this write as well as sign: the refresh token gains a `jti` and a
+ * `family`, and the jti is recorded in the ledger as the one live token of that
+ * family (src/db/refresh-tokens.repo.ts). Hence `async` — every caller awaits.
+ *
+ * `family` is passed ONLY by a rotation, which inherits the chain's identity. A
+ * sign-in door passes nothing and the token roots its own family under its own
+ * jti: one sign-in, one family, whatever it later rotates into.
+ *
+ * The access token is untouched — no jti, no row, no lookup. It is verified by
+ * signature alone on every request, and that is exactly why the refresh token
+ * is the one that carries state: 15 minutes of statelessness per DB write.
  */
-export function mintSessionTokens(app: FastifyInstance, userId: string) {
+export async function mintSessionTokens(
+  app: FastifyInstance,
+  userId: string,
+  family?: string,
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const jti = randomUUID();
+  const refreshToken = app.jwt.sign(
+    { sub: userId, type: 'refresh', jti, family: family ?? jti },
+    { expiresIn: env.refreshTokenTtl },
+  );
+
+  // The row's expiry is read back off the token we just signed rather than
+  // recomputed from env.refreshTokenTtl: the signer owns that arithmetic (and
+  // the TTL is a duration string it parses), so asking it is the only way the
+  // ledger and the JWT can never disagree about when this token dies.
+  const exp = app.jwt.decode<{ exp: number }>(refreshToken)?.exp ?? 0;
+  await insertRefreshToken(jti, userId, family ?? jti, new Date(exp * 1000));
+
   return {
     accessToken: app.jwt.sign({ sub: userId, type: 'access' }, { expiresIn: env.accessTokenTtl }),
-    refreshToken: app.jwt.sign(
-      { sub: userId, type: 'refresh' },
-      { expiresIn: env.refreshTokenTtl },
-    ),
+    refreshToken,
   };
+}
+
+/**
+ * GRANDFATHERING — a stable ledger handle for a refresh token minted BEFORE
+ * S1.7, which carries no `jti` claim of its own.
+ *
+ * The deploy would otherwise sign every live dashboard session out: no jti
+ * means no row, no row means the rotation matches nothing, and the browser
+ * lands on /login. That is a one-time cost nobody would notice for long, but it
+ * is avoidable, and the naive way to avoid it — "no jti? mint a pair and let it
+ * through" — is worse than the logout: with nothing to spend, one stolen legacy
+ * token would mint fresh sessions on demand for the rest of its seven days, in
+ * a new unrelated family each time, invisible to the very theft detection this
+ * slice adds.
+ *
+ * So the token is given a handle DERIVED FROM ITSELF. Same token, same jti,
+ * every time — which is what lets `adoptLegacyRefreshToken`'s `on conflict do
+ * nothing` make the adoption single-use, after which the legacy token is an
+ * ordinary ledger entry and rotates, races and revokes like any other.
+ *
+ * A sha256 of the token, laid out as an RFC 9562 version-8 uuid (the version
+ * reserved for exactly this: a well-formed uuid built from application data).
+ * The digest — not the token — is what lands in the column, so this stores no
+ * more secret material than the random-jti path does.
+ */
+export function legacyJti(refreshToken: string): string {
+  const h = createHash('sha256').update(refreshToken).digest('hex');
+  // Nibble 12 is the version (8) and the top two bits of nibble 16 are the
+  // RFC variant; everything else is digest.
+  const variant = ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16);
+  const u = `${h.slice(0, 12)}8${h.slice(13, 16)}${variant}${h.slice(17, 32)}`;
+  return `${u.slice(0, 8)}-${u.slice(8, 12)}-${u.slice(12, 16)}-${u.slice(16, 20)}-${u.slice(20, 32)}`;
 }
 
 /**
@@ -196,7 +307,7 @@ export async function sessionResponse(app: FastifyInstance, user: User) {
   return {
     user: { id: user.id, name: user.name, email: user.email },
     organizations: await organizationsForUser(user.id),
-    ...mintSessionTokens(app, user.id),
+    ...(await mintSessionTokens(app, user.id)),
   };
 }
 
@@ -369,7 +480,7 @@ export function registerAuthRoutes(app: FastifyInstance) {
        * same plaintext already in this body, not a second exposure.
        */
       initialApiKeys: initialApiKeysFrom(environments),
-      ...tokens(user.id),
+      ...(await tokens(user.id)),
     });
   });
 
@@ -398,18 +509,143 @@ export function registerAuthRoutes(app: FastifyInstance) {
     return sessionResponse(app, user);
   });
 
+  /**
+   * S1.7 — ROTATE. A refresh token is spent exactly once, and what it buys is a
+   * WHOLE NEW PAIR: a fresh access token and a fresh refresh token inheriting
+   * the same family with a fresh 7 days on it (the sliding window — a session
+   * in daily use never expires, and one abandoned for a week does).
+   *
+   * The order of the two checks is the point. The signature is verified first
+   * because it is free and it throws out every forgery and every expired token
+   * without touching Postgres; only a token we actually signed gets to cost a
+   * query. Then the ledger decides whether this particular token is still the
+   * live one, in ONE conditional UPDATE — see `spendRefreshToken`.
+   *
+   * THE THEFT ALARM. If the UPDATE matches nothing, we ask why. A token that was
+   * already SPENT (longer ago than the race grace above) means two parties have
+   * held the same token: whoever presented it now has a copy of something whose
+   * successor is in somebody's browser, and there is no innocent explanation
+   * left. We cannot tell victim from thief — so the whole family dies and the
+   * legitimate user signs in again, which is a bad afternoon instead of a
+   * compromised account. Every other reason (revoked, expired, unknown) is just
+   * a dead token and gets the same 401 with no fuss.
+   */
   app.post('/auth/refresh', { preHandler: [ipRateLimit('refresh', REFRESH_PER_MIN)] }, async (req, reply) => {
     const parsed = RefreshSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid body' });
     }
+
+    let payload: { sub: string; type: string; jti?: string; exp: number };
     try {
-      const payload = app.jwt.verify<{ sub: string; type: string }>(parsed.data.refreshToken);
+      payload = app.jwt.verify<{ sub: string; type: string; jti?: string; exp: number }>(
+        parsed.data.refreshToken,
+      );
       if (payload.type !== 'refresh') throw new Error('wrong token type');
-      return { accessToken: app.jwt.sign({ sub: payload.sub, type: 'access' }, { expiresIn: env.accessTokenTtl }) };
     } catch {
-      return reply.code(401).send({ error: 'invalid refresh token' });
+      return reply.code(401).send(REFRESH_REJECTED);
     }
+
+    // Pre-S1.7 token: give it the handle it was born without, once. See
+    // `legacyJti` and `adoptLegacyRefreshToken` — after this line there is no
+    // such thing as a legacy token, only a ledger row like any other.
+    let jti = payload.jti;
+    if (!jti) {
+      jti = legacyJti(parsed.data.refreshToken);
+      try {
+        await adoptLegacyRefreshToken(jti, payload.sub, new Date(payload.exp * 1000));
+      } catch {
+        // The one way this insert can fail is the users(id) foreign key: the
+        // account was deleted after the token was signed. That is a dead token,
+        // not a server error — and the rotation path below reaches the same
+        // conclusion for a post-S1.7 token, because `on delete cascade` took
+        // its ledger row with the account.
+        return reply.code(401).send(REFRESH_REJECTED);
+      }
+    }
+
+    const spent = await spendRefreshToken(jti);
+    if (spent) {
+      // SAME family, so the chain keeps its identity and one logout still kills
+      // every hop of it.
+      return await mintSessionTokens(app, spent.user_id, spent.family);
+    }
+
+    const row = await getRefreshToken(jti);
+    if (row?.spent_at && Date.now() - new Date(row.spent_at).getTime() > REUSE_GRACE_MS) {
+      const revoked = await revokeFamily(row.family);
+      // Structured, and carrying no token material: the userId is who to talk
+      // to, the count is how much of their session went with it. The jti and
+      // the family are deliberately absent — a log line is not the place for
+      // session handles.
+      logger.warn(
+        { userId: row.user_id, revoked },
+        'refresh token reuse detected — revoked the whole session family',
+      );
+    }
+    return reply.code(401).send(REFRESH_REJECTED);
+  });
+
+  /**
+   * S1.7 — REAL LOGOUT. Until now "logging out" cleared localStorage and hoped:
+   * the refresh token stayed valid for seven days wherever else it had got to.
+   *
+   * NO `requireUser`, deliberately. The access token of a session being
+   * abandoned is frequently already expired — that is often WHY somebody is
+   * leaving — and demanding a live one would mean the sessions most worth
+   * ending are the ones that cannot be ended. Possession of the refresh token
+   * is the credential here, and it is the only thing this route acts on.
+   *
+   * Revokes the FAMILY, not the jti: one sign-in is one family, and the browser
+   * has almost certainly rotated past whichever token it is holding. Killing
+   * the jti alone would leave the session's own successor alive.
+   *
+   * ALWAYS 200 {ok:true} — for a valid token, an expired one, a forgery, a
+   * malformed body. A logout that can fail visibly is a logout people don't
+   * trust, and there is nothing an error code could tell the caller that it
+   * would be safe to say: "that token was real" is precisely the fact a
+   * stranger probing this endpoint would want.
+   */
+  app.post('/auth/logout', { preHandler: [ipRateLimit('logout', LOGOUT_PER_MIN)] }, async (req) => {
+    const parsed = LogoutSchema.safeParse(req.body);
+    if (!parsed.success) return { ok: true };
+
+    try {
+      const payload = app.jwt.verify<{ type: string; jti?: string; family?: string }>(
+        parsed.data.refreshToken,
+      );
+      if (payload.type === 'refresh') {
+        // A pre-S1.7 token has no family claim; its adopted row's family IS its
+        // derived jti (see `adoptLegacyRefreshToken`), so one expression covers
+        // both. Revoking a family that was never adopted is a harmless no-op —
+        // and the right one, since such a token has no successor either.
+        await revokeFamily(payload.family ?? legacyJti(parsed.data.refreshToken));
+      }
+    } catch {
+      // Garbage, expired, or signed by somebody else. Nothing to revoke, and
+      // nothing to report: the caller is already logged out by any measure.
+    }
+    return { ok: true };
+  });
+
+  /**
+   * S1.7 — "Log out everywhere." Every live refresh token this user holds, on
+   * every device, including the browser making the call (the dashboard follows
+   * it with an ordinary logout, so the tab the person is looking at ends up
+   * signed out too).
+   *
+   * `requireUser` here and not on /auth/logout above, because the two answer
+   * different questions. Ending YOUR OWN session needs proof you hold that
+   * session's token. Ending EVERY session of an account is an account-wide act,
+   * so it needs proof of the account — a live access token — and the refresh
+   * token of one device is not that.
+   *
+   * Returns the count so the UI can say what happened rather than "done".
+   */
+  app.post('/auth/logout-all', { preHandler: [requireUser] }, async (req) => {
+    const revoked = await revokeAllForUser(req.userId);
+    logger.info({ userId: req.userId, revoked }, 'logout everywhere: revoked all live sessions');
+    return { revoked };
   });
 
   app.get('/auth/me', { preHandler: [requireUser] }, async (req, reply) => {

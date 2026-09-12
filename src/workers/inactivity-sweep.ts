@@ -5,6 +5,7 @@ import { inAppPubSubChannel } from '../providers/inapp';
 import { sweepInactiveConversations } from '../db/conversations.repo';
 import { purgeDeadLinkTokens } from '../db/identities.repo';
 import { purgeDeadSetupHandoffs } from '../db/handoffs.repo';
+import { purgeDeadRefreshTokens } from '../db/refresh-tokens.repo';
 import { expirePendingToolCalls } from '../db/agent-tools.repo';
 import { getQueue, QUEUE } from '../shared/queues';
 import { emitTenantEvent } from '../core/tenant-events';
@@ -121,6 +122,15 @@ export async function runInactivitySweep(): Promise<number> {
   // minting handoffs no longer leaks its expired rows forever.
   await purgeDeadSetupHandoffs().catch((err) =>
     logger.warn({ err: (err as Error).message }, 'setup handoff purge failed'),
+  );
+
+  // Piggybacked (S1.7): refresh-token ledger rows 30 days past their expiry —
+  // spent, revoked and simply aged-out alike. One indexed DELETE, the same
+  // shape as its two neighbours, so a deployment's session table stays
+  // proportional to its LIVE sessions rather than to every session it has ever
+  // issued. The 30 days keep a revoked family readable behind a theft alarm.
+  await purgeDeadRefreshTokens().catch((err) =>
+    logger.warn({ err: (err as Error).message }, 'refresh token purge failed'),
   );
 
   // Piggybacked: approval-gated tool calls past their 24h deadline flip to

@@ -6,7 +6,9 @@
  * channel; this module turns each hint into ONE react-query invalidation
  * through the unchanged REST API. No row data rides the socket (queue.depths is
  * the single infra-gauge exception — same shape the /ops/queues REST endpoint
- * returns — and it is written straight into the cache, never refetched).
+ * returns — and it is written straight into the cache, never refetched). Since
+ * 2026-09-13 the gateway sends queue.depths ONLY to operator sockets, because
+ * those counts are platform-wide; a non-operator's cache never receives it.
  *
  * Missing an event costs nothing: every (re)connect runs a catch-up sweep that
  * invalidates every mapped key once, and a 60s safety poll (per page) covers
@@ -66,7 +68,11 @@ export const INVALIDATION_TABLE: Record<TenantEventType, (id?: string) => QueryK
   'connection.changed': () => [['connections']],
   // Memory modal + conversation-detail memory block both key on ['agent-memories', …]
   'memory.changed': () => [['agent-memories']],
-  // a dead-lettered job shows up in the queue gauge and the activity feed
+  // a dead-lettered job shows up in the queue gauge and the activity feed.
+  // ['queues'] is the PLATFORM gauge, and /ops/queues is operator-only since
+  // 2026-09-13: for everyone else that query is `enabled: false` (Overview) or
+  // unmounted (the sidebar pulse), and react-query refetches neither — so this
+  // prefix is a no-op for a non-operator rather than a 403.
   'queue.deadletter': () => [['queues'], ['activity']],
 };
 
