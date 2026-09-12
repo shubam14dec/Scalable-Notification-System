@@ -3,8 +3,17 @@ import { env } from '../config/env';
 import { getEnvironment, getUserById, membershipRole } from '../db/accounts.repo';
 
 declare module '@fastify/jwt' {
+  /**
+   * S1.7 added `jti` and `family` — both OPTIONAL, and both present only on
+   * REFRESH tokens. Access tokens stay exactly what they were, `{ sub, type }`
+   * and nothing else: they are checked by signature alone on every request, so
+   * giving them a handle would mean a database lookup per request, which is the
+   * one thing a stateless access token exists to avoid. Optional (rather than a
+   * union of two payload shapes) because pre-S1.7 refresh tokens carry neither
+   * and are still honoured — see the grandfathering note in routes/auth.ts.
+   */
   interface FastifyJWT {
-    payload: { sub: string; type: 'access' | 'refresh' };
+    payload: { sub: string; type: 'access' | 'refresh'; jti?: string; family?: string };
     user: { sub: string; type: 'access' | 'refresh' };
   }
 }

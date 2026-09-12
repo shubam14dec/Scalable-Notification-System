@@ -369,6 +369,40 @@ values published in this repo. Preflight is never called inside `buildApp()` /
 >    redis, clickhouse) is deliberately untouched — see the comment block at the
 >    top of `docker-compose.prod.yml`.
 
+> **Deploying the S1.7 session slice (refresh-token rotation):** nothing to
+> configure — **no new env vars, no host step, and nobody gets logged out.** The
+> whole deploy is the ordinary `migrate` in step 5 / Day-2, which adds one
+> additive table (`refresh_tokens`, plus three indexes). What changes at runtime:
+>
+> - `POST /auth/refresh` now **spends** the refresh token it is given and returns
+>   a **new** `refreshToken` alongside the `accessToken`. The old response field
+>   is unchanged, so the addition is backwards compatible — but a client that
+>   keeps presenting its original token will be refused on the second call. The
+>   only client is our own dashboard, and it ships in the same commit.
+> - `POST /auth/logout` (unauthenticated, takes the refresh token) revokes the
+>   whole session family; `POST /auth/logout-all` (needs an access token) revokes
+>   every live session of the account and returns `{revoked: n}`.
+> - Reusing an already-spent token more than **30 seconds** after it was spent
+>   revokes its entire family and logs `refresh token reuse detected` at warn
+>   with the `userId` — that line is the theft alarm, and it is the one thing
+>   here worth an alert rule. Inside 30 seconds it is a two-tab race and is
+>   refused silently.
+> - **Live sessions survive the deploy.** Refresh tokens minted before this slice
+>   carry no `jti`, so they have no ledger row; rather than rejecting them (which
+>   would sign every open dashboard out once), `/auth/refresh` adopts such a
+>   token into the ledger under a handle derived from the token itself, then
+>   rotates it normally. The adoption is single-use (`on conflict do nothing`),
+>   so a pre-deploy token is spent exactly once and is subject to the same theft
+>   detection as any other — it is not a grace period, it is a migration.
+> - The inactivity sweep (worker, 60s tick) now also deletes ledger rows 30 days
+>   past expiry. No new timer, no new process.
+>
+> Gate: log in, then in the browser console `localStorage.getItem('nk_refresh')`
+> twice about 15 minutes apart (or force it by deleting `nk_access` and
+> reloading) — the value must have **changed**. Then Settings → "Log out
+> everywhere" signs the tab out, and `docker compose logs api | grep 'logout
+> everywhere'` shows the revoked count.
+
 Per-tenant provider credentials (a Resend API key, a Telegram bot token) are
 **not** environment config — they are encrypted rows added from the dashboard's
 Integrations page.

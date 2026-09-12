@@ -4,6 +4,8 @@ import {
   ApiError,
   changePassword,
   fetchMe,
+  logout,
+  logoutEverywhere,
   renameOrganization,
   session,
   subscribeToEnv,
@@ -200,7 +202,64 @@ function PasswordCard() {
           {save.isPending ? 'Saving…' : hasPassword ? 'Change password' : 'Set password'}
         </Button>
       </form>
+      <SignOutEverywhere />
     </Card>
+  );
+}
+
+/**
+ * S1.7 — "Log out everywhere", the quiet third action at the foot of the
+ * Password card.
+ *
+ * PLACEMENT. It lives HERE, under the form, rather than as its own card beside
+ * the product tour, because it belongs to the same task: somebody who changes
+ * their password on this screen is almost always doing it for a reason, and
+ * "now end every other session" is the very next thing they want. Putting a
+ * revoke-everything button next to "Replay the walkthrough" would have been
+ * tidier on the grid and wrong in tone. A hairline rule separates it from the
+ * form so it reads as a neighbour of the password, not a field of it.
+ *
+ * `confirm()` first, because the cost is asymmetric: the click is one tap away
+ * from the password field, and the consequence lands on a laptop the person is
+ * not looking at. The browser's own dialog, not a modal of ours — this is the
+ * one blocking question on the page, and a custom modal would be more code for
+ * a worse-trusted prompt.
+ *
+ * On success it hands over to `logout()`, which revokes THIS session too and
+ * leaves for /login. So there is no success state to render, and no "done"
+ * message that could ever be read — only the failure path stays on screen.
+ */
+function SignOutEverywhere() {
+  const [error, setError] = useState('');
+
+  const revoke = useMutation({
+    mutationFn: logoutEverywhere,
+    // Every session is gone server-side, this one included: staying on a page
+    // whose next request is a 401 would be theatre. Leave properly.
+    onSuccess: () => logout(),
+    onError: (err) =>
+      setError(err instanceof ApiError ? err.message : 'Could not reach the server'),
+  });
+
+  return (
+    <div className="mt-5 border-t border-bd pt-4">
+      <p className="mb-2.5 text-[12px] leading-relaxed text-t3">
+        Signed in somewhere you shouldn't be? This ends every session on this account — phones,
+        other browsers, and this one.
+      </p>
+      {error && <p className="mb-2 text-[12px] text-err">{error}</p>}
+      <Button
+        type="button"
+        disabled={revoke.isPending}
+        onClick={() => {
+          setError('');
+          if (!confirm('Log out on every device? You will need to sign in again.')) return;
+          revoke.mutate();
+        }}
+      >
+        {revoke.isPending ? 'Logging out…' : 'Log out everywhere'}
+      </Button>
+    </div>
   );
 }
 
