@@ -18,7 +18,7 @@ export default function NotFoundPage() {
       <p className="font-mono text-[52px] font-medium leading-none tracking-tight text-t1">
         404
       </p>
-      <p className="mt-3 text-[16px] text-t1">Page not found</p>
+      <p className="mt-3 font-mono text-[26px] leading-none text-t1">Page not found</p>
 
       {/* The receipt. */}
       <div
