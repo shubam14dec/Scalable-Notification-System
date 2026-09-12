@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Button } from '../ui';
+import { Button, useDocumentTitle } from '../ui';
 import { RippleMark } from './auth/AuthLayout';
 
 /**
@@ -13,6 +13,7 @@ import { RippleMark } from './auth/AuthLayout';
  */
 export default function NotFoundPage() {
   const { pathname } = useLocation();
+  useDocumentTitle('Page not found');
   return (
     <div className="flex h-[calc(100vh-var(--shell-pad,7rem))] flex-col items-center justify-center text-center">
       <p className="font-mono text-[52px] font-medium leading-none tracking-tight text-t1">

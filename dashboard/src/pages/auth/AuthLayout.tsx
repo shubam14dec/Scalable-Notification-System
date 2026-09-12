@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useDocumentTitle } from '../../ui';
 
 /**
  * U3 — the frame every signed-out page wears: login, request access, invited
@@ -301,6 +302,7 @@ export function AuthLayout({
   title: string;
   subtitle?: string;
 }) {
+  useDocumentTitle(title);
   return (
     // ONE canvas, his call from the reference layout: the site's near-black
     // covers the whole page, and BOTH columns float on it inside a centered

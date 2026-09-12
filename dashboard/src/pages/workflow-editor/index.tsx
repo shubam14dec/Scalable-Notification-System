@@ -9,7 +9,7 @@
 import { useEffect } from 'react';
 import { Outlet, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Pencil } from 'lucide-react';
-import { Button, Input, Mono, Skeleton } from '../../ui';
+import { Button, Input, Mono, Skeleton, useDocumentTitle } from '../../ui';
 import { SendTestModal } from '../../components/SendTest';
 import { useState } from 'react';
 import { WorkflowProvider, useWorkflow } from './WorkflowProvider';
@@ -32,6 +32,8 @@ function EditorShell() {
   } = useWorkflow();
   const navigate = useNavigate();
   const [testOpen, setTestOpen] = useState(false);
+  // The tab follows the draft name as it is typed - a live measurement.
+  useDocumentTitle(name || wfKey || 'New workflow');
   // A NEW workflow opens straight into name editing — its name is empty and
   // naming it is the first thing anyone does; an existing one opens at rest.
   const [editingName, setEditingName] = useState(isNew);
