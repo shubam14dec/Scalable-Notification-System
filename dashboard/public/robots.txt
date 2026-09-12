@@ -1,0 +1,4 @@
+# app.asyncify.org is the authenticated product - nothing here is for an index.
+# The marketing site (asyncify.org) is the crawlable one.
+User-agent: *
+Disallow: /

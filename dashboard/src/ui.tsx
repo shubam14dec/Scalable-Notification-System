@@ -514,6 +514,19 @@ export function Modal({
   );
 }
 
+/**
+ * Names the browser tab after the page: "Workflows · Asyncify". An SPA behind
+ * auth has no SEO story — this is for the human with six dashboard tabs open,
+ * for history menus, and for bookmarks that name themselves. PageHeader and
+ * AuthLayout call it, so most pages get a title by declaring the name they
+ * already declare; pages without either call it directly.
+ */
+export function useDocumentTitle(title?: string): void {
+  useEffect(() => {
+    document.title = title ? `${title} · Asyncify` : 'Asyncify';
+  }, [title]);
+}
+
 export function PageHeader({
   title,
   action,
@@ -521,6 +534,7 @@ export function PageHeader({
   title: string;
   action?: ReactNode;
 }) {
+  useDocumentTitle(title);
   return (
     <div className="mb-6 flex items-center justify-between">
       <h1 className="text-[20px] font-semibold tracking-tight text-t1">{title}</h1>

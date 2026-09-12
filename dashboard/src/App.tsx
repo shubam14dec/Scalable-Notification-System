@@ -17,6 +17,7 @@ import TemplatesPage, { TemplateEditorPage } from './pages/Templates';
 import IntegrationsPage from './pages/Integrations';
 import ApiKeysPage from './pages/ApiKeys';
 import SettingsPage from './pages/Settings';
+import NotFoundPage from './pages/NotFound';
 import InboxPreviewPage from './pages/InboxPreview';
 import AgentsPage from './pages/Agents';
 import AgentDetailPage from './pages/AgentDetail';
@@ -78,8 +79,12 @@ export default function App() {
           <Route path="/requests" element={<RequestsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/inbox-preview" element={<InboxPreviewPage />} />
+          {/* The catch-all lives INSIDE the shell: an authed user with a bad
+              URL keeps the sidebar and gets a real 404 (the silent bounce to
+              Overview it replaces just looked like a broken link); a
+              signed-out visitor still hits RequireAuth's /login redirect. */}
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );

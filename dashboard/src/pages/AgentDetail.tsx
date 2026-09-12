@@ -6,7 +6,7 @@
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Button, Mono, Skeleton, StatusBadge } from '../ui';
+import { Button, Mono, Skeleton, StatusBadge, useDocumentTitle } from '../ui';
 import { ChannelsPanel } from './agent/ChannelsPanel';
 import { AgentConfigActions } from './agent/ConfigFile';
 import { ConfigPanel, type ConfigSection } from './agent/EditPanel';
@@ -41,6 +41,7 @@ const isConfigTab = (tab: TabId): tab is ConfigSection =>
 
 export default function AgentDetailPage() {
   const { identifier = '' } = useParams();
+  useDocumentTitle(identifier ? `${identifier} · Agents` : 'Agents');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
