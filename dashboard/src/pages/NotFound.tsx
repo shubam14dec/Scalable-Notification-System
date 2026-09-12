@@ -15,8 +15,9 @@ export default function NotFoundPage() {
   const { pathname } = useLocation();
   return (
     <div className="flex h-[calc(100vh-var(--shell-pad,7rem))] flex-col items-center justify-center text-center">
-      <p className="font-mono text-[52px] font-medium leading-none tracking-tight text-t1">
-        404
+      <p className="flex items-baseline gap-4 font-mono leading-none tracking-tight text-t1">
+        <span className="text-[52px] font-medium">404</span>
+        <span className="text-[20px] text-t2">Page not found</span>
       </p>
       <p className="mt-3 text-[14px] text-t2">We rang — nobody answered.</p>
 
