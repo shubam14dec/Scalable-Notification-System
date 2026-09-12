@@ -14,7 +14,7 @@ import { RippleMark } from './auth/AuthLayout';
 export default function NotFoundPage() {
   const { pathname } = useLocation();
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
+    <div className="flex h-[calc(100vh-var(--shell-pad,7rem))] flex-col items-center justify-center text-center">
       <RippleMark size={26} className="text-t3" />
       <p className="mt-5 font-mono text-[52px] font-medium leading-none tracking-tight text-t1">
         404
