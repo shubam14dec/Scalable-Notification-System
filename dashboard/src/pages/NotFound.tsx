@@ -20,10 +20,10 @@ export default function NotFoundPage() {
       </p>
       <p className="mt-3 text-[14px] text-t2">We rang — nobody answered.</p>
 
-      {/* The receipt. Slightly tilted, the way a printed slip lands. */}
+      {/* The receipt. */}
       <div
         className="auth-ticket mt-8 w-full max-w-[340px] border border-bd bg-surface px-5 pb-6 pt-4 text-left"
-        style={{ transform: 'rotate(-1.2deg)', animation: 'modal-in 200ms ease' }}
+        style={{ animation: 'modal-in 200ms ease' }}
       >
         <div className="mb-3 flex items-center justify-between border-b border-bd pb-2.5">
           <span className="font-mono text-[11px] tracking-[0.14em] text-t3">
