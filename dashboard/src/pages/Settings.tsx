@@ -202,7 +202,6 @@ function PasswordCard() {
           {save.isPending ? 'Saving…' : hasPassword ? 'Change password' : 'Set password'}
         </Button>
       </form>
-      <SignOutEverywhere />
     </Card>
   );
 }
@@ -211,13 +210,9 @@ function PasswordCard() {
  * S1.7 — "Log out everywhere", the quiet third action at the foot of the
  * Password card.
  *
- * PLACEMENT. It lives HERE, under the form, rather than as its own card beside
- * the product tour, because it belongs to the same task: somebody who changes
- * their password on this screen is almost always doing it for a reason, and
- * "now end every other session" is the very next thing they want. Putting a
- * revoke-everything button next to "Replay the walkthrough" would have been
- * tidier on the grid and wrong in tone. A hairline rule separates it from the
- * form so it reads as a neighbour of the password, not a field of it.
+ * PLACEMENT (v2, his call — the Password card grew past the fold): its own
+ * compact card in the right column under Product tour, keeping the page
+ * scroll-free; the card's own title keeps the tone separate from the tour.
  *
  * `confirm()` first, because the cost is asymmetric: the click is one tap away
  * from the password field, and the consequence lands on a laptop the person is
@@ -229,6 +224,20 @@ function PasswordCard() {
  * leaves for /login. So there is no success state to render, and no "done"
  * message that could ever be read — only the failure path stays on screen.
  */
+/** The compact shell the right column renders; the button logic lives below. */
+function SessionsCard() {
+  return (
+    <Card className="w-full p-4">
+      <h2 className="text-[13px] font-semibold text-t1">Sessions</h2>
+      <p className="mb-2.5 mt-0.5 text-[12px] leading-snug text-t3">
+        Ends every session on this account — other browsers, phones, and this
+        one.
+      </p>
+      <SignOutEverywhere />
+    </Card>
+  );
+}
+
 function SignOutEverywhere() {
   const [error, setError] = useState('');
 
@@ -242,11 +251,7 @@ function SignOutEverywhere() {
   });
 
   return (
-    <div className="mt-5 border-t border-bd pt-4">
-      <p className="mb-2.5 text-[12px] leading-relaxed text-t3">
-        Signed in somewhere you shouldn't be? This ends every session on this account — phones,
-        other browsers, and this one.
-      </p>
+    <div>
       {error && <p className="mb-2 text-[12px] text-err">{error}</p>}
       <Button
         type="button"
@@ -291,8 +296,9 @@ export default function SettingsPage() {
           <OrganizationCard />
           <PasswordCard />
         </div>
-        <div className="min-[900px]:col-start-3 min-[900px]:w-[280px] min-[900px]:justify-self-start">
+        <div className="flex flex-col gap-6 min-[900px]:col-start-3 min-[900px]:w-[280px] min-[900px]:justify-self-start">
           <TourCard />
+          <SessionsCard />
         </div>
       </div>
 
