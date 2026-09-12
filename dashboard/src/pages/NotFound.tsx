@@ -56,7 +56,7 @@ export default function NotFoundPage() {
 
       <Link to="/" className="mt-7">
         <Button variant="primary" type="button">
-          Return to sender
+          Back to overview
         </Button>
       </Link>
     </div>
