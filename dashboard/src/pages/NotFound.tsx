@@ -17,7 +17,7 @@ export default function NotFoundPage() {
     <div className="flex h-[calc(100vh-var(--shell-pad,7rem))] flex-col items-center justify-center text-center">
       <p className="flex items-baseline gap-4 font-mono leading-none tracking-tight text-t1">
         <span className="text-[52px] font-medium">404</span>
-        <span className="text-[26px] text-t2">Page not found</span>
+        <span className="text-[26px]">Page not found</span>
       </p>
       <p className="mt-3 text-[14px] text-t2">We rang — nobody answered.</p>
 
