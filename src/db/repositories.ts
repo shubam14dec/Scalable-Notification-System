@@ -739,7 +739,7 @@ export async function insertExecutionLogs(entries: ExecLogEntry[]): Promise<void
   );
 }
 
-const TERMINAL_MESSAGE_STATUSES = [
+export const TERMINAL_MESSAGE_STATUSES = [
   'sent',
   'delivered',
   'failed',
@@ -748,6 +748,74 @@ const TERMINAL_MESSAGE_STATUSES = [
   'complaint',
   'merged',
 ];
+
+/**
+ * The two buckets the tenant-facing Overview cards speak in. They SPLIT the
+ * same status universe TERMINAL_MESSAGE_STATUSES partitions, from the other
+ * side — "is this message still moving?" and "did it fail to arrive?":
+ *
+ *   IN_FLIGHT  queued, sending        still moving through the pipeline
+ *   FAILED     failed, bounced        terminal: it never reached the recipient
+ *   neither    sent, delivered        it arrived
+ *              skipped, merged        terminal by design — never attempted
+ *                                     (a cross-step gate, an empty digest
+ *                                     window, or folded into a digest)
+ *              complaint             it ARRIVED and was then marked as spam;
+ *                                     a reputation problem, not a delivery
+ *                                     failure, and it has its own surfaces
+ *                                     (suppression list + Analytics byStatus)
+ *
+ * FAILED is deliberately the same pair the Overview's last-100 "Failed" card
+ * already filters on, so the two numbers on that page can never disagree about
+ * what the word means.
+ *
+ * WHY EXPLICIT LISTS, not `status <> all(TERMINAL_MESSAGE_STATUSES)`: a
+ * negation cannot use an index, so counting in-flight rows that way scans every
+ * message the tenant has EVER sent — work proportional to history, on a card
+ * that renders on page load. Both lists below are narrow index ranges on
+ * messages(tenant_id, status): in-flight rows are bounded by the queue's own
+ * depth, and failures are bounded by the failure rate, never by total volume.
+ *
+ * The cost of that choice is that a NEW status has to be assigned a bucket
+ * here. tests/unit/message-status-buckets.test.ts is the tripwire: it asserts
+ * these three lists PARTITION the full documented status set, so adding a
+ * status to the schema without bucketing it fails the suite.
+ */
+export const IN_FLIGHT_MESSAGE_STATUSES = ['queued', 'sending'];
+export const FAILED_MESSAGE_STATUSES = ['failed', 'bounced'];
+
+export interface TenantMessageStats {
+  /** This tenant's messages still moving through the pipeline. */
+  inFlight: number;
+  /** This tenant's messages that terminally failed to reach the recipient. */
+  failed: number;
+}
+
+/**
+ * The tenant's OWN pipeline health — the honest answer to the question the
+ * Overview's "Queue backlog"/"Dead-lettered" cards used to answer with the
+ * whole platform's shared BullMQ gauges (user-found, 2026-09-13: every tenant
+ * saw the same 182 dead-lettered jobs from ancient dev traffic).
+ *
+ * ONE set-based query, grouped in the database, bucketed here from the
+ * constants above — so the SQL never restates the bucket membership.
+ */
+export async function tenantMessageStats(tenantId: string): Promise<TenantMessageStats> {
+  const counted = [...IN_FLIGHT_MESSAGE_STATUSES, ...FAILED_MESSAGE_STATUSES];
+  const { rows } = await pool.query(
+    `select status, count(*)::int as count
+       from messages
+      where tenant_id = $1 and status = any($2::text[])
+      group by status`,
+    [tenantId, counted],
+  );
+  const stats: TenantMessageStats = { inFlight: 0, failed: 0 };
+  for (const row of rows as { status: string; count: number }[]) {
+    if (IN_FLIGHT_MESSAGE_STATUSES.includes(row.status)) stats.inFlight += row.count;
+    else if (FAILED_MESSAGE_STATUSES.includes(row.status)) stats.failed += row.count;
+  }
+  return stats;
+}
 
 /**
  * Mark events 'completed' once every message reached a terminal state.

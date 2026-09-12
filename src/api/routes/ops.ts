@@ -6,21 +6,27 @@ import { queueDepths } from '../../shared/queues';
 import { allBreakers } from '../../resilience/circuit-breaker';
 import { chEnabled, chQuery, chLogStatsQuery } from '../../analytics/clickhouse';
 import { register } from '../../shared/metrics';
-import { authenticate, requireOperator } from '../auth';
+import { authenticate, requireOperator, requireOperatorSeat } from '../auth';
+import { tenantMessageStats } from '../../db/repositories';
 import { env } from '../../config/env';
 import { setPublicUrl } from '../../config/public-url';
 
 /**
- * NOTE ON AUTH ASYMMETRY — three tiers here, deliberately:
+ * NOTE ON AUTH ASYMMETRY — four tiers here, deliberately:
  *
  *  - `/health` and `/metrics` stay UNAUTHENTICATED: they are hit by liveness
  *    probes and a Prometheus scraper that carry no credential, and `/metrics`
  *    is not exposed through the public proxy.
- *  - `/ops/queues`, `/ops/breakers` and `/ops/logs/stats` carry `authenticate`.
- *    They were public, which put whole-PLATFORM telemetry (every tenant's
- *    backlog, every provider's breaker state, log volumes) on the open
- *    internet. The dashboard reads them through its authenticated api()
- *    helper; autoscalers and scripts pass an `x-api-key`.
+ *  - `/ops/queues`, `/ops/breakers` and `/ops/logs/stats` carry
+ *    `requireOperatorSeat` (see src/api/auth.ts). Every number they return is
+ *    PLATFORM-wide — the shared BullMQ queues, the shared dead-letter queue,
+ *    provider breakers, total log volume — so a tenant credential is the wrong
+ *    key for them: S1.1 took them off the open internet, and this takes them
+ *    off every tenant's dashboard. A dashboard operator (JWT) or an ops script
+ *    (`x-operator-token`, or an api key outside production) reads them.
+ *  - `GET /v1/ops/tenant-stats` carries plain `authenticate`: it is the
+ *    tenant-scoped replacement every tenant's Overview reads, and it can only
+ *    ever count the caller's own rows.
  *  - `PUT /v1/ops/public-url` carries `requireOperator` (see src/api/auth.ts):
  *    it writes ONE value shared by every tenant, so in production a tenant
  *    credential is not enough — it takes the `x-operator-token`. The matching
@@ -38,11 +44,31 @@ export function registerOpsRoutes(app: FastifyInstance) {
     }
   });
 
-  /** Queue depth per queue — feed this to your autoscaler and dashboards. */
-  app.get('/ops/queues', { preHandler: [authenticate] }, async () => queueDepths());
+  /**
+   * Queue depth per queue — feed this to your autoscaler and operator
+   * dashboards. PLATFORM-wide (the queues are shared by every tenant), hence
+   * operator-only; a tenant wanting its own pipeline health reads
+   * /v1/ops/tenant-stats below.
+   */
+  app.get('/ops/queues', { preHandler: [requireOperatorSeat] }, async () => queueDepths());
 
   /** Circuit breaker states for every provider seen by this process. */
-  app.get('/ops/breakers', { preHandler: [authenticate] }, async () => allBreakers());
+  app.get('/ops/breakers', { preHandler: [requireOperatorSeat] }, async () => allBreakers());
+
+  /**
+   * This TENANT's pipeline health — the tenant-truth answer to the two
+   * questions the Overview used to answer with platform gauges:
+   *
+   *   inFlight  messages still moving (queued or sending)
+   *   failed    messages that terminally failed to reach the recipient
+   *
+   * Scoped to `req.tenant.id` by construction: there is no parameter that could
+   * name another tenant. One grouped, index-only query — see the bucket
+   * doc in src/db/repositories.ts for why the status lists are explicit.
+   */
+  app.get('/v1/ops/tenant-stats', { preHandler: [authenticate] }, async (req) =>
+    tenantMessageStats(req.tenant.id),
+  );
 
   /** Prometheus scrape endpoint (this API replica). */
   app.get('/metrics', async (_req, reply) => {
@@ -51,7 +77,7 @@ export function registerOpsRoutes(app: FastifyInstance) {
   });
 
   /** Execution-log stats from ClickHouse (last 24h, grouped by level). */
-  app.get('/ops/logs/stats', { preHandler: [authenticate] }, async (_req, reply) => {
+  app.get('/ops/logs/stats', { preHandler: [requireOperatorSeat] }, async (_req, reply) => {
     if (!chEnabled()) {
       return reply.code(503).send({ error: 'clickhouse disabled' });
     }

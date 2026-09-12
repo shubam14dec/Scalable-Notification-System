@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import { getTenantByApiKey, type Tenant } from '../db/repositories';
 import { getEnvironment, hashApiKey, membershipRole } from '../db/accounts.repo';
+import { requireOperatorUser } from './jwt-auth';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -117,4 +118,55 @@ export async function requireOperator(req: FastifyRequest, reply: FastifyReply) 
   ) {
     return reply.code(401).send({ error: 'operator token required' });
   }
+}
+
+/**
+ * EITHER operator seat — the guard for reading PLATFORM-WIDE telemetry.
+ *
+ * WHY it exists (user-found, 2026-09-13; the leftover half of S1.1): `/ops/queues`,
+ * `/ops/breakers` and `/ops/logs/stats` report the whole deployment — every
+ * tenant's queue backlog, the shared dead-letter queue, every provider's breaker
+ * state, platform log volumes. S1.1 closed them to the open internet with
+ * `authenticate`, but ANY tenant credential still read them, so the dashboard's
+ * "Queue backlog" and "Dead-lettered" cards showed every tenant the same
+ * platform numbers: misleading as UX, and a cross-tenant disclosure besides.
+ * The tenant-truth replacement is GET /v1/ops/tenant-stats (tenant-scoped, plain
+ * `authenticate`); these three reads are now operator-only.
+ *
+ * Neither existing guard fits alone, because two DIFFERENT callers legitimately
+ * read this telemetry:
+ *
+ *   a human on the dashboard   →  a session, no operator token to hold
+ *                                 (requireOperatorUser semantics)
+ *   a script or an autoscaler  →  a header secret, no user account
+ *                                 (requireOperator semantics)
+ *
+ * So this composes them instead of weakening either, in the order a request
+ * declares itself:
+ *
+ *   1. `x-operator-token` present → the MACHINE seat. An explicit operator
+ *      token is an unambiguous statement of intent, even on a request that
+ *      happens to also carry a session cookie/bearer.
+ *   2. `Authorization: Bearer` → the HUMAN seat, checked in EVERY environment.
+ *      A plain tenant JWT gets 403 in local dev exactly as in production: the
+ *      dashboard must never be able to show a non-operator these numbers, and
+ *      a gate that only exists in production is a gate nobody tests.
+ *   3. anything else (`x-api-key`, anonymous) → the machine seat, which is
+ *      401 in production and ordinary tenant auth outside it. That last
+ *      fall-through is deliberate and is what keeps scripts/loadtest.ts and
+ *      scripts/github-sim.ts polling `/ops/queues` with an api key in dev.
+ *
+ * Consequence worth stating: in production a bare `x-api-key` now buys 401
+ * ("operator token required") on these three routes, so any deployed autoscaler
+ * scraping them must carry OPS_ADMIN_TOKEN (or scrape /metrics instead, which
+ * is unrouted publicly and carries the same gauges).
+ */
+export async function requireOperatorSeat(req: FastifyRequest, reply: FastifyReply) {
+  if (typeof req.headers['x-operator-token'] === 'string') {
+    return requireOperator(req, reply);
+  }
+  if (req.headers.authorization?.startsWith('Bearer ')) {
+    return requireOperatorUser(req, reply);
+  }
+  return requireOperator(req, reply);
 }

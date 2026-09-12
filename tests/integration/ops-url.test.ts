@@ -25,10 +25,16 @@ const PUBLIC_URL_KEY = 'config:public-url';
 
 let app: FastifyInstance;
 let apiKey = '';
+/** A dashboard session for an ORDINARY tenant user (not in OPERATOR_EMAILS). */
+let tenantJwt = '';
+/** A dashboard session for the deployment's human operator seat. */
+let operatorJwt = '';
+let operatorEmail = '';
 const bridges: Server[] = [];
 
 const json = (res: { body: string }) => JSON.parse(res.body);
 const headers = () => ({ 'x-api-key': apiKey });
+const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
 /** A BotFather-shaped token whose numeric prefix IS the bot id. */
 function tok(botId: number): string {
@@ -129,7 +135,8 @@ beforeAll(async () => {
   process.env.TELEGRAM_API_BASE = `http://localhost:${(tgStub.address() as AddressInfo).port}`;
 
   app = await buildApp();
-  const email = `ops-${Date.now()}-${Math.floor(Math.random() * 1e6)}@itest.local`;
+  const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const email = `ops-${stamp}@itest.local`;
   const signup = await app.inject({
     method: 'POST',
     url: '/auth/signup',
@@ -137,6 +144,23 @@ beforeAll(async () => {
   });
   const dev = json(signup).environments.find((e: { name: string }) => e.name === 'Development');
   apiKey = dev.apiKey;
+  tenantJwt = json(signup).accessToken;
+
+  // A SECOND account, signed up through the ordinary door and only afterwards
+  // named as the operator seat — the same shape a real deployment has.
+  operatorEmail = `ops-operator-${stamp}@itest.local`;
+  const opSignup = await app.inject({
+    method: 'POST',
+    url: '/auth/signup',
+    payload: {
+      name: 'Ops Operator',
+      email: operatorEmail,
+      password: 'integration-pw-1',
+      organizationName: 'Ops Operator Org',
+    },
+  });
+  expect(opSignup.statusCode).toBe(201);
+  operatorJwt = json(opSignup).accessToken;
 
   await scrub();
 });
@@ -335,23 +359,114 @@ describe('7. operator plane — PUT /v1/ops/public-url', () => {
   });
 });
 
-/** S1.1: platform-wide telemetry was readable by the whole internet. */
-describe('8. /ops telemetry requires authentication', () => {
-  test('/ops/queues and /ops/breakers are 401 anonymous, 200 with an api key', async () => {
-    expect((await app.inject({ method: 'GET', url: '/ops/queues' })).statusCode).toBe(401);
-    expect((await app.inject({ method: 'GET', url: '/ops/breakers' })).statusCode).toBe(401);
+/**
+ * PLATFORM telemetry is operator-only (2026-09-13, user-found).
+ *
+ * S1.1 wrote this suite to prove `/ops/queues|/ops/breakers|/ops/logs/stats`
+ * were no longer readable by the whole internet, and stopped there: ANY tenant
+ * credential still read the whole deployment's queue depths, dead-letter count
+ * and provider breakers, which the dashboard then showed each tenant as if it
+ * were their own backlog. The premise of the old "200 with an api key" cases is
+ * therefore gone — the matrix below replaces them, one row per caller the
+ * routes actually have (see requireOperatorSeat in src/api/auth.ts):
+ *
+ *   anonymous                          401   (unchanged)
+ *   ordinary tenant JWT                403   the leak, closed — in EVERY env
+ *   operator JWT                       200   the dashboard's operator row
+ *   x-api-key, outside production      200   scripts/loadtest.ts, github-sim.ts
+ *   x-api-key, production              401   a tenant key is not an operator
+ *   x-operator-token, production       200   the machine seat
+ *
+ * The two production rows are a NODE_ENV flip against this same in-process app,
+ * exactly as section 7 does it — requireOperator reads NODE_ENV per request.
+ */
+describe('8. /ops platform telemetry is operator-only', () => {
+  const OPERATOR_TOKEN = 'e'.repeat(64);
+  const TELEMETRY = ['/ops/queues', '/ops/breakers', '/ops/logs/stats'] as const;
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevOpsToken = process.env.OPS_ADMIN_TOKEN;
+  const originalOperators = [...env.operatorEmails];
 
-    const queues = await app.inject({ method: 'GET', url: '/ops/queues', headers: headers() });
-    expect(queues.statusCode).toBe(200);
-    expect(typeof json(queues)).toBe('object');
+  const get = (url: string, h: Record<string, string> = {}) =>
+    app.inject({ method: 'GET', url, headers: h });
 
-    const breakers = await app.inject({ method: 'GET', url: '/ops/breakers', headers: headers() });
-    expect(breakers.statusCode).toBe(200);
+  afterEach(() => {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevOpsToken === undefined) delete process.env.OPS_ADMIN_TOKEN;
+    else process.env.OPS_ADMIN_TOKEN = prevOpsToken;
+    env.operatorEmails = [...originalOperators];
   });
 
-  test('/ops/logs/stats is 401 anonymous (ClickHouse is never reached without auth)', async () => {
-    const anon = await app.inject({ method: 'GET', url: '/ops/logs/stats' });
-    expect(anon.statusCode).toBe(401);
+  test('anonymous is 401 on all three (ClickHouse is never reached without auth)', async () => {
+    for (const url of TELEMETRY) {
+      expect((await get(url)).statusCode, url).toBe(401);
+    }
+  });
+
+  test('an ordinary tenant JWT is 403 — the cross-tenant leak, closed', async () => {
+    env.operatorEmails = [operatorEmail];
+    for (const url of TELEMETRY) {
+      const res = await get(url, bearer(tenantJwt));
+      expect(res.statusCode, url).toBe(403);
+      expect(json(res).error).toBe('operator access required');
+    }
+  });
+
+  test('the operator JWT reads them — the dashboard operator row', async () => {
+    env.operatorEmails = [operatorEmail];
+
+    const queues = await get('/ops/queues', bearer(operatorJwt));
+    expect(queues.statusCode).toBe(200);
+    expect(typeof json(queues)).toBe('object');
+    // The shape the Overview's platform cards index into.
+    expect(json(queues)['dead-letter']).toBeTruthy();
+
+    expect((await get('/ops/breakers', bearer(operatorJwt))).statusCode).toBe(200);
+    // /ops/logs/stats is past the gate either way: 200 with ClickHouse
+    // configured, 503 'clickhouse disabled' without it. Never 401/403.
+    expect([200, 503]).toContain((await get('/ops/logs/stats', bearer(operatorJwt))).statusCode);
+  });
+
+  test('removing an address from the operator seat takes effect on the next request', async () => {
+    env.operatorEmails = [operatorEmail];
+    expect((await get('/ops/queues', bearer(operatorJwt))).statusCode).toBe(200);
+
+    // No session to revoke: the email is read from the row every time.
+    env.operatorEmails = [];
+    expect((await get('/ops/queues', bearer(operatorJwt))).statusCode).toBe(403);
+  });
+
+  test('outside production an api key still reads them — the dev scripts path', async () => {
+    process.env.NODE_ENV = 'test';
+    for (const url of ['/ops/queues', '/ops/breakers'] as const) {
+      expect((await get(url, headers())).statusCode, url).toBe(200);
+    }
+  });
+
+  test('in production an api key is NOT enough; the operator token is', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.OPS_ADMIN_TOKEN = OPERATOR_TOKEN;
+
+    // 401, not 403: this is the MACHINE seat failing to authenticate, the same
+    // contract PUT /v1/ops/public-url has carried since S1.1.
+    const key = await get('/ops/queues', headers());
+    expect(key.statusCode).toBe(401);
+    expect(json(key).error).toBe('operator token required');
+
+    const wrong = await get('/ops/queues', { 'x-operator-token': 'f'.repeat(64) });
+    expect(wrong.statusCode).toBe(401);
+
+    const ok = await get('/ops/queues', { 'x-operator-token': OPERATOR_TOKEN });
+    expect(ok.statusCode).toBe(200);
+
+    // An explicit operator token wins over a session on the same request, so a
+    // script that also happens to carry one is not bounced into the human gate.
+    const both = await get('/ops/queues', {
+      ...bearer(tenantJwt),
+      'x-operator-token': OPERATOR_TOKEN,
+    });
+    expect(both.statusCode).toBe(200);
   });
 
   test('/health stays open for liveness probes', async () => {

@@ -129,6 +129,13 @@ create index if not exists messages_status_created_idx
   on messages (status, created_at);
 create index if not exists messages_provider_msg_idx
   on messages (provider_message_id) where provider_message_id is not null;
+-- Per-tenant pipeline health (GET /v1/ops/tenant-stats): in-flight and failed
+-- counts for ONE tenant. Both columns live in the index, so the count is an
+-- index-only scan over a narrow status range instead of a walk through every
+-- message the tenant ever sent. messages_status_created_idx cannot serve it —
+-- it leads with status, so it has no per-tenant range to scan.
+create index if not exists messages_tenant_status_idx
+  on messages (tenant_id, status);
 
 -- In-app inbox additions (idempotent for databases created before them).
 alter table messages add column if not exists read_at timestamptz;

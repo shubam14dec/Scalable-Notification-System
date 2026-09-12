@@ -73,7 +73,9 @@ async function fireOtp(i: number): Promise<number> {
 }
 
 async function backlogNow(): Promise<number> {
-  // S1.1: /ops/queues is authenticated — platform-wide telemetry is not public.
+  // /ops/queues is PLATFORM telemetry and operator-gated (requireOperatorSeat).
+  // An api key passes outside production, which is the only place this script
+  // runs; against a production host it needs `x-operator-token` instead.
   const res = await fetch(`${BASE}/ops/queues`, { headers: { 'x-api-key': API_KEY } });
   const depths = (await res.json()) as Record<string, Record<string, number>>;
   let total = 0;

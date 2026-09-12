@@ -80,6 +80,13 @@ export function isOperatorEmail(email: string): boolean {
  * deploy file), and a dashboard session must not perform global ops writes (any
  * stranger can create one while signup is open). A route takes exactly one.
  *
+ *   requireOperatorSeat  EITHER, added 2026-09-13 for platform telemetry READS
+ *   (src/api/auth.ts)    (/ops/queues, /ops/breakers, /ops/logs/stats), which a
+ *                        dashboard operator and an ops script both legitimately
+ *                        want. It dispatches to one of the two above by the
+ *                        credential the request presents — it does not blur
+ *                        them, and it is only ever used for reads.
+ *
  * Runs `requireUser` first and returns whatever it returned — on failure that
  * is the already-sent 401, which is the signal to stop; on success it is
  * undefined and `req.userId` is set.
