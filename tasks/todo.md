@@ -6,6 +6,17 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### S1.7 — Refresh rotation + real logout (IN FLIGHT, approved 2026-09-13)
+His question exposed it live: logout is localStorage-only; the 7-day
+refresh JWT stays valid with no server-side kill. Design approved
+after the full ledger walkthrough: refresh tokens gain a jti tracked
+server-side; every refresh SPENDS the old and issues a new (sliding
+7-day window - inactivity expiry, not membership); replay of a spent
+jti = theft alarm -> revoke the whole family; POST /auth/logout
+revokes; "log out everywhere" revokes all; access tokens stay
+stateless 15-min (hot path untouched - ledger touched only at
+login/refresh/logout).
+
 ### U7 — 404 page + per-page titles + robots — DONE 2026-09-12 (his dials)
 Custom 404 as a failed-delivery receipt (serrated ticket, mono facts,
 err dot on undeliverable; his dials: straight not tilted, no mark
