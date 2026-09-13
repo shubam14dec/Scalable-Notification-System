@@ -17,6 +17,11 @@ export interface User {
    * is finished OR skipped.
    */
   tour_pending: boolean;
+  /**
+   * B2 — when an operator revoked this account's access. Null (the default, and
+   * the value on every row that predates the slice) means active.
+   */
+  suspended_at: string | null;
 }
 
 export interface Organization {
@@ -85,6 +90,36 @@ export async function setUserPassword(userId: string, passwordHash: string): Pro
  */
 export async function setTourPending(userId: string, pending: boolean): Promise<void> {
   await pool.query('update users set tour_pending = $2 where id = $1', [userId, pending]);
+}
+
+/**
+ * B2 — REVOKE OR RESTORE ONE ACCOUNT'S ACCESS.
+ *
+ * `coalesce(suspended_at, now())` rather than a bare `now()`: revoking an
+ * account that is already revoked must be a no-op, not a re-stamp. The column is
+ * the audit fact "when was this person shut out", and a double-click (or an
+ * operator working from a stale list) must not move it.
+ *
+ * Returns the updated row, or null when the id names nobody.
+ *
+ * WHAT SUSPENSION DOES NOT DO, deliberately: it is not checked by `requireUser`
+ * or by any other authenticated request. A live access token stays valid for the
+ * rest of its ~15 minutes, and the revoke ROUTE kills the refresh-token families
+ * alongside this write so the session cannot outlive that. The alternative —
+ * reading this column on every authenticated request — would put a database
+ * round trip on the hot path of every page in the dashboard to close a window
+ * measured in minutes. The doors are where identity is decided; this is a fact
+ * about identity, so the doors are where it is read.
+ */
+export async function setSuspended(userId: string, suspended: boolean): Promise<User | null> {
+  const { rows } = await pool.query(
+    `update users
+        set suspended_at = case when $2 then coalesce(suspended_at, now()) else null end
+      where id = $1
+      returning *`,
+    [userId, suspended],
+  );
+  return rows[0] ?? null;
 }
 
 // ---------- S1.6: Google identities ----------

@@ -4,6 +4,8 @@ import {
   approveAccessRequest,
   declineAccessRequest,
   listAccessRequests,
+  restoreAccountAccess,
+  revokeAccountAccess,
   type AccessRequestRow,
 } from '../lib/api';
 import { Button, Card, EmptyState, Mono, PageHeader, Select, Skeleton, td, th } from '../ui';
@@ -51,13 +53,79 @@ function RowActions({ row, onDone }: { row: AccessRequestRow; onDone: () => void
     onSuccess: onDone,
     onError: (err) => setError(err.message),
   });
+  // B2 — the two account actions. Same idiom as the two above, which is what
+  // lets one `busy` disable the whole row while any of them is in flight.
+  const revoke = useMutation({
+    mutationFn: () => revokeAccountAccess(row.id),
+    onSuccess: onDone,
+    onError: (err) => setError(err.message),
+  });
+  const restore = useMutation({
+    mutationFn: () => restoreAccountAccess(row.id),
+    onSuccess: onDone,
+    onError: (err) => setError(err.message),
+  });
 
-  const busy = approve.isPending || decline.isPending;
+  const busy = approve.isPending || decline.isPending || revoke.isPending || restore.isPending;
 
-  // Spent: there is nothing left to do to this row, and saying so is more
-  // useful than a disabled button.
+  /**
+   * B2 — a spent seat used to be a dead end ("signed up" and nothing else). It
+   * is now the one place an operator can reach the ACCOUNT that seat became:
+   * revoke its access, or give it back.
+   *
+   * `accountStatus` is absent when the account no longer exists, and then the
+   * row goes back to being the plain statement of fact it was — there is
+   * nothing to act on.
+   */
   if (row.consumedAt) {
-    return <span className="text-[12px] text-t3">signed up</span>;
+    if (!row.accountStatus) {
+      return <span className="text-[12px] text-t3">signed up</span>;
+    }
+    const suspended = row.accountStatus === 'suspended';
+    return (
+      <div className="flex items-center justify-end gap-2">
+        {error && <span className="text-[12px] text-err">{error}</span>}
+        {suspended ? (
+          <span className="flex items-center gap-1.5 text-[12px] text-t2">
+            {/* The one spot of color on this page, and it is a status — which
+                is the only thing color is for here. */}
+            <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-err" />
+            suspended
+          </span>
+        ) : (
+          <span className="text-[12px] text-t3">signed up · active</span>
+        )}
+        {suspended ? (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => {
+              if (window.confirm(`Restore access for ${row.email}?`)) restore.mutate();
+            }}
+          >
+            Restore access
+          </Button>
+        ) : (
+          <Button
+            variant="danger"
+            disabled={busy}
+            onClick={() => {
+              // Spelled out because the consequence lands on somebody else, in
+              // another browser, immediately — and is not obvious from a verb.
+              if (
+                window.confirm(
+                  `Revoke access for ${row.email}? They will be signed out and unable to log in until restored.`,
+                )
+              ) {
+                revoke.mutate();
+              }
+            }}
+          >
+            Revoke access
+          </Button>
+        )}
+      </div>
+    );
   }
 
   return (

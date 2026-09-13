@@ -325,7 +325,9 @@ export type GoogleSignIn =
   /** The address belongs to a different Google account — we refuse to re-point it. */
   | { refused: 'conflict' }
   /** B1 invite mode: no live invite for this address, so nothing was created. */
-  | { refused: 'invite' };
+  | { refused: 'invite' }
+  /** B2: the account exists and an operator has revoked its access. */
+  | { refused: 'suspended' };
 
 /**
  * Resolve a Google identity to one of our users, creating the account on first
@@ -350,13 +352,23 @@ export type GoogleSignIn =
  * B1 gates case (c) ONLY. Cases (a) and (b) are people who already exist here —
  * an invite gate that turned an existing customer away from a door they have
  * always used would be a lockout, not a gate — so the beta never touches them.
+ *
+ * B2 gates cases (a) and (b) — the exact mirror image, and for the exact
+ * opposite reason. Those two are the only branches a suspended account can
+ * reach: suspension is a fact about a USER ROW, and case (c) runs only when no
+ * row exists for this address, so an account cannot be both suspended and new.
+ * (The one indirect route into (c)'s tail is the race fallback, which resolves
+ * to an existing row and is checked there too.)
  */
 export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<GoogleSignIn> {
   const bySub = await getUserByGoogleSub(identity.sub);
-  if (bySub) return { user: bySub };
+  if (bySub) return bySub.suspended_at ? { refused: 'suspended' } : { user: bySub };
 
   const byEmail = await getUserByEmail(identity.email);
   if (byEmail) {
+    // B2 — BEFORE the link write, not after: a revoked account must not quietly
+    // gain a second door on the way to being turned away at it.
+    if (byEmail.suspended_at) return { refused: 'suspended' };
     // Already carrying a DIFFERENT sub (two Google accounts, one address —
     // possible after a Workspace migration): linkGoogleSub returns null and we
     // refuse rather than silently re-point the account.
@@ -392,6 +404,9 @@ export async function findOrCreateGoogleUser(identity: GoogleIdentity): Promise<
   if (!created) {
     const raced = await getUserByEmail(identity.email);
     if (!raced) return { refused: 'conflict' };
+    // The race resolved to an EXISTING row, so this is case (a) or (b) after
+    // all and it gets their check (see above).
+    if (raced.suspended_at) return { refused: 'suspended' };
     if (raced.google_sub === identity.sub) return { user: raced };
     const linked = await linkGoogleSub(raced.id, identity.sub);
     return linked ? { user: linked } : { refused: 'conflict' };
@@ -542,6 +557,17 @@ export function registerGoogleAuthRoutes(app: FastifyInstance) {
       if ('refused' in resolved && resolved.refused === 'invite') {
         logger.info({ email: claims.identity.email }, 'google sign-in: no invite, bounced to request form');
         return reply.redirect(`${env.google.postLoginOrigin}/login?gate=request`, 302);
+      }
+
+      /**
+       * B2 — the revoked bounce, shaped exactly like the beta one above: this
+       * is not a broken sign-in, it is a decision somebody made about this
+       * account, so it gets the login page with a sentence rather than an error
+       * page that invites a support ticket about Google.
+       */
+      if ('refused' in resolved && resolved.refused === 'suspended') {
+        logger.warn({ email: claims.identity.email }, 'google sign-in refused: account access is revoked');
+        return reply.redirect(`${env.google.postLoginOrigin}/login?gate=revoked`, 302);
       }
 
       if ('refused' in resolved) {

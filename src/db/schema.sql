@@ -1168,3 +1168,25 @@ create index if not exists refresh_tokens_family_idx on refresh_tokens (family);
 -- session once a minute — at 20M sessions the hygiene would cost more than the
 -- feature it cleans up after. With it, an idle tick is an empty range scan.
 create index if not exists refresh_tokens_expiry_idx on refresh_tokens (expires_at);
+
+-- ---- Slice B2: SUSPENDING AN ACCOUNT ----
+-- One nullable timestamp per account: NULL means active, a time means "an
+-- operator revoked this account's access, then".
+--
+-- A COLUMN, not a table, and not a status enum either. The fact being recorded
+-- has exactly two states and one interesting detail (when), which is precisely
+-- what a nullable timestamptz is — the same shape `revoked_at` already carries
+-- on api_keys and refresh_tokens, so every reader in the codebase already knows
+-- how to read it. A `suspensions` table would buy a history nobody has asked to
+-- see, at the cost of a join on the login path.
+--
+-- DEFAULT NULL, so every account that already exists is active and no backfill
+-- is needed — the same property `tour_pending`'s default bought above.
+--
+-- WHO READS IT: the three sign-in doors only (password login, the Google
+-- returning/link branches, and the refresh rotation). Deliberately NOT
+-- `requireUser`, which would mean a database read on every authenticated
+-- request to close a window that revoking the refresh-token families already
+-- closes within one access-token lifetime (<=15 min). See the note on
+-- `setSuspended` in accounts.repo.ts.
+alter table users add column if not exists suspended_at timestamptz;

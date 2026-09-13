@@ -21,6 +21,17 @@ import {
 /** B1 — the one sentence a bounced Google sign-in lands on. */
 const INVITE_ONLY_NOTICE = 'Asyncify is invite-only right now — request access below.';
 
+/**
+ * B2 — the sentence a Google sign-in on a REVOKED account lands on.
+ *
+ * The login form, not the request-access form: this person has an account, and
+ * asking again would be a form that does nothing (the server treats a request
+ * from a registered address as a no-op, by design). The right next step is a
+ * conversation with whoever revoked it, so the page says what happened and
+ * stops. The password door says the same thing in its own 403.
+ */
+const REVOKED_NOTICE = 'Your access has been revoked.';
+
 /** Read a query param once, at mount. */
 function useQueryParam(name: string): string {
   return useState(() => new URLSearchParams(window.location.search).get(name) ?? '')[0];
@@ -330,7 +341,12 @@ function SignupForm({ inviteCode }: { inviteCode?: string }) {
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const [error, setError] = useState('');
+  // gate=revoked (the Google door's bounce) lands in the SAME red line under
+  // the password field the password door's 403 uses — one message, one place,
+  // whichever door was tried (his call).
+  const [error, setError] = useState(() =>
+    new URLSearchParams(window.location.search).get('gate') === 'revoked' ? REVOKED_NOTICE : '',
+  );
   const [busy, setBusy] = useState(false);
   const [methods, setMethods] = useState<AuthMethods | null>(null);
   const [forgot, setForgot] = useState(false);
@@ -392,7 +408,15 @@ export function LoginPage() {
       await login(String(form.get('email')), String(form.get('password')));
       enter();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not reach the server');
+      // The API's terse 403 body ('access revoked') is a wire contract, not
+      // UI copy — both doors show the same full sentence (his call).
+      setError(
+        err instanceof ApiError
+          ? err.message === 'access revoked'
+            ? REVOKED_NOTICE
+            : err.message
+          : 'Could not reach the server',
+      );
     } finally {
       setBusy(false);
     }

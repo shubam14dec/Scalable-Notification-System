@@ -416,7 +416,11 @@ sign-up card becomes a request form (`POST /auth/request-access`, which always
 answers `200` so it cannot be used to probe for registered addresses). The
 people listed in `OPERATOR_EMAILS` get the request by email and work it on the
 dashboard's **Requests** page; approving mails a `/login?invite=<code>` link
-that lives 7 days, stored only as its sha256. Launching is one variable —
+that lives 7 days, stored only as its sha256. A seat that was taken can also be
+taken back: **Revoke access** on a signed-up row suspends the account and ends
+every live session — password login, the Google door and the next token refresh
+all refuse it — and **Restore access** returns it intact, while an operator's own
+account can never be suspended. Launching is one variable —
 `SIGNUP_MODE=open` — and nothing else changes. Details:
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#beta-gate--launch-switch-b1).
 

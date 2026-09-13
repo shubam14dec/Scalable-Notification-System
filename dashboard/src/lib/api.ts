@@ -471,6 +471,11 @@ export interface AccessRequestRow {
   decidedAt: string | null;
   inviteExpiresAt: string | null;
   consumedAt: string | null;
+  /**
+   * B2 — present only on a row whose seat was spent AND whose account still
+   * exists. Absent means there is no account behind this row to act on.
+   */
+  accountStatus?: 'active' | 'suspended';
 }
 
 /** Operator-only (OPERATOR_EMAILS); anyone else gets a 403 from all three. */
@@ -483,6 +488,16 @@ export const approveAccessRequest = (id: string) =>
 
 export const declineAccessRequest = (id: string) =>
   api<{ request: AccessRequestRow }>(`/v1/ops/access-requests/${id}/decline`, { method: 'POST' });
+
+/**
+ * B2 — shut the account behind a consumed row out of every sign-in door, and
+ * end every session it currently has. Reversible with `restoreAccountAccess`.
+ */
+export const revokeAccountAccess = (id: string) =>
+  api<{ accountStatus: 'suspended' }>(`/v1/ops/access-requests/${id}/revoke`, { method: 'POST' });
+
+export const restoreAccountAccess = (id: string) =>
+  api<{ accountStatus: 'active' }>(`/v1/ops/access-requests/${id}/restore`, { method: 'POST' });
 
 /* ---------- S1.7: real logout ---------- */
 
