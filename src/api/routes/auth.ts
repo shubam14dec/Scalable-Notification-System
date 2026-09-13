@@ -506,6 +506,26 @@ export function registerAuthRoutes(app: FastifyInstance) {
     if (!user || !passwordOk) {
       return reply.code(401).send({ error: 'invalid email or password' });
     }
+    /**
+     * B2 — THE SUSPENSION CHECK, and note where it sits: AFTER the password has
+     * verified, never before.
+     *
+     * The order is the whole security argument. A check above this line would
+     * answer "is this address suspended?" to anybody who typed the address, and
+     * would do it FASTER than a wrong password does (no scrypt) — a free
+     * enumeration and timing oracle over exactly the accounts an operator has
+     * decided to shut out. Below it, the only caller who can ever see this 403
+     * has already proven they own the account, and telling them why they cannot
+     * get in is plainly better than a 401 that reads as "you mistyped it" and
+     * sends them round the password-reset loop forever.
+     *
+     * A wrong password on a suspended account is therefore the ordinary 401,
+     * indistinguishable from a wrong password on any other account.
+     */
+    if (user.suspended_at) {
+      logger.warn({ userId: user.id }, 'login refused: account access is revoked');
+      return reply.code(403).send({ error: 'access revoked' });
+    }
     return sessionResponse(app, user);
   });
 
@@ -566,6 +586,22 @@ export function registerAuthRoutes(app: FastifyInstance) {
 
     const spent = await spendRefreshToken(jti);
     if (spent) {
+      /**
+       * B2 — one indexed read by primary key, on the rotation path ONLY (about
+       * once per access-token lifetime per session, never per request). A
+       * suspended account mints nothing.
+       *
+       * The token it just spent is gone, which is the correct outcome and not a
+       * side effect to apologise for: the holder of a revoked account's session
+       * is meant to be locked out, and a spent token they cannot exchange is
+       * exactly that. (The revoke route also revokes every live family, so this
+       * is the belt to that braces — it catches a session that was mid-flight
+       * when the operator clicked, and a token revoked-then-restored-then-…)
+       */
+      const holder = await getUserById(spent.user_id);
+      if (!holder || holder.suspended_at) {
+        return reply.code(401).send(REFRESH_REJECTED);
+      }
       // SAME family, so the chain keeps its identity and one logout still kills
       // every hop of it.
       return await mintSessionTokens(app, spent.user_id, spent.family);

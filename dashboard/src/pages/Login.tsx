@@ -21,6 +21,17 @@ import {
 /** B1 — the one sentence a bounced Google sign-in lands on. */
 const INVITE_ONLY_NOTICE = 'Asyncify is invite-only right now — request access below.';
 
+/**
+ * B2 — the sentence a Google sign-in on a REVOKED account lands on.
+ *
+ * The login form, not the request-access form: this person has an account, and
+ * asking again would be a form that does nothing (the server treats a request
+ * from a registered address as a no-op, by design). The right next step is a
+ * conversation with whoever revoked it, so the page says what happened and
+ * stops. The password door says the same thing in its own 403.
+ */
+const REVOKED_NOTICE = 'Your access has been revoked.';
+
 /** Read a query param once, at mount. */
 function useQueryParam(name: string): string {
   return useState(() => new URLSearchParams(window.location.search).get(name) ?? '')[0];
@@ -437,6 +448,7 @@ export function LoginPage() {
 
   return (
     <AuthLayout title="Log in" subtitle="Welcome back — log in to continue.">
+      {gate === 'revoked' && <FormNotice>{REVOKED_NOTICE}</FormNotice>}
       {methods?.google && <GoogleSignIn disabled={busy} />}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Email">

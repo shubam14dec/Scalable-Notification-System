@@ -98,11 +98,40 @@ export async function reopenDeclinedRequest(
   return rows[0] ?? null;
 }
 
+/**
+ * B2 — a listed row, plus what became of the account behind it.
+ *
+ * `account_status` is null when no user row holds this address: the applicant
+ * has not signed up yet (every pending and declined row, and an approved one
+ * whose invite is still in an inbox), or the account was deleted after they
+ * did. The operator's two account actions are offered on exactly the rows where
+ * this is non-null — there is nothing to revoke otherwise.
+ */
+export interface ListedAccessRequest extends AccessRequest {
+  account_status: 'active' | 'suspended' | null;
+}
+
+/**
+ * ONE query, not one-plus-N: the account state is a LEFT JOIN on the mailbox
+ * (the only key an access request and a user share — a request predates the
+ * account, so it holds no user id), resolved in SQL to the two words the
+ * operator's page renders. Both sides of the join are unique indexes on
+ * `email`, so this stays the same single indexed scan it was before.
+ */
 export async function listAccessRequests(
   status: 'pending' | 'approved' | 'declined',
-): Promise<AccessRequest[]> {
+): Promise<ListedAccessRequest[]> {
   const { rows } = await pool.query(
-    'select * from access_requests where status = $1 order by created_at desc',
+    `select r.*,
+            case
+              when u.id is null then null
+              when u.suspended_at is null then 'active'
+              else 'suspended'
+            end as account_status
+       from access_requests r
+       left join users u on u.email = r.email
+      where r.status = $1
+      order by r.created_at desc`,
     [status],
   );
   return rows;

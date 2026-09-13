@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { logger } from '../../shared/logger';
 import { sendPlatformEmail } from '../../core/platform-email';
@@ -11,8 +11,11 @@ import {
   hashInviteCode,
   listAccessRequests,
   type AccessRequest,
+  type ListedAccessRequest,
 } from '../../db/access-requests.repo';
-import { requireOperatorUser } from '../jwt-auth';
+import { getUserByEmail, setSuspended, type User } from '../../db/accounts.repo';
+import { revokeAllForUser } from '../../db/refresh-tokens.repo';
+import { isOperatorEmail, requireOperatorUser } from '../jwt-auth';
 import { dashboardOrigin } from './auth';
 
 /**
@@ -41,7 +44,8 @@ const IdSchema = z.string().uuid();
 
 const StatusSchema = z.enum(['pending', 'approved', 'declined']);
 
-function requestView(row: AccessRequest) {
+function requestView(row: AccessRequest | ListedAccessRequest) {
+  const accountStatus = 'account_status' in row ? row.account_status : null;
   return {
     id: row.id,
     name: row.name,
@@ -52,6 +56,14 @@ function requestView(row: AccessRequest) {
     decidedAt: row.decided_at,
     inviteExpiresAt: row.invite_expires_at,
     consumedAt: row.consumed_at,
+    /**
+     * B2 — what became of the account this seat turned into, present ONLY on a
+     * consumed row (the listing's join supplies it; approve and decline return
+     * a bare row and never carry it). A seat that has not been spent has no
+     * account behind it, so 'active' there would be a claim about somebody who
+     * does not exist.
+     */
+    ...(row.consumed_at && accountStatus ? { accountStatus } : {}),
     // The invite code itself is deliberately absent — it exists in exactly one
     // place, the applicant's email. An operator who could read it could sign up
     // as them, and a screen that displayed it would put it in every screenshot.
@@ -159,4 +171,121 @@ export function registerAccessRequestRoutes(app: FastifyInstance) {
       return { request: requestView(declined) };
     },
   );
+
+  /* ------------------------------------------------------------------ *
+   * B2 — REVOKE AND RESTORE AN ACCOUNT'S ACCESS.
+   * ------------------------------------------------------------------ */
+
+  /**
+   * Shut an account out. The operator's seat turned out to be the wrong seat:
+   * the person left the company, the address was compromised, the beta tester
+   * started abusing the send quota.
+   *
+   * TWO writes, and both are load-bearing:
+   *  - `setSuspended` closes every DOOR — password login, the Google returning
+   *    and link branches, and the refresh rotation all read this column.
+   *  - `revokeAllForUser` closes every SESSION already open. Without it the
+   *    doors would be shut behind somebody who is already inside, and their
+   *    browser would go on rotating a refresh token for seven days.
+   * Together they bound the lockout at one access-token lifetime (~15 minutes):
+   * the live access token in the person's tab keeps working until it expires,
+   * and nothing can mint another. See the note on `setSuspended` for why the
+   * authenticated hot path deliberately does not read this column.
+   *
+   * Idempotent: revoking a revoked account is a 200 that changes nothing (the
+   * timestamp does not move, and there are no live families left to revoke).
+   */
+  app.post<{ Params: { id: string } }>(
+    '/v1/ops/access-requests/:id/revoke',
+    { preHandler: [requireOperatorUser] },
+    async (req, reply) => {
+      const target = await resolveAccount(req.params.id, 'revoke', reply);
+      if (!target) return;
+
+      /**
+       * THE OPERATOR GUARD. An operator seat cannot be revoked — not by another
+       * operator, and above all not by whoever is holding a hijacked operator
+       * session.
+       *
+       * Without it this page is a one-click lockout of the only people who can
+       * undo it: suspend every operator and the Requests page is closed to
+       * everybody, permanently, with no path back that does not involve a
+       * database console. The seat is configured in OPERATOR_EMAILS, which lives
+       * in the deployment and not in this table, so an operator who genuinely
+       * must be removed is removed THERE — where the change is reviewed, and
+       * where it takes effect on their very next click.
+       */
+      if (isOperatorEmail(target.email)) {
+        return reply.code(403).send({ error: 'operators cannot be suspended' });
+      }
+
+      await setSuspended(target.id, true);
+      const revoked = await revokeAllForUser(target.id);
+      logger.warn(
+        { operator: req.userId, target: target.id, revoked },
+        'account access revoked',
+      );
+      return { accountStatus: 'suspended' as const };
+    },
+  );
+
+  /**
+   * Let them back in. One write — the sessions revoked above stay revoked, so
+   * they sign in again and get a new one, which is the right outcome: a restore
+   * is not a resurrection of whatever was open when the operator clicked.
+   *
+   * No operator guard here: an operator account can never have been suspended
+   * in the first place, so there is nothing this could undo that the guard above
+   * did not already prevent.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/v1/ops/access-requests/:id/restore',
+    { preHandler: [requireOperatorUser] },
+    async (req, reply) => {
+      const target = await resolveAccount(req.params.id, 'restore', reply);
+      if (!target) return;
+
+      await setSuspended(target.id, false);
+      logger.info({ operator: req.userId, target: target.id }, 'account access restored');
+      return { accountStatus: 'active' as const };
+    },
+  );
+}
+
+/**
+ * B2 — the access request the operator clicked -> the USER it became.
+ *
+ * The :id is a row on the Requests page, because that page is where the
+ * operator is standing and it is the only list of beta accounts this deployment
+ * has. The hop from one to the other is the MAILBOX, which is what an access
+ * request is keyed on and what a user row is unique on.
+ *
+ * Only a CONSUMED row qualifies: a seat that was never spent has no account
+ * behind it, and a 409 saying so is a truer answer than a 404 (the request is
+ * right there on their screen; it is the account that does not exist).
+ *
+ * Replies and returns null on every refusal — the caller returns immediately on
+ * null (the house idiom, see `requireEnvAccess`), so nothing downstream can act
+ * on a target that was never found.
+ */
+async function resolveAccount(
+  id: string,
+  verb: 'revoke' | 'restore',
+  reply: FastifyReply,
+): Promise<User | null> {
+  if (!IdSchema.safeParse(id).success) {
+    reply.code(404).send({ error: 'unknown access request' });
+    return null;
+  }
+  const request = await getAccessRequestById(id);
+  if (!request) {
+    reply.code(404).send({ error: 'unknown access request' });
+    return null;
+  }
+  const user = request.consumed_at ? await getUserByEmail(request.email) : null;
+  if (!user) {
+    reply.code(409).send({ error: `no account to ${verb}` });
+    return null;
+  }
+  return user;
 }

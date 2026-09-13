@@ -268,6 +268,17 @@ same one-line move.
 are still recorded, they are simply waiting for whoever is given the seat. But
 set it before flipping to invite, or the first applicant's email goes nowhere.
 
+**Revoking an account (B2).** Migration only — the ordinary `migrate` adds one
+additive column, `users.suspended_at` (null = active), and nothing to configure.
+A signed-up row on the Requests page gains **Revoke access**, which suspends the
+account and revokes every live session: the person is refused at password login
+(`403 access revoked`), at the Google door (bounced to `/login?gate=revoked`) and
+at the next refresh rotation, within one access-token lifetime (~15 min) of the
+click. **Restore access** puts them back with the same organization, keys and
+data. An address in `OPERATOR_EMAILS` cannot be suspended (`403`) — that guard is
+what stops one click, or one hijacked operator session, from closing the only
+page that could undo it; remove an operator in `OPERATOR_EMAILS` instead.
+
 **Google sign-in, one-time console setup** (skip entirely if you are not
 offering it): in [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
 create an **OAuth 2.0 Client ID** of type *Web application*, and register both
