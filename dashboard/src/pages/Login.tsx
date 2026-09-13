@@ -408,7 +408,15 @@ export function LoginPage() {
       await login(String(form.get('email')), String(form.get('password')));
       enter();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not reach the server');
+      // The API's terse 403 body ('access revoked') is a wire contract, not
+      // UI copy — both doors show the same full sentence (his call).
+      setError(
+        err instanceof ApiError
+          ? err.message === 'access revoked'
+            ? REVOKED_NOTICE
+            : err.message
+          : 'Could not reach the server',
+      );
     } finally {
       setBusy(false);
     }
