@@ -341,7 +341,12 @@ function SignupForm({ inviteCode }: { inviteCode?: string }) {
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const [error, setError] = useState('');
+  // gate=revoked (the Google door's bounce) lands in the SAME red line under
+  // the password field the password door's 403 uses — one message, one place,
+  // whichever door was tried (his call).
+  const [error, setError] = useState(() =>
+    new URLSearchParams(window.location.search).get('gate') === 'revoked' ? REVOKED_NOTICE : '',
+  );
   const [busy, setBusy] = useState(false);
   const [methods, setMethods] = useState<AuthMethods | null>(null);
   const [forgot, setForgot] = useState(false);
@@ -448,7 +453,6 @@ export function LoginPage() {
 
   return (
     <AuthLayout title="Log in" subtitle="Welcome back — log in to continue.">
-      {gate === 'revoked' && <FormNotice>{REVOKED_NOTICE}</FormNotice>}
       {methods?.google && <GoogleSignIn disabled={busy} />}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Email">
