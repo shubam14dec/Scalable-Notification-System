@@ -6,7 +6,7 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
-### B2 — Account suspension (IN FLIGHT, approved 2026-09-14)
+### B2 — Account suspension — DONE 2026-09-14 (his full E2E)
 Operator revoke/restore on the Requests page's signed-up rows. Flow
 approved as diagrammed: suspended_at on users; revoke = stamp + kill
 refresh families (S1.7 ledger reuse, <=15min drain accepted); every
@@ -17,6 +17,14 @@ clear stamp, data intact. Security case: requireOperatorUser 403 law
 + env-only operator seat + NEW guard: operators cannot be suspended
 (hijacked-session lockout defense). v1 scope: machine api keys keep
 flowing. Audit log lines on both actions.
+OUTCOME: shipped + his full lifecycle E2E green (revoke, every door
+refused incl. reset-while-suspended and re-request no-op, restore
+with data intact). Build's extra door: google LINK branch refused
+BEFORE linkGoogleSub (suspended account cannot gain a second door).
+UI dials at his order: gate=revoked seeds the login form's error slot
+(red, under the password field, not a grey top notice) and the
+password door maps the wire 'access revoked' to the same full
+sentence - both doors speak identically.
 
 ### S1.7 — Refresh rotation + real logout — DONE 2026-09-13 (his E2E)
 His question exposed it live: logout is localStorage-only; the 7-day
