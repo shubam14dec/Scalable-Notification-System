@@ -6,6 +6,18 @@ plans get a short review section, then move to Done.
 
 ## In progress
 
+### B2 — Account suspension (IN FLIGHT, approved 2026-09-14)
+Operator revoke/restore on the Requests page's signed-up rows. Flow
+approved as diagrammed: suspended_at on users; revoke = stamp + kill
+refresh families (S1.7 ledger reuse, <=15min drain accepted); every
+door enumerated and blocked (password login 403 after credential
+check - no oracle; google returning/link branches; reset-while-
+suspended still blocked; consumed request = no side door); restore =
+clear stamp, data intact. Security case: requireOperatorUser 403 law
++ env-only operator seat + NEW guard: operators cannot be suspended
+(hijacked-session lockout defense). v1 scope: machine api keys keep
+flowing. Audit log lines on both actions.
+
 ### S1.7 — Refresh rotation + real logout — DONE 2026-09-13 (his E2E)
 His question exposed it live: logout is localStorage-only; the 7-day
 refresh JWT stays valid with no server-side kill. Design approved
